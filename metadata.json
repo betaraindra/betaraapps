@@ -1,0 +1,7 @@
+{
+  "name": "Siki V1",
+  "description": "Aplikasi manajemen keuangan dan inventori lengkap dengan fitur barcode scanner, laporan, dan manajemen user.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

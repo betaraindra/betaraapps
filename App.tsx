@@ -660,4 +660,390 @@ export default function App() {
             <div className="space-y-4">
               <Input label="Nama Perusahaan" value={settings.name} onChange={e => setSettings({...settings, name: e.target.value})} />
               <Input label="Alamat" value={settings.address} onChange={e => setSettings({...settings, address: e.target.value})} />
-              <Input label="Modal Awal (Saldo)" type="number" value={settings.initialBalance} onChange
+              <Input 
+                label="Modal Awal (Saldo)" 
+                type="number" 
+                value={settings.initialBalance} 
+                onChange={e => setSettings({...settings, initialBalance: Number(e.target.value)})} 
+              />
+              <Button onClick={handleSave} className="w-full mt-4">Simpan Pengaturan</Button>
+            </div>
+          </Card>
+
+          <Card title="Manajemen Data">
+            <div className="space-y-4">
+              <div className="p-4 bg-yellow-50 text-yellow-800 rounded-lg text-sm">
+                <p className="font-bold flex items-center gap-2"><AlertTriangle size={16}/> Perhatian</p>
+                <p>Lakukan backup secara berkala. Restore akan menimpa data yang ada.</p>
+              </div>
+              
+              <Button onClick={handleBackup} variant="secondary" className="w-full">
+                <Download size={18} /> Backup Data (JSON)
+              </Button>
+              
+              <div className="relative">
+                 <input type="file" accept=".json" onChange={handleRestore} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                 <Button variant="secondary" className="w-full">
+                    <Upload size={18} /> Restore Data
+                 </Button>
+              </div>
+
+              <hr className="my-4" />
+              
+              <Button onClick={handleReset} variant="danger" className="w-full">
+                <Trash2 size={18} /> Reset Aplikasi (Hapus Data)
+              </Button>
+            </div>
+          </Card>
+        </div>
+      </div>
+    );
+  };
+
+  // --- Additional Views Implementation ---
+
+  const InventoryWarehouseView = () => {
+    const [name, setName] = useState('');
+    const [location, setLocation] = useState('');
+
+    const handleAdd = () => {
+      if(!name) return;
+      data.warehouses.push({ id: DB.generateId(), name, location });
+      DB.saveAppData(data);
+      refreshData();
+      setName(''); setLocation('');
+    };
+
+    return (
+      <div className="space-y-6">
+        <SectionHeader title="Data Gudang" subtitle="Kelola lokasi penyimpanan" />
+        <Card title="Tambah Gudang">
+          <div className="flex gap-4 items-end">
+            <Input label="Nama Gudang" value={name} onChange={e => setName(e.target.value)} />
+            <Input label="Lokasi" value={location} onChange={e => setLocation(e.target.value)} />
+            <Button onClick={handleAdd}>Tambah</Button>
+          </div>
+        </Card>
+        <Card title="Daftar Gudang">
+          <table className="w-full text-left text-sm">
+            <thead><tr className="border-b bg-gray-50"><th className="p-3">Nama</th><th className="p-3">Lokasi</th></tr></thead>
+            <tbody>
+              {data.warehouses.map(w => (
+                <tr key={w.id} className="border-b"><td className="p-3 font-medium">{w.name}</td><td className="p-3">{w.location}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      </div>
+    );
+  };
+
+  const InventoryHistoryView = () => {
+    return (
+      <div className="space-y-6">
+        <SectionHeader title="Riwayat Barang" subtitle="Laporan keluar masuk barang" />
+        <Card>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-gray-50 border-b">
+                <tr>
+                  <th className="p-3">Tanggal</th>
+                  <th className="p-3">Tipe</th>
+                  <th className="p-3">Barang</th>
+                  <th className="p-3">Jumlah</th>
+                  <th className="p-3">Gudang</th>
+                  <th className="p-3">Catatan</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.inventoryTransactions.map(t => {
+                   const p = data.products.find(x => x.id === t.productId);
+                   const w = data.warehouses.find(x => x.id === t.warehouseId);
+                   return (
+                    <tr key={t.id} className="border-b hover:bg-gray-50">
+                      <td className="p-3">{t.date}</td>
+                      <td className="p-3"><span className={`px-2 py-1 rounded text-xs ${t.type === 'IN' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>{t.type === 'IN' ? 'MASUK' : 'KELUAR'}</span></td>
+                      <td className="p-3 font-medium">{p?.name || '-'}</td>
+                      <td className="p-3">{t.quantity}</td>
+                      <td className="p-3">{w?.name || '-'}</td>
+                      <td className="p-3 text-gray-500">{t.notes}</td>
+                    </tr>
+                   );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  const FinanceAccountsView = () => {
+    const [name, setName] = useState('');
+    const [code, setCode] = useState('');
+    const [type, setType] = useState<Types.TransactionType>(Types.TransactionType.EXPENSE);
+
+    const handleAdd = () => {
+      if(!name || !code) return;
+      data.accounts.push({ id: DB.generateId(), name, code, type });
+      DB.saveAppData(data);
+      refreshData();
+      setName(''); setCode('');
+    };
+
+    return (
+      <div className="space-y-6">
+        <SectionHeader title="Akun Keuangan" subtitle="Kelola kategori pemasukan dan pengeluaran" />
+        <Card title="Tambah Akun">
+          <div className="flex gap-4 items-end flex-wrap">
+             <div className="w-32"><Input label="Kode Akun" value={code} onChange={e => setCode(e.target.value)} /></div>
+             <div className="flex-1"><Input label="Nama Akun" value={name} onChange={e => setName(e.target.value)} /></div>
+             <div className="w-40">
+               <Select label="Tipe" value={type} onChange={e => setType(e.target.value as any)}>
+                 <option value={Types.TransactionType.EXPENSE}>Pengeluaran</option>
+                 <option value={Types.TransactionType.INCOME}>Pemasukan</option>
+               </Select>
+             </div>
+             <Button onClick={handleAdd}>Tambah</Button>
+          </div>
+        </Card>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+           <Card title="Akun Pemasukan">
+              <ul className="space-y-2">
+                {data.accounts.filter(a => a.type === Types.TransactionType.INCOME).map(a => (
+                  <li key={a.id} className="flex justify-between p-2 bg-gray-50 rounded"><span>{a.code} - {a.name}</span></li>
+                ))}
+              </ul>
+           </Card>
+           <Card title="Akun Pengeluaran">
+              <ul className="space-y-2">
+                {data.accounts.filter(a => a.type === Types.TransactionType.EXPENSE).map(a => (
+                  <li key={a.id} className="flex justify-between p-2 bg-gray-50 rounded"><span>{a.code} - {a.name}</span></li>
+                ))}
+              </ul>
+           </Card>
+        </div>
+      </div>
+    );
+  };
+
+  const FinanceTransactionsView = () => {
+    return (
+      <div className="space-y-6">
+        <SectionHeader title="Riwayat Keuangan" subtitle="Laporan semua transaksi keuangan" />
+        <Card>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-gray-50 border-b">
+                <tr>
+                  <th className="p-3">Tanggal</th>
+                  <th className="p-3">Akun</th>
+                  <th className="p-3">Deskripsi</th>
+                  <th className="p-3 text-right">Debit (Masuk)</th>
+                  <th className="p-3 text-right">Kredit (Keluar)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.financeTransactions.map(t => {
+                   const acc = data.accounts.find(x => x.id === t.accountId);
+                   return (
+                    <tr key={t.id} className="border-b hover:bg-gray-50">
+                      <td className="p-3">{t.date}</td>
+                      <td className="p-3 text-gray-600">{acc?.code} - {acc?.name}</td>
+                      <td className="p-3">{t.description}</td>
+                      <td className="p-3 text-right text-green-600">{t.type === 'INCOME' ? `Rp ${t.amount.toLocaleString()}` : '-'}</td>
+                      <td className="p-3 text-right text-red-600">{t.type === 'EXPENSE' ? `Rp ${t.amount.toLocaleString()}` : '-'}</td>
+                    </tr>
+                   );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  const UsersView = () => {
+    const [newUser, setNewUser] = useState<Partial<Types.User>>({ role: Types.UserRole.ADMIN_GUDANG });
+    const [isModalOpen, setModalOpen] = useState(false);
+
+    const handleSave = () => {
+      if(!newUser.username || !newUser.password || !newUser.email) return;
+      data.users.push({
+        id: DB.generateId(),
+        username: newUser.username,
+        email: newUser.email,
+        password: newUser.password,
+        role: newUser.role as Types.UserRole
+      });
+      DB.saveAppData(data);
+      refreshData();
+      setModalOpen(false);
+      setNewUser({ role: Types.UserRole.ADMIN_GUDANG });
+    };
+
+    return (
+      <div className="space-y-6">
+        <div className="flex justify-between items-center">
+          <SectionHeader title="Manajemen Pengguna" subtitle="Kelola akses aplikasi" />
+          <Button onClick={() => setModalOpen(true)}><Plus size={18}/> Tambah User</Button>
+        </div>
+        <Card>
+          <table className="w-full text-left text-sm">
+            <thead className="bg-gray-50 border-b">
+               <tr>
+                 <th className="p-3">Username</th>
+                 <th className="p-3">Email</th>
+                 <th className="p-3">Role</th>
+                 <th className="p-3">Action</th>
+               </tr>
+            </thead>
+            <tbody>
+              {data.users.map(u => (
+                <tr key={u.id} className="border-b">
+                  <td className="p-3 font-medium">{u.username}</td>
+                  <td className="p-3">{u.email}</td>
+                  <td className="p-3"><span className="bg-gray-100 px-2 py-1 rounded text-xs">{u.role}</span></td>
+                  <td className="p-3 text-gray-400 text-xs">Edit not available in demo</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+
+        <Modal isOpen={isModalOpen} onClose={() => setModalOpen(false)} title="Tambah User Baru">
+           <div className="space-y-4">
+             <Input label="Username" value={newUser.username || ''} onChange={e => setNewUser({...newUser, username: e.target.value})} />
+             <Input label="Email" type="email" value={newUser.email || ''} onChange={e => setNewUser({...newUser, email: e.target.value})} />
+             <Input label="Password" type="password" value={newUser.password || ''} onChange={e => setNewUser({...newUser, password: e.target.value})} />
+             <Select label="Role" value={newUser.role} onChange={e => setNewUser({...newUser, role: e.target.value as any})}>
+                <option value={Types.UserRole.ADMIN_GUDANG}>Admin Gudang</option>
+                <option value={Types.UserRole.ADMIN_KEUANGAN}>Admin Keuangan</option>
+                <option value={Types.UserRole.SUPER_ADMIN}>Super Admin</option>
+             </Select>
+             <Button onClick={handleSave} className="w-full">Simpan User</Button>
+           </div>
+        </Modal>
+      </div>
+    );
+  };
+
+  const LogsView = () => {
+    return (
+      <div className="space-y-6">
+        <SectionHeader title="System Logs" subtitle="Catatan aktivitas sistem" />
+        <Card>
+           <div className="overflow-auto max-h-[600px]">
+             <table className="w-full text-left text-sm">
+               <thead className="bg-gray-50 border-b sticky top-0">
+                 <tr>
+                   <th className="p-3">Waktu</th>
+                   <th className="p-3">User ID</th>
+                   <th className="p-3">Aksi</th>
+                   <th className="p-3">Detail</th>
+                 </tr>
+               </thead>
+               <tbody>
+                 {data.logs.map(log => (
+                   <tr key={log.id} className="border-b hover:bg-gray-50">
+                     <td className="p-3 whitespace-nowrap">{new Date(log.timestamp).toLocaleString()}</td>
+                     <td className="p-3 font-mono text-xs">{log.userId}</td>
+                     <td className="p-3 font-medium text-blue-600">{log.action}</td>
+                     <td className="p-3 text-gray-600">{log.details}</td>
+                   </tr>
+                 ))}
+               </tbody>
+             </table>
+           </div>
+        </Card>
+      </div>
+    );
+  };
+
+  // --- Main Render ---
+
+  return (
+    <div className="flex h-screen bg-gray-100 font-sans text-gray-800">
+       {/* Sidebar */}
+       <aside className={`bg-white shadow-xl z-20 transition-all duration-300 flex flex-col ${isSidebarOpen ? 'w-64' : 'w-0 overflow-hidden'}`}>
+         {/* Logo/Header */}
+         <div className="p-6 border-b flex items-center gap-3">
+            <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-xl">S</div>
+            <div>
+              <h1 className="font-bold text-lg leading-tight">SIKI</h1>
+              <p className="text-xs text-gray-500">Finance & Inventory</p>
+            </div>
+         </div>
+
+         {/* Menu */}
+         <div className="flex-1 overflow-y-auto py-4">
+            <div className="px-4 mb-2 text-xs font-semibold text-gray-400 uppercase">Menu Utama</div>
+            <NavItem icon={LayoutDashboard} label="Dashboard" active={view === View.DASHBOARD} onClick={() => setView(View.DASHBOARD)} />
+            <NavItem icon={Plus} label="Input Transaksi" active={view === View.INPUT_TRANSAKSI} onClick={() => setView(View.INPUT_TRANSAKSI)} />
+            
+            <div className="px-4 mt-6 mb-2 text-xs font-semibold text-gray-400 uppercase">Inventori</div>
+            <NavItem icon={Package} label="Data Barang" active={view === View.INVENTORY_ITEMS} onClick={() => setView(View.INVENTORY_ITEMS)} />
+            <NavItem icon={Archive} label="Data Gudang" active={view === View.INVENTORY_WAREHOUSE} onClick={() => setView(View.INVENTORY_WAREHOUSE)} />
+            <NavItem icon={History} label="Riwayat Barang" active={view === View.INVENTORY_REPORT} onClick={() => setView(View.INVENTORY_REPORT)} />
+
+            <div className="px-4 mt-6 mb-2 text-xs font-semibold text-gray-400 uppercase">Keuangan</div>
+            <NavItem icon={TrendingUp} label="Dashboard Keuangan" active={view === View.FINANCE_DASHBOARD} onClick={() => setView(View.FINANCE_DASHBOARD)} />
+            <NavItem icon={Database} label="Data Akun" active={view === View.FINANCE_ACCOUNTS} onClick={() => setView(View.FINANCE_ACCOUNTS)} />
+            <NavItem icon={FileText} label="Riwayat Transaksi" active={view === View.FINANCE_TRANSACTIONS} onClick={() => setView(View.FINANCE_TRANSACTIONS)} />
+
+            <div className="px-4 mt-6 mb-2 text-xs font-semibold text-gray-400 uppercase">Admin</div>
+            {user.role === Types.UserRole.SUPER_ADMIN && (
+              <NavItem icon={Users} label="Pengguna" active={view === View.USERS} onClick={() => setView(View.USERS)} />
+            )}
+            <NavItem icon={Settings} label="Pengaturan" active={view === View.SETTINGS} onClick={() => setView(View.SETTINGS)} />
+            <NavItem icon={AlertTriangle} label="System Logs" active={view === View.LOGS} onClick={() => setView(View.LOGS)} />
+         </div>
+
+         {/* Footer */}
+         <div className="p-4 border-t bg-gray-50">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold">
+                {user.username.charAt(0).toUpperCase()}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium truncate">{user.username}</p>
+                <p className="text-xs text-gray-500 truncate">{user.role}</p>
+              </div>
+            </div>
+            <Button variant="secondary" className="w-full text-xs" onClick={handleLogout}>
+              <LogOut size={14} /> Keluar
+            </Button>
+         </div>
+       </aside>
+
+       {/* Main Content */}
+       <div className="flex-1 flex flex-col h-screen overflow-hidden">
+         {/* Topbar */}
+         <header className="h-16 bg-white border-b shadow-sm flex items-center px-6 justify-between">
+            <button onClick={() => setSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-gray-100 rounded-lg">
+              <Menu size={20} />
+            </button>
+            <div className="font-semibold text-gray-700">
+               {data.settings.name}
+            </div>
+         </header>
+
+         {/* Content Scrollable */}
+         <main className="flex-1 overflow-y-auto p-6">
+            {view === View.DASHBOARD && <DashboardHome />}
+            {view === View.INPUT_TRANSAKSI && <InputTransaksiView />}
+            {view === View.INVENTORY_ITEMS && <DataBarangView />}
+            {view === View.INVENTORY_WAREHOUSE && <InventoryWarehouseView />}
+            {view === View.INVENTORY_REPORT && <InventoryHistoryView />}
+            {view === View.FINANCE_DASHBOARD && <FinanceDashboard />}
+            {view === View.FINANCE_ACCOUNTS && <FinanceAccountsView />}
+            {view === View.FINANCE_TRANSACTIONS && <FinanceTransactionsView />}
+            {view === View.USERS && <UsersView />}
+            {view === View.SETTINGS && <SettingsView />}
+            {view === View.LOGS && <LogsView />}
+         </main>
+       </div>
+    </div>
+  );
+}

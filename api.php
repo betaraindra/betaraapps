@@ -28,48 +28,32 @@ if ($action === 'get_product_by_sku') {
     exit;
 }
 
-// === DASHBOARD STATS ===
-if ($action === 'get_dashboard_stats') {
-    // Finance Stats
-    $stmt = $pdo->query("SELECT 
-        SUM(CASE WHEN type='INCOME' THEN amount ELSE 0 END) as total_income,
-        SUM(CASE WHEN type='EXPENSE' THEN amount ELSE 0 END) as total_expense
-        FROM finance_transactions");
-    $fin = $stmt->fetch();
-    
-    // Low Stock
-    $stmt = $pdo->query("SELECT COUNT(*) as count FROM products WHERE stock < 10");
-    $lowStock = $stmt->fetch()['count'];
-
-    // Chart Data (Last 7 Days Transaction)
-    $stmt = $pdo->query("SELECT DATE(date) as t_date, type, SUM(amount) as total 
-                        FROM finance_transactions 
-                        WHERE date >= DATE(NOW()) - INTERVAL 7 DAY 
-                        GROUP BY t_date, type 
-                        ORDER BY t_date");
-    $chartData = $stmt->fetchAll();
-
-    echo json_encode([
-        'income' => $fin['total_income'] ?? 0,
-        'expense' => $fin['total_expense'] ?? 0,
-        'low_stock' => $lowStock,
-        'chart' => $chartData
-    ]);
-    exit;
-}
-
-// === GET NEXT TRANSACTION NUMBER (FOR AUTO REFERENCE) ===
+// === GET NEXT TRANSACTION NUMBER ===
 if ($action === 'get_next_trx_number') {
     $type = $_GET['type'] ?? 'IN'; // IN or OUT
-    
-    // Hitung jumlah transaksi tipe tersebut hari ini untuk nomor urut
-    // Atau hitung total transaksi tipe tersebut + 1
     $stmt = $pdo->prepare("SELECT COUNT(*) FROM inventory_transactions WHERE type = ?");
     $stmt->execute([$type]);
     $count = $stmt->fetchColumn();
-    
     $next = $count + 1;
     echo json_encode(['next_no' => $next]);
+    exit;
+}
+
+// === GENERATE RANDOM SKU (AUTO BARCODE) ===
+if ($action === 'generate_sku') {
+    $found = true;
+    $sku = '';
+    // Loop sampai nemu yang belum ada di DB
+    while($found) {
+        // Format: 899 + 9 digit random (Format umum Indonesia)
+        $sku = '899' . str_pad(mt_rand(0, 999999999), 9, '0', STR_PAD_LEFT);
+        $stmt = $pdo->prepare("SELECT id FROM products WHERE sku = ?");
+        $stmt->execute([$sku]);
+        if($stmt->rowCount() == 0) {
+            $found = false;
+        }
+    }
+    echo json_encode(['sku' => $sku]);
     exit;
 }
 ?>

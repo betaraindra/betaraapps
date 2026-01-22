@@ -39,7 +39,7 @@ function requireLogin() {
 
 function checkRole($allowed_roles) {
     if (!in_array($_SESSION['role'], $allowed_roles)) {
-        echo "<script>alert('Akses Ditolak!'); window.history.back();</script>";
+        echo "<script>alert('Akses Ditolak! Anda tidak memiliki izin.'); window.history.back();</script>";
         exit;
     }
 }

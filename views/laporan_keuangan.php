@@ -1,287 +1,395 @@
 <?php
-checkRole(['SUPER_ADMIN', 'ADMIN_KEUANGAN']);
+checkRole(['SUPER_ADMIN', 'ADMIN_KEUANGAN', 'MANAGER', 'SVP']);
 
-// Filter Vars
-$start_date = $_GET['start'] ?? date('Y-m-01');
-$end_date = $_GET['end'] ?? date('Y-m-d');
-$report_type = $_GET['type'] ?? 'LABA_RUGI'; // LABA_RUGI, NERACA, ARUS_KAS, PERUBAHAN_MODAL
+$start = $_GET['start'] ?? date('Y-m-01');
+$end = $_GET['end'] ?? date('Y-m-d');
+$report_type = $_GET['report_type'] ?? 'ALL';
 
-// === HELPERS ===
-function getTotal($pdo, $type, $start, $end) {
-    return $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='$type' AND date BETWEEN '$start' AND '$end'")->fetchColumn() ?: 0;
-}
-function getAccountSum($pdo, $acc_id, $start, $end) {
-    return $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE account_id='$acc_id' AND date BETWEEN '$start' AND '$end'")->fetchColumn() ?: 0;
-}
-// Neraca butuh kumulatif sampai end date
-function getBalanceUntil($pdo, $type, $end) {
-    return $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='$type' AND date <= '$end'")->fetchColumn() ?: 0;
-}
+// --- CONFIG & HEADER DATA ---
+$config_query = $pdo->query("SELECT * FROM settings");
+$config = [];
+while ($row = $config_query->fetch()) $config[$row['setting_key']] = $row['setting_value'];
 
-// === DATA PREPARATION ===
-$initial_capital = $settings['initial_capital'] ?? 0;
-// Laba Rugi Periode Ini
-$period_income = getTotal($pdo, 'INCOME', $start_date, $end_date);
-$period_expense = getTotal($pdo, 'EXPENSE', $start_date, $end_date);
-$period_profit = $period_income - $period_expense;
+// Judul Laporan Dinamis
+$report_titles = [
+    'ALL' => 'LAPORAN KEUANGAN LENGKAP',
+    'LABA_RUGI' => 'LAPORAN LABA RUGI (INCOME STATEMENT)',
+    'NERACA' => 'LAPORAN POSISI KEUANGAN (NERACA)',
+    'ARUS_KAS' => 'LAPORAN ARUS KAS (CASH FLOW)',
+    'PERUBAHAN_MODAL' => 'LAPORAN PERUBAHAN MODAL'
+];
+$current_title = $report_titles[$report_type] ?? 'LAPORAN KEUANGAN';
 
-// Kumulatif (Untuk Neraca & Modal)
-$total_income_all = getBalanceUntil($pdo, 'INCOME', $end_date);
-$total_expense_all = getBalanceUntil($pdo, 'EXPENSE', $end_date);
-$retained_earnings = $total_income_all - $total_expense_all;
+// --- LOGIC: STANDARD REPORTS (LABA RUGI, NERACA, DLL) ---
+$revenue = $pdo->query("SELECT SUM(f.amount) FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='INCOME' AND a.code LIKE '1%' AND f.date BETWEEN '$start' AND '$end'")->fetchColumn() ?: 0;
+$cogs = $pdo->query("SELECT SUM(f.amount) FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='EXPENSE' AND a.code='2001' AND f.date BETWEEN '$start' AND '$end'")->fetchColumn() ?: 0;
+$opex = $pdo->query("SELECT SUM(f.amount) FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='EXPENSE' AND a.code LIKE '2%' AND a.code != '2001' AND f.date BETWEEN '$start' AND '$end'")->fetchColumn() ?: 0;
+$asset_purchase = $pdo->query("SELECT SUM(f.amount) FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='EXPENSE' AND a.code='3003' AND f.date BETWEEN '$start' AND '$end'")->fetchColumn() ?: 0;
 
-$inventory_val = $pdo->query("SELECT SUM(stock * buy_price) FROM products")->fetchColumn() ?: 0;
-$cash_on_hand = $initial_capital + $retained_earnings; // Simplified logic: Modal + Laba = Kas
+$gross_profit = $revenue - $cogs;
+$net_profit_period = $gross_profit - $opex;
 
+// Data Historis
+$initial_capital = $config['initial_capital'] ?? 0;
+$rev_before = $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='INCOME' AND date < '$start'")->fetchColumn() ?: 0;
+$exp_before = $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='EXPENSE' AND date < '$start'")->fetchColumn() ?: 0;
+$retained_earnings_before = $rev_before - $exp_before;
+$retained_earnings_total = $retained_earnings_before + $net_profit_period;
+
+$total_rev_all = $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='INCOME' AND date <= '$end'")->fetchColumn() ?: 0;
+$total_exp_all = $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='EXPENSE' AND date <= '$end'")->fetchColumn() ?: 0;
+$cash_balance = $initial_capital + $total_rev_all - $total_exp_all;
+$inventory_value = $pdo->query("SELECT SUM(stock * buy_price) FROM products")->fetchColumn() ?: 0;
+$liabilities = 0; 
 ?>
 
+<!-- Load Library PDF -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+<!-- STYLE KHUSUS PRINT & PDF -->
+<style>
+    @media print {
+        @page { size: A4 portrait; margin: 10mm; } 
+        body { background: white; font-family: 'Times New Roman', Times, serif; color: black; font-size: 12pt; }
+        .no-print { display: none !important; }
+        .print-break { page-break-inside: avoid; }
+        .shadow, .rounded, .border { box-shadow: none !important; border-radius: 0 !important; border: none !important; }
+        .report-section { border: 1px solid #000 !important; margin-bottom: 20px; padding: 10px; }
+        
+        /* KOP SURAT STYLE - PERFECT CENTER BALANCED */
+        .kop-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between; /* Kunci agar logo kiri dan spacer kanan berada di ujung */
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+            border-bottom: 4px double #000;
+            width: 100%;
+        }
+        .kop-logo, .kop-spacer {
+            width: 120px; /* Lebar tetap agar seimbang */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .kop-logo img {
+            max-height: 90px;
+            max-width: 100%;
+        }
+        .kop-text {
+            flex-grow: 1; /* Mengisi ruang tengah */
+            text-align: center;
+        }
+        
+        .kop-company { 
+            font-size: 24pt; /* Huruf Lebih Besar */
+            font-weight: 900; 
+            text-transform: uppercase; 
+            margin: 0; 
+            line-height: 1.1; 
+            color: #000;
+            letter-spacing: 1px;
+        }
+        .kop-address { 
+            font-size: 11pt; /* Huruf Kecil */
+            margin: 5px 0 0 0; 
+            line-height: 1.3; 
+        }
+        .kop-npwp { 
+            font-size: 11pt; 
+            font-weight: bold; 
+            margin-top: 3px; 
+        }
+
+        table.data-table { border-collapse: collapse; width: 100%; }
+        table.data-table th, table.data-table td { border-bottom: 1px dotted #ccc; padding: 4px; font-size: 11pt; }
+        .font-bold { font-weight: bold; }
+        .text-right { text-align: right; }
+        .border-t-black { border-top: 1px solid #000; }
+        
+        /* Helpers */
+        .bg-gray-100, .bg-blue-100, .bg-green-100, .bg-yellow-50 { background-color: transparent !important; }
+    }
+</style>
+
 <!-- FILTER SECTION -->
-<div class="bg-white p-6 rounded-lg shadow mb-6 print:hidden">
-    <form method="GET" class="flex flex-wrap gap-4 items-end">
+<div class="bg-white p-6 rounded shadow mb-6 no-print border-l-4 border-blue-600">
+    <h3 class="font-bold text-gray-700 mb-4"><i class="fas fa-filter"></i> Filter Laporan Pajak</h3>
+    <form class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
         <input type="hidden" name="page" value="laporan_keuangan">
-        <div>
-            <label class="block text-sm font-medium mb-1">Dari Tanggal</label>
-            <input type="date" name="start" value="<?= $start_date ?>" class="border p-2 rounded w-full">
-        </div>
-        <div>
-            <label class="block text-sm font-medium mb-1">Sampai Tanggal</label>
-            <input type="date" name="end" value="<?= $end_date ?>" class="border p-2 rounded w-full">
-        </div>
-        <div>
-            <label class="block text-sm font-medium mb-1">Jenis Laporan</label>
-            <select name="type" class="border p-2 rounded w-full min-w-[200px]">
-                <option value="LABA_RUGI" <?= $report_type=='LABA_RUGI'?'selected':'' ?>>Laporan Laba Rugi</option>
+        
+        <div class="md:col-span-1">
+            <label class="block text-xs font-bold text-gray-600 mb-1">Jenis Laporan</label>
+            <select name="report_type" class="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 bg-gray-50">
+                <option value="ALL" <?= $report_type=='ALL'?'selected':'' ?>>Laporan Lengkap</option>
+                <option value="LABA_RUGI" <?= $report_type=='LABA_RUGI'?'selected':'' ?>>Laba Rugi (Income Statement)</option>
+                <option value="PERUBAHAN_MODAL" <?= $report_type=='PERUBAHAN_MODAL'?'selected':'' ?>>Perubahan Modal (Equity)</option>
                 <option value="NERACA" <?= $report_type=='NERACA'?'selected':'' ?>>Neraca (Balance Sheet)</option>
                 <option value="ARUS_KAS" <?= $report_type=='ARUS_KAS'?'selected':'' ?>>Arus Kas (Cash Flow)</option>
-                <option value="PERUBAHAN_MODAL" <?= $report_type=='PERUBAHAN_MODAL'?'selected':'' ?>>Perubahan Modal</option>
             </select>
         </div>
+
+        <div>
+            <label class="block text-xs font-bold text-gray-600 mb-1">Dari Tanggal</label>
+            <input type="date" name="start" value="<?= $start ?>" class="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500">
+        </div>
+
+        <div>
+            <label class="block text-xs font-bold text-gray-600 mb-1">Sampai Tanggal</label>
+            <input type="date" name="end" value="<?= $end ?>" class="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500">
+        </div>
+
         <div class="flex gap-2">
-            <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
-                <i class="fas fa-filter"></i> Tampilkan
+            <button class="bg-blue-600 text-white px-4 py-2 rounded font-bold hover:bg-blue-700 flex-1 text-sm">
+                <i class="fas fa-search"></i> Tampilkan
             </button>
-            <button type="button" onclick="window.print()" class="bg-gray-200 text-gray-800 px-4 py-2 rounded hover:bg-gray-300">
+            <button type="button" onclick="window.print()" class="bg-gray-700 text-white px-4 py-2 rounded font-bold hover:bg-gray-800 flex-1 text-sm">
                 <i class="fas fa-print"></i> Cetak
+            </button>
+            <button type="button" onclick="savePDF()" class="bg-red-600 text-white px-4 py-2 rounded font-bold hover:bg-red-700 flex-1 text-sm">
+                <i class="fas fa-file-pdf"></i> PDF
             </button>
         </div>
     </form>
 </div>
 
-<!-- REPORT CONTENT -->
-<div class="bg-white p-8 rounded-lg shadow print:shadow-none print:border">
+<!-- REPORT CONTAINER -->
+<div id="report_content" class="bg-white p-8 rounded shadow max-w-4xl mx-auto print:p-0 print:shadow-none print:max-w-none">
     
-    <!-- HEADER LAPORAN -->
-    <div class="text-center mb-8 border-b pb-4">
-        <h2 class="text-2xl font-bold uppercase"><?= $settings['company_name'] ?? 'Perusahaan Anda' ?></h2>
-        <h3 class="text-xl font-semibold mt-2">
-            <?php 
-                if ($report_type == 'LABA_RUGI') echo "LAPORAN LABA RUGI";
-                elseif ($report_type == 'NERACA') echo "LAPORAN POSISI KEUANGAN (NERACA)";
-                elseif ($report_type == 'ARUS_KAS') echo "LAPORAN ARUS KAS";
-                elseif ($report_type == 'PERUBAHAN_MODAL') echo "LAPORAN PERUBAHAN MODAL";
-            ?>
-        </h3>
-        <p class="text-gray-500 mt-1">Periode: <?= date('d M Y', strtotime($start_date)) ?> s/d <?= date('d M Y', strtotime($end_date)) ?></p>
-    </div>
-
-    <!-- 1. LABA RUGI -->
-    <?php if ($report_type == 'LABA_RUGI'): ?>
-    <div class="max-w-3xl mx-auto">
-        <div class="space-y-4">
-            <!-- Pendapatan -->
-            <div>
-                <h4 class="font-bold text-gray-700 border-b-2 border-gray-200 mb-2">PENDAPATAN USAHA</h4>
-                <?php 
-                $acc_inc = $pdo->query("SELECT * FROM accounts WHERE type='INCOME'")->fetchAll();
-                foreach($acc_inc as $acc):
-                    $val = getAccountSum($pdo, $acc['id'], $start_date, $end_date);
-                    if($val > 0):
-                ?>
-                <div class="flex justify-between py-1 border-b border-dashed border-gray-100">
-                    <span><?= $acc['name'] ?></span>
-                    <span><?= formatRupiah($val) ?></span>
-                </div>
-                <?php endif; endforeach; ?>
-                <div class="flex justify-between font-bold pt-2 text-green-700 bg-green-50 px-2 mt-2">
-                    <span>Total Pendapatan</span>
-                    <span><?= formatRupiah($period_income) ?></span>
-                </div>
-            </div>
-
-            <!-- Beban -->
-            <div class="mt-8">
-                <h4 class="font-bold text-gray-700 border-b-2 border-gray-200 mb-2">BEBAN & PENGELUARAN</h4>
-                <?php 
-                $acc_exp = $pdo->query("SELECT * FROM accounts WHERE type='EXPENSE'")->fetchAll();
-                foreach($acc_exp as $acc):
-                    $val = getAccountSum($pdo, $acc['id'], $start_date, $end_date);
-                    if($val > 0):
-                ?>
-                <div class="flex justify-between py-1 border-b border-dashed border-gray-100">
-                    <span><?= $acc['name'] ?></span>
-                    <span>(<?= formatRupiah($val) ?>)</span>
-                </div>
-                <?php endif; endforeach; ?>
-                <div class="flex justify-between font-bold pt-2 text-red-700 bg-red-50 px-2 mt-2">
-                    <span>Total Beban</span>
-                    <span>(<?= formatRupiah($period_expense) ?>)</span>
-                </div>
-            </div>
-
-            <!-- Total -->
-            <div class="mt-8 pt-4 border-t-4 border-double border-gray-300 flex justify-between font-bold text-xl">
-                <span>LABA / (RUGI) BERSIH</span>
-                <span class="<?= $period_profit >= 0 ? 'text-blue-700' : 'text-red-700' ?>">
-                    <?= formatRupiah($period_profit) ?>
-                </span>
-            </div>
-        </div>
-    </div>
-    <?php endif; ?>
-
-    <!-- 2. NERACA -->
-    <?php if ($report_type == 'NERACA'): ?>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <!-- AKTIVA -->
-        <div>
-            <h4 class="bg-blue-100 text-blue-800 p-2 font-bold mb-4 text-center">AKTIVA (ASET)</h4>
-            
-            <h5 class="font-bold text-sm text-gray-600 border-b mt-2">Aset Lancar</h5>
-            <div class="flex justify-between py-2 border-b border-gray-100">
-                <span>Kas & Setara Kas</span>
-                <span><?= formatRupiah($cash_on_hand) ?></span>
-            </div>
-            <div class="flex justify-between py-2 border-b border-gray-100">
-                <span>Persediaan Barang (Stok)</span>
-                <span><?= formatRupiah($inventory_val) ?></span>
+    <!-- KOP SURAT STANDAR (PORTRAIT) -->
+    <div id="report_header" class="hidden print:block">
+        <div class="kop-container">
+            <!-- Logo Kiri -->
+            <div class="kop-logo">
+                <?php if(!empty($config['company_logo'])): ?>
+                    <img src="<?= $config['company_logo'] ?>">
+                <?php endif; ?>
             </div>
             
-            <h5 class="font-bold text-sm text-gray-600 border-b mt-4">Aset Tetap</h5>
-            <div class="flex justify-between py-2 border-b border-gray-100">
-                <span class="text-gray-400 italic">Inventaris (Tidak diinput)</span>
-                <span>Rp 0</span>
+            <!-- Teks Tengah -->
+            <div class="kop-text">
+                <h1 class="kop-company"><?= $config['company_name'] ?? 'NAMA PERUSAHAAN' ?></h1>
+                <div class="kop-address"><?= nl2br(htmlspecialchars($config['company_address'] ?? '')) ?></div>
+                <?php if(!empty($config['company_npwp'])): ?>
+                    <div class="kop-npwp">NPWP: <?= $config['company_npwp'] ?></div>
+                <?php endif; ?>
             </div>
 
-            <div class="flex justify-between font-bold text-lg mt-6 pt-2 border-t-2 border-blue-500">
-                <span>TOTAL AKTIVA</span>
-                <span><?= formatRupiah($cash_on_hand + $inventory_val) ?></span>
+            <!-- Spacer Kanan (Agar center seimbang dengan logo) -->
+            <div class="kop-spacer"></div>
+        </div>
+    </div>
+
+    <!-- JUDUL LAPORAN -->
+    <div class="text-center mb-8">
+        <h2 class="text-xl font-bold text-blue-900 uppercase print:text-black border-b-2 border-gray-800 inline-block px-4 pb-1 mb-2 print:border-none print:text-lg print:underline">
+            <?= $current_title ?>
+        </h2>
+        <p class="text-sm font-bold text-gray-500 print:text-black">
+            Periode: <?= date('d F Y', strtotime($start)) ?> - <?= date('d F Y', strtotime($end)) ?>
+        </p>
+    </div>
+
+    <div class="space-y-8">
+
+        <!-- STANDARD REPORTS (LABA RUGI, NERACA, DLL) -->
+        <?php if($report_type == 'ALL' || $report_type == 'LABA_RUGI'): ?>
+        <div class="report-section print-break">
+            <h3 class="font-bold text-lg mb-4 text-blue-800 border-b pb-2 print:text-black print:border-black print:text-base">1. LAPORAN LABA RUGI (INCOME STATEMENT)</h3>
+            <div class="space-y-1 text-sm print:text-base">
+                <div class="flex justify-between font-bold text-green-700 print:text-black mb-2">
+                    <span>PENDAPATAN USAHA</span>
+                    <span><?= formatRupiah($revenue) ?></span>
+                </div>
+                
+                <?php 
+                $rev_det = $pdo->query("SELECT a.name, SUM(f.amount) as total FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='INCOME' AND a.code LIKE '1%' AND f.date BETWEEN '$start' AND '$end' GROUP BY a.name");
+                while($r = $rev_det->fetch()): ?>
+                    <div class="flex justify-between pl-4 text-gray-500 italic print:text-black">
+                        <span>- <?= $r['name'] ?></span>
+                        <span><?= formatRupiah($r['total']) ?></span>
+                    </div>
+                <?php endwhile; ?>
+
+                <div class="flex justify-between text-red-600 pl-4 print:text-black mt-2">
+                    <span>(-) Harga Pokok Penjualan (HPP)</span>
+                    <span>(<?= formatRupiah($cogs) ?>)</span>
+                </div>
+                
+                <div class="flex justify-between font-bold border-t border-gray-300 pt-2 mt-2 print:border-black print:border-t-2">
+                    <span>LABA KOTOR</span>
+                    <span><?= formatRupiah($gross_profit) ?></span>
+                </div>
+
+                <div class="mt-4 font-bold text-gray-700 print:text-black">BEBAN OPERASIONAL</div>
+                <?php 
+                $opex_det = $pdo->query("SELECT a.name, SUM(f.amount) as total FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='EXPENSE' AND a.code LIKE '2%' AND a.code != '2001' AND f.date BETWEEN '$start' AND '$end' GROUP BY a.name");
+                while($o = $opex_det->fetch()): ?>
+                    <div class="flex justify-between pl-4 text-gray-600 print:text-black">
+                        <span><?= $o['name'] ?></span>
+                        <span>(<?= formatRupiah($o['total']) ?>)</span>
+                    </div>
+                <?php endwhile; ?>
+
+                <div class="flex justify-between font-bold text-lg border-t-2 border-gray-800 pt-2 mt-4 bg-gray-50 p-2 print:bg-transparent print:border-black print:border-double print:border-t-4">
+                    <span>LABA BERSIH (NET PROFIT)</span>
+                    <span class="<?= $net_profit_period >= 0 ? 'text-blue-600' : 'text-red-600' ?> print:text-black"><?= formatRupiah($net_profit_period) ?></span>
+                </div>
             </div>
         </div>
+        <?php endif; ?>
 
-        <!-- PASIVA -->
-        <div>
-            <h4 class="bg-red-100 text-red-800 p-2 font-bold mb-4 text-center">PASIVA (KEWAJIBAN & EKUITAS)</h4>
+        <!-- LAPORAN PERUBAHAN MODAL -->
+        <?php if($report_type == 'ALL' || $report_type == 'PERUBAHAN_MODAL'): ?>
+        <div class="report-section print-break">
+            <h3 class="font-bold text-lg mb-4 text-blue-800 border-b pb-2 print:text-black print:border-black print:text-base">2. LAPORAN PERUBAHAN MODAL</h3>
+            <div class="space-y-2 text-sm print:text-base">
+                <div class="flex justify-between font-bold">
+                    <span>Modal Awal Perusahaan</span>
+                    <span><?= formatRupiah($initial_capital) ?></span>
+                </div>
+                <div class="flex justify-between">
+                    <span>Laba Ditahan (Awal Periode)</span>
+                    <span><?= formatRupiah($retained_earnings_before) ?></span>
+                </div>
+                <div class="flex justify-between font-bold text-blue-600 print:text-black border-b border-gray-300 pb-1 print:border-black">
+                    <span>(+) Laba Bersih Periode Berjalan</span>
+                    <span><?= formatRupiah($net_profit_period) ?></span>
+                </div>
+                <div class="flex justify-between font-bold text-lg pt-2 bg-gray-50 p-2 print:bg-transparent">
+                    <span>MODAL AKHIR (EKUITAS)</span>
+                    <span><?= formatRupiah($initial_capital + $retained_earnings_total) ?></span>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <!-- NERACA -->
+        <?php if($report_type == 'ALL' || $report_type == 'NERACA'): ?>
+        <div class="report-section print-break">
+            <h3 class="font-bold text-lg mb-4 text-blue-800 border-b pb-2 print:text-black print:border-black print:text-base">3. NERACA (BALANCE SHEET)</h3>
             
-            <h5 class="font-bold text-sm text-gray-600 border-b mt-2">Kewajiban (Liabilitas)</h5>
-            <div class="flex justify-between py-2 border-b border-gray-100">
-                <span>Hutang Usaha</span>
-                <span>Rp 0</span>
-            </div>
-
-            <h5 class="font-bold text-sm text-gray-600 border-b mt-4">Ekuitas (Modal)</h5>
-            <div class="flex justify-between py-2 border-b border-gray-100">
-                <span>Modal Disetor</span>
-                <span><?= formatRupiah($initial_capital) ?></span>
-            </div>
-             <div class="flex justify-between py-2 border-b border-gray-100">
-                <span>Laba Ditahan (Kumulatif)</span>
-                <span><?= formatRupiah($retained_earnings) ?></span>
-            </div>
-            <div class="flex justify-between py-2 border-b border-gray-100 italic text-gray-500">
-                <span>Penyesuaian Persediaan</span>
-                <span><?= formatRupiah($inventory_val) ?></span>
-            </div>
-
-            <div class="flex justify-between font-bold text-lg mt-6 pt-2 border-t-2 border-red-500">
-                <span>TOTAL PASIVA</span>
-                <span><?= formatRupiah($initial_capital + $retained_earnings + $inventory_val) ?></span>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8 print:block">
+                <!-- AKTIVA -->
+                <div class="print:mb-4">
+                    <h4 class="font-bold text-center bg-gray-100 p-1 mb-2 print:bg-transparent print:border-b print:border-black print:text-left">AKTIVA (ASET)</h4>
+                    <div class="space-y-2 text-sm print:text-base">
+                        <div class="font-bold text-gray-700 print:text-black">Aset Lancar</div>
+                        <div class="flex justify-between pl-4">
+                            <span>Kas & Setara Kas</span>
+                            <span class="font-mono"><?= formatRupiah($cash_balance) ?></span>
+                        </div>
+                        <div class="flex justify-between pl-4">
+                            <span>Persediaan Barang</span>
+                            <span class="font-mono"><?= formatRupiah($inventory_value) ?></span>
+                        </div>
+                        <div class="flex justify-between font-bold border-t-2 border-black pt-2 mt-4 bg-gray-50 p-1 print:bg-transparent">
+                            <span>TOTAL AKTIVA</span>
+                            <span><?= formatRupiah($cash_balance + $inventory_value) ?></span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- PASIVA -->
+                <div>
+                    <h4 class="font-bold text-center bg-gray-100 p-1 mb-2 print:bg-transparent print:border-b print:border-black print:text-left">PASIVA (KEWAJIBAN & EKUITAS)</h4>
+                    <div class="space-y-2 text-sm print:text-base">
+                        <div class="font-bold text-gray-700 print:text-black">Ekuitas</div>
+                        <div class="flex justify-between pl-4">
+                            <span>Modal Disetor</span>
+                            <span class="font-mono"><?= formatRupiah($initial_capital) ?></span>
+                        </div>
+                        <div class="flex justify-between pl-4">
+                            <span>Laba Ditahan</span>
+                            <span class="font-mono"><?= formatRupiah($retained_earnings_total) ?></span>
+                        </div>
+                        <div class="flex justify-between font-bold border-t-2 border-black pt-2 mt-4 bg-gray-50 p-1 print:bg-transparent">
+                            <span>TOTAL PASIVA</span>
+                            <span><?= formatRupiah($liabilities + $initial_capital + $retained_earnings_total) ?></span>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
+        <?php endif; ?>
+
+        <!-- ARUS KAS -->
+        <?php if($report_type == 'ALL' || $report_type == 'ARUS_KAS'): ?>
+        <div class="report-section print-break">
+            <h3 class="font-bold text-lg mb-4 text-blue-800 border-b pb-2 print:text-black print:border-black print:text-base">4. LAPORAN ARUS KAS</h3>
+            <div class="space-y-2 text-sm print:text-base">
+                <div class="font-bold text-gray-700 print:text-black">ARUS KAS OPERASIONAL</div>
+                <div class="flex justify-between pl-4">
+                    <span>Penerimaan (Pendapatan)</span>
+                    <span><?= formatRupiah($revenue) ?></span>
+                </div>
+                <div class="flex justify-between pl-4 text-red-600 print:text-black">
+                    <span>Pembayaran Operasional</span>
+                    <span>(<?= formatRupiah($opex) ?>)</span>
+                </div>
+                <div class="flex justify-between pl-4 text-red-600 print:text-black">
+                    <span>Pembelian Stok/Aset</span>
+                    <span>(<?= formatRupiah($asset_purchase) ?>)</span>
+                </div>
+                <div class="flex justify-between font-bold border-t border-gray-300 pt-2 mt-2 print:border-black">
+                    <span>KENAIKAN KAS BERSIH</span>
+                    <span><?= formatRupiah($revenue - $opex - $asset_purchase) ?></span>
+                </div>
+                <div class="flex justify-between font-bold text-lg bg-gray-50 p-2 mt-2 print:bg-transparent print:border-t-2 print:border-double print:border-black">
+                    <span>SALDO KAS AKHIR</span>
+                    <span><?= formatRupiah($cash_balance) ?></span>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <!-- TANDA TANGAN (Hanya Print & PDF) -->
+        <div id="report_footer" class="hidden print:flex justify-between mt-12 pt-8">
+            <div class="text-center w-1/3">
+                <p class="mb-20">Disiapkan Oleh,</p>
+                <p class="font-bold border-t border-black inline-block px-8">Bag. Keuangan</p>
+            </div>
+            <div class="text-center w-1/3">
+                <p class="mb-20">Diperiksa Oleh,</p>
+                <p class="font-bold border-t border-black inline-block px-8">Manager</p>
+            </div>
+        </div>
+
     </div>
-    <?php endif; ?>
-
-    <!-- 3. ARUS KAS -->
-    <?php if ($report_type == 'ARUS_KAS'): ?>
-    <div class="max-w-3xl mx-auto space-y-6">
-        <!-- Arus Kas Masuk -->
-        <div>
-            <h4 class="font-bold text-green-700 bg-green-50 p-2 border-l-4 border-green-500">ARUS KAS MASUK (INFLOW)</h4>
-            <table class="w-full text-sm mt-2">
-                <?php 
-                $inflows = $pdo->query("SELECT f.date, a.name, f.amount, f.description FROM finance_transactions f JOIN accounts a ON f.account_id = a.id WHERE f.type='INCOME' AND f.date BETWEEN '$start_date' AND '$end_date'")->fetchAll();
-                foreach($inflows as $in): ?>
-                <tr class="border-b border-gray-100">
-                    <td class="py-1 w-24 text-gray-500"><?= $in['date'] ?></td>
-                    <td class="py-1 font-medium"><?= $in['name'] ?> <span class="text-xs text-gray-400 block"><?= $in['description'] ?></span></td>
-                    <td class="py-1 text-right"><?= formatRupiah($in['amount']) ?></td>
-                </tr>
-                <?php endforeach; ?>
-                <tr class="font-bold bg-gray-50">
-                    <td colspan="2" class="py-2 text-right">Total Masuk</td>
-                    <td class="py-2 text-right"><?= formatRupiah($period_income) ?></td>
-                </tr>
-            </table>
-        </div>
-
-        <!-- Arus Kas Keluar -->
-        <div>
-            <h4 class="font-bold text-red-700 bg-red-50 p-2 border-l-4 border-red-500">ARUS KAS KELUAR (OUTFLOW)</h4>
-            <table class="w-full text-sm mt-2">
-                <?php 
-                $outflows = $pdo->query("SELECT f.date, a.name, f.amount, f.description FROM finance_transactions f JOIN accounts a ON f.account_id = a.id WHERE f.type='EXPENSE' AND f.date BETWEEN '$start_date' AND '$end_date'")->fetchAll();
-                foreach($outflows as $out): ?>
-                <tr class="border-b border-gray-100">
-                    <td class="py-1 w-24 text-gray-500"><?= $out['date'] ?></td>
-                    <td class="py-1 font-medium"><?= $out['name'] ?> <span class="text-xs text-gray-400 block"><?= $out['description'] ?></span></td>
-                    <td class="py-1 text-right">(<?= formatRupiah($out['amount']) ?>)</td>
-                </tr>
-                <?php endforeach; ?>
-                 <tr class="font-bold bg-gray-50">
-                    <td colspan="2" class="py-2 text-right">Total Keluar</td>
-                    <td class="py-2 text-right">(<?= formatRupiah($period_expense) ?>)</td>
-                </tr>
-            </table>
-        </div>
-
-        <!-- Net Cash -->
-        <div class="flex justify-between font-bold text-xl border-t-2 border-black pt-4">
-            <span>KENAIKAN / (PENURUNAN) KAS BERSIH</span>
-            <span class="<?= $period_profit >= 0 ? 'text-blue-600' : 'text-red-600' ?>"><?= formatRupiah($period_profit) ?></span>
-        </div>
-    </div>
-    <?php endif; ?>
-
-    <!-- 4. PERUBAHAN MODAL -->
-    <?php if ($report_type == 'PERUBAHAN_MODAL'): ?>
-    <div class="max-w-2xl mx-auto space-y-4">
-        <?php
-        // Modal Awal (Sebelum tanggal start)
-        $income_before = getBalanceUntil($pdo, 'INCOME', date('Y-m-d', strtotime($start_date . ' -1 day')));
-        $expense_before = getBalanceUntil($pdo, 'EXPENSE', date('Y-m-d', strtotime($start_date . ' -1 day')));
-        $modal_awal_periode = $initial_capital + ($income_before - $expense_before);
-        $modal_akhir_periode = $modal_awal_periode + $period_profit;
-        ?>
-
-        <div class="flex justify-between py-2 border-b text-lg">
-            <span>Modal Awal (Per <?= date('d M Y', strtotime($start_date)) ?>)</span>
-            <span class="font-bold"><?= formatRupiah($modal_awal_periode) ?></span>
-        </div>
-
-        <div class="flex justify-between py-2 border-b text-lg text-green-700">
-            <span>Laba Bersih Periode Ini</span>
-            <span class="font-bold"><?= formatRupiah($period_profit) ?></span>
-        </div>
-
-        <div class="flex justify-between py-2 border-b text-lg text-red-700">
-            <span>Prive (Penarikan Modal)</span>
-            <span class="font-bold">Rp 0</span>
-        </div>
-
-        <div class="flex justify-between py-4 border-t-4 border-double border-gray-400 text-xl font-bold bg-gray-50 px-2 mt-4">
-            <span>Modal Akhir (Per <?= date('d M Y', strtotime($end_date)) ?>)</span>
-            <span class="text-blue-800"><?= formatRupiah($modal_akhir_periode) ?></span>
-        </div>
-    </div>
-    <?php endif; ?>
-
 </div>
+
+<script>
+function savePDF() {
+    const element = document.getElementById('report_content');
+    const header = document.getElementById('report_header');
+    const footer = document.getElementById('report_footer');
+    
+    // Tampilkan Header dan Footer sementara agar masuk ke PDF
+    header.classList.remove('hidden');
+    footer.classList.remove('hidden');
+    footer.classList.add('flex');
+
+    const opt = {
+        margin:       10,
+        filename:     'Laporan_Keuangan_Pajak_<?= date('Ymd') ?>.pdf',
+        image:        { type: 'jpeg', quality: 0.98 },
+        html2canvas:  { scale: 2 },
+        jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    };
+
+    const btn = event.currentTarget;
+    const oldText = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Proses...';
+    btn.disabled = true;
+
+    html2pdf().set(opt).from(element).save().then(() => {
+        // Kembalikan ke state awal (hide header/footer)
+        header.classList.add('hidden');
+        footer.classList.add('hidden');
+        footer.classList.remove('flex');
+        
+        btn.innerHTML = oldText;
+        btn.disabled = false;
+    });
+}
+</script>

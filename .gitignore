@@ -1,24 +1,26 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
+# System Files
 .DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+Thumbs.db
+
+# Config & Environment
+# config.php (Optional: Uncomment if you want to keep config private on public repos)
+# config.php
+
+# Uploads (User generated content)
+uploads/*
+!uploads/.gitkeep
+
+# Node Modules (Jika ada sisa development JS)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+
+# Backups
+*.sql
+*.zip
+*.rar

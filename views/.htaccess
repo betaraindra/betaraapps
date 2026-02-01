@@ -1,0 +1,4 @@
+# Prevent Direct Access to Views
+# Semua akses harus melalui router index.php
+Order Deny,Allow
+Deny from all

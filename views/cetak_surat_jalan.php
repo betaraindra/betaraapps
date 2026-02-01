@@ -2,19 +2,39 @@
 checkRole(['SUPER_ADMIN', 'ADMIN_GUDANG', 'ADMIN_KEUANGAN', 'MANAGER', 'SVP']);
 
 $id = $_GET['id'] ?? 0;
-// Ambil data detail transaksi
-$stmt = $pdo->prepare("SELECT i.*, p.sku, p.name as prod_name, p.unit, w.name as wh_name, w.location as wh_loc, u.username 
+
+$stmt = $pdo->prepare("SELECT i.reference, i.date, i.type, i.notes, 
+                              w.name as wh_name, w.location as wh_loc, 
+                              u.username 
                        FROM inventory_transactions i 
-                       JOIN products p ON i.product_id = p.id 
-                       JOIN warehouses w ON i.warehouse_id = w.id
-                       JOIN users u ON i.user_id = u.id
+                       LEFT JOIN warehouses w ON i.warehouse_id = w.id
+                       LEFT JOIN users u ON i.user_id = u.id
                        WHERE i.id = ?");
 $stmt->execute([$id]);
-$data = $stmt->fetch();
+$header = $stmt->fetch();
 
-if (!$data) die("Data transaksi tidak ditemukan.");
+if (!$header) die("Data transaksi tidak ditemukan (ID: $id).");
 
-// Ambil Pengaturan Perusahaan
+if (empty($header['reference']) || $header['reference'] == '-') {
+    $sql_items = "SELECT i.*, p.sku, p.name as prod_name, p.unit, w.name as origin_warehouse 
+                  FROM inventory_transactions i 
+                  JOIN products p ON i.product_id = p.id 
+                  LEFT JOIN warehouses w ON i.warehouse_id = w.id
+                  WHERE i.id = ?";
+    $stmt_items = $pdo->prepare($sql_items);
+    $stmt_items->execute([$id]);
+} else {
+    $sql_items = "SELECT i.*, p.sku, p.name as prod_name, p.unit, w.name as origin_warehouse 
+                  FROM inventory_transactions i 
+                  JOIN products p ON i.product_id = p.id 
+                  LEFT JOIN warehouses w ON i.warehouse_id = w.id
+                  WHERE i.reference = ? AND i.type = ? AND i.date = ?";
+    $stmt_items = $pdo->prepare($sql_items);
+    $stmt_items->execute([$header['reference'], $header['type'], $header['date']]);
+}
+
+$items = $stmt_items->fetchAll();
+
 $settings_query = $pdo->query("SELECT * FROM settings");
 $config = [];
 while ($row = $settings_query->fetch()) $config[$row['setting_key']] = $row['setting_value'];
@@ -22,73 +42,53 @@ while ($row = $settings_query->fetch()) $config[$row['setting_key']] = $row['set
 $company = $config['company_name'] ?? 'NAMA PERUSAHAAN';
 $address = $config['company_address'] ?? 'Alamat Perusahaan';
 $logo = $config['company_logo'] ?? '';
-$title = ($data['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI KELUAR';
+$title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI KELUAR';
 ?>
 <!DOCTYPE html>
 <html lang="id">
 <head>
     <meta charset="UTF-8">
-    <title>Cetak - <?= $data['reference'] ?></title>
-    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.0/dist/JsBarcode.all.min.js"></script>
+    <title>Cetak - <?= $header['reference'] ?></title>
+    <!-- Ganti library ke bwip-js untuk support Data Matrix -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bwip-js/3.4.4/bwip-js-min.js"></script>
     <style>
-        /* A4 Portrait Setting */
-        @page { size: A4 portrait; margin: 1cm; }
+        @media print {
+            @page { size: A4 portrait; margin: 0; }
+            body { margin: 1cm; }
+            .no-print { display: none !important; }
+        }
+
         body { font-family: Arial, sans-serif; font-size: 12px; line-height: 1.4; color: #000; margin: 0; padding: 20px; max-width: 210mm; margin: auto; display: flex; flex-direction: column; min-height: 95vh; }
-        
-        /* Layout Helpers */
         .w-full { width: 100%; }
         .text-center { text-align: center; }
         .text-right { text-align: right; }
         .text-bold { font-weight: bold; }
-        .mb-2 { margin-bottom: 8px; }
-        .mb-4 { margin-bottom: 16px; }
-        .border-b { border-bottom: 2px solid #000; }
-        
-        /* KOP SURAT */
         .kop-table { width: 100%; margin-bottom: 10px; border-bottom: 4px double #000; padding-bottom: 10px; }
         .kop-logo { width: 120px; text-align: center; vertical-align: middle; }
         .kop-logo img { max-width: 100px; max-height: 90px; }
         .kop-info { text-align: center; vertical-align: middle; padding: 0 10px; }
-        .kop-company { 
-            font-size: 24pt; 
-            font-weight: 900; 
-            text-transform: uppercase; 
-            margin-bottom: 5px; 
-            line-height: 1.1;
-            letter-spacing: 1px;
-        }
+        .kop-company { font-size: 24pt; font-weight: 900; text-transform: uppercase; margin-bottom: 5px; line-height: 1.1; letter-spacing: 1px; }
         .kop-addr { font-size: 11pt; line-height: 1.3; }
         .kop-npwp { font-size: 11pt; font-weight: bold; margin-top: 3px; }
         .kop-spacer { width: 120px; }
-
-        /* TITLE & INFO */
         .doc-title { text-align: center; font-size: 16px; font-weight: bold; text-decoration: underline; margin: 20px 0; text-transform: uppercase; }
         .info-table { width: 100%; margin-bottom: 15px; }
         .info-table td { padding: 3px 0; vertical-align: top; }
         .label-cell { width: 100px; font-weight: bold; }
         .val-cell { padding-left: 10px; }
-
-        /* MAIN TABLE */
         .data-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-        .data-table th, .data-table td { border: 1px solid #000; padding: 8px; }
+        .data-table th, .data-table td { border: 1px solid #000; padding: 5px; vertical-align: middle; }
         .data-table th { background-color: #f0f0f0; text-align: center; font-weight: bold; }
-        
-        /* FOOTER & SIGNATURE */
-        .content-wrapper { flex: 1; }
         .footer-wrapper { margin-top: auto; padding-top: 20px; }
-        
         .footer-note { font-size: 10px; font-style: italic; margin-bottom: 20px; }
         .signature-table { width: 100%; margin-top: 10px; margin-bottom: 20px; }
         .signature-table td { text-align: center; vertical-align: top; width: 33%; }
         .sig-box { height: 70px; }
         .sig-name { font-weight: bold; text-decoration: underline; }
-
         .barcode-footer { text-align: center; margin-top: 20px; padding-top: 10px; border-top: 1px dashed #ccc; }
-
-        /* Screen Only */
         .no-print { background: #333; color: #fff; padding: 10px; text-align: center; margin-bottom: 20px; border-radius: 5px; }
         .btn-print { background: #fff; color: #000; border: none; padding: 5px 15px; cursor: pointer; font-weight: bold; border-radius: 3px; }
-        @media print { .no-print { display: none; } }
+        canvas.barcode-canvas { max-width: 100%; height: auto; }
     </style>
 </head>
 <body>
@@ -99,7 +99,6 @@ $title = ($data['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI K
     </div>
 
     <div class="content-wrapper">
-        <!-- KOP SURAT (Updated Style) -->
         <table class="kop-table">
             <tr>
                 <td class="kop-logo">
@@ -124,26 +123,24 @@ $title = ($data['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI K
             <tr>
                 <td class="label-cell">No. Referensi</td>
                 <td style="width: 10px;">:</td>
-                <td class="val-cell text-bold"><?= $data['reference'] ?></td>
-                
+                <td class="val-cell text-bold"><?= $header['reference'] ?></td>
                 <td class="label-cell" style="padding-left: 30px;">Tanggal</td>
                 <td style="width: 10px;">:</td>
-                <td class="val-cell"><?= date('d F Y', strtotime($data['date'])) ?></td>
+                <td class="val-cell"><?= date('d F Y', strtotime($header['date'])) ?></td>
             </tr>
             <tr>
-                <td class="label-cell">Lokasi Gudang</td>
+                <td class="label-cell">Admin Input</td>
                 <td>:</td>
-                <td class="val-cell"><?= $data['wh_name'] ?> (<?= $data['wh_loc'] ?>)</td>
-                
-                <td class="label-cell" style="padding-left: 30px;">Admin</td>
+                <td class="val-cell"><?= $header['username'] ?? 'System' ?></td>
+                <td class="label-cell" style="padding-left: 30px;">Tipe</td>
                 <td>:</td>
-                <td class="val-cell"><?= $data['username'] ?></td>
+                <td class="val-cell"><?= $header['type'] == 'IN' ? 'Barang Masuk' : 'Barang Keluar' ?></td>
             </tr>
-            <?php if($data['notes']): ?>
+            <?php if($header['notes']): ?>
             <tr>
                 <td class="label-cell">Keterangan</td>
                 <td>:</td>
-                <td class="val-cell" colspan="4"><?= $data['notes'] ?></td>
+                <td class="val-cell" colspan="4"><?= $header['notes'] ?></td>
             </tr>
             <?php endif; ?>
         </table>
@@ -151,82 +148,88 @@ $title = ($data['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI K
         <table class="data-table">
             <thead>
                 <tr>
-                    <th style="width: 40px;">No</th>
+                    <th style="width: 30px;">No</th>
                     <th style="width: 120px;">SKU / Barcode</th>
                     <th>Nama Barang</th>
-                    <th style="width: 80px;">Jumlah</th>
-                    <th style="width: 80px;">Satuan</th>
-                    <th>Ceklis</th>
+                    <th style="width: 100px;">Gudang Asal</th>
+                    <th style="width: 50px;">Jml</th>
+                    <th style="width: 50px;">Unit</th>
+                    <th style="width: 40px;">Cek</th>
                 </tr>
             </thead>
             <tbody>
+                <?php 
+                $no = 1; 
+                foreach($items as $item): 
+                    $row_id = "bc_" . $no; 
+                ?>
                 <tr>
-                    <td class="text-center">1</td>
-                    <td class="text-center font-mono"><?= $data['sku'] ?></td>
-                    <td><?= $data['prod_name'] ?></td>
-                    <td class="text-center text-bold" style="font-size: 14px;"><?= $data['quantity'] ?></td>
-                    <td class="text-center"><?= $data['unit'] ?></td>
+                    <td class="text-center"><?= $no++ ?></td>
+                    <td class="text-center" style="padding: 4px;">
+                        <!-- BARCODE (Code 128) -->
+                        <canvas id="<?= $row_id ?>" class="barcode-canvas"></canvas>
+                    </td>
+                    <td><?= $item['prod_name'] ?></td>
+                    <td class="text-center"><?= $item['origin_warehouse'] ?? '-' ?></td>
+                    <td class="text-center text-bold" style="font-size: 14px;"><?= $item['quantity'] ?></td>
+                    <td class="text-center"><?= $item['unit'] ?></td>
                     <td class="text-center">▢</td>
                 </tr>
-                <!-- Tambahkan baris kosong jika perlu manual input -->
-                <?php for($i=0; $i<3; $i++): ?>
-                <tr>
-                    <td style="height: 25px;"></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                </tr>
-                <?php endfor; ?>
+                <?php endforeach; ?>
             </tbody>
         </table>
     </div>
 
-    <!-- FOOTER SECTION -->
     <div class="footer-wrapper">
         <div class="footer-note">
-            * Harap diperiksa kembali kondisi barang. Barang yang sudah diterima/keluar tidak dapat ditukar kecuali perjanjian khusus.<br>
+            * Harap diperiksa kembali kondisi barang.<br>
             * Dokumen ini sah jika disertai tanda tangan penanggung jawab.
         </div>
 
         <table class="signature-table">
             <tr>
-                <td>
-                    Dibuat Oleh,<br>
-                    <div class="sig-box"></div>
-                    <div class="sig-name"><?= $data['username'] ?></div>
-                    <div>Admin Gudang</div>
-                </td>
-                <td>
-                    Pengirim / Supir,<br>
-                    <div class="sig-box"></div>
-                    <div class="sig-line"></div>
-                </td>
-                <td>
-                    Penerima,<br>
-                    <div class="sig-box"></div>
-                    <div class="sig-line"></div>
-                </td>
+                <td>Dibuat Oleh,<br><div class="sig-box"></div><div class="sig-name"><?= $header['username'] ?? 'Admin' ?></div></td>
+                <td>Pengirim / Supir,<br><div class="sig-box"></div><div class="sig-line"></div></td>
+                <td>Penerima,<br><div class="sig-box"></div><div class="sig-line"></div></td>
             </tr>
         </table>
 
-        <!-- Barcode Moved to Bottom -->
         <div class="barcode-footer">
-            <svg id="barcode_ref" style="height: 40px; max-width: 100%;"></svg>
+            <div style="font-size: 10px; margin-bottom: 2px;">Ref Surat Jalan:</div>
+            <canvas id="barcode_ref" class="barcode-canvas"></canvas>
         </div>
     </div>
 
     <script>
+        // Render Barcode Referensi Surat Jalan (CODE128)
         try {
-            JsBarcode("#barcode_ref", "<?= $data['reference'] ?>", {
-                format: "CODE128",
-                displayValue: true,
-                height: 40,
-                fontSize: 10,
-                margin: 0
+            bwipjs.toCanvas('barcode_ref', {
+                bcid:        'code128',
+                text:        '<?= $header['reference'] ?>',
+                scale:       2,
+                height:      10,
+                includetext: true,
+                textxalign:  'center',
             });
         } catch(e) {}
+
+        // Render Barcode Per Item (CODE 128 dengan Teks)
+        <?php 
+        $no = 1;
+        foreach($items as $item): 
+            $row_id = "bc_" . $no++;
+        ?>
+            try {
+                bwipjs.toCanvas('<?= $row_id ?>', {
+                    bcid:        'code128', // Ganti ke Code 128 (1D)
+                    text:        '<?= $item['sku'] ?>',
+                    scale:       2,
+                    height:      10,
+                    includetext: true, // Tampilkan teks di bawah barcode
+                    textxalign:  'center'
+                });
+            } catch(e) {}
+        <?php endforeach; ?>
     </script>
 </body>
 </html>

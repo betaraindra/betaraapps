@@ -5,8 +5,8 @@ checkRole(['SUPER_ADMIN', 'ADMIN_GUDANG', 'MANAGER', 'SVP']);
 $products = $pdo->query("SELECT id, sku, name, sell_price, unit FROM products ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
 ?>
 
-<!-- Load JsBarcode -->
-<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.0/dist/JsBarcode.all.min.js"></script>
+<!-- Import bwip-js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bwip-js/3.4.4/bwip-js-min.js"></script>
 
 <!-- STYLE KHUSUS PRINT LABEL 50mm x 30mm -->
 <style>
@@ -21,18 +21,19 @@ $products = $pdo->query("SELECT id, sku, name, sell_price, unit FROM products OR
             align-items: center; justify-content: center; text-align: center;
             overflow: hidden; font-family: Arial, Helvetica, sans-serif;
         }
-        .lbl-name { font-size: 8pt; font-weight: bold; line-height: 1; margin-bottom: 2px; max-height: 2.2em; overflow: hidden; width: 100%; padding: 0 2px; }
-        .lbl-price { font-size: 9pt; font-weight: bold; margin-top: 2px; }
-        svg.barcode-svg { width: 95% !important; height: 35px !important; }
+        .lbl-sku { font-size: 10pt; font-weight: bold; font-family: 'Courier New', Courier, monospace; margin-bottom: 2px; }
+        .lbl-name { font-size: 8pt; font-weight: bold; line-height: 1; margin-top: 2px; max-height: 2.2em; overflow: hidden; width: 100%; padding: 0 2px; }
+        .lbl-price { font-size: 8pt; font-weight: bold; margin-top: 1px; }
+        canvas.barcode-canvas { max-width: 90% !important; max-height: 15mm !important; }
     }
     #print_area { display: none; }
 </style>
 
 <div class="main-content">
     <div class="flex justify-between items-center mb-6">
-        <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-qrcode text-blue-600"></i> Cetak Label Barcode</h2>
+        <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-qrcode text-blue-600"></i> Cetak Label (Data Matrix)</h2>
         <div class="text-sm text-gray-500 bg-yellow-100 p-2 rounded border border-yellow-200">
-            <i class="fas fa-info-circle"></i> Layout khusus Printer Thermal ukuran <b>50mm x 30mm</b>.
+            <i class="fas fa-info-circle"></i> Layout khusus Printer Thermal ukuran <b>50mm x 30mm</b>. Barcode tipe kotak (Data Matrix).
         </div>
     </div>
 
@@ -96,9 +97,6 @@ $products = $pdo->query("SELECT id, sku, name, sell_price, unit FROM products OR
                     <div class="flex gap-2">
                         <button onclick="addCustomToQueue()" class="flex-1 bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 text-sm">
                             <i class="fas fa-plus"></i> Antrian
-                        </button>
-                        <button onclick="downloadCustomBarcode()" class="w-12 bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 text-sm" title="Download Gambar Barcode">
-                            <i class="fas fa-image"></i>
                         </button>
                     </div>
                 </div>
@@ -179,21 +177,6 @@ async function generateCustomSku() {
         const data = await res.json();
         if(data.sku) document.getElementById('c_sku').value = data.sku;
     } catch(e) { alert("Gagal generate SKU"); }
-}
-
-function downloadCustomBarcode() {
-    const sku = document.getElementById('c_sku').value;
-    const name = document.getElementById('c_name').value || 'barcode';
-    if(!sku) return alert("Isi Kode/SKU dulu!");
-
-    const canvas = document.createElement('canvas');
-    try {
-        JsBarcode(canvas, sku, { format: "CODE128", width: 2, height: 60, displayValue: true });
-        const link = document.createElement('a');
-        link.download = name.replace(/\s+/g, '_') + '_' + sku + '.png';
-        link.href = canvas.toDataURL("image/png");
-        link.click();
-    } catch(e) { alert("Gagal generate gambar barcode"); }
 }
 
 function addCustomToQueue() {
@@ -294,20 +277,34 @@ function printLabels() {
             const sticker = document.createElement('div');
             sticker.className = 'label-sticker';
             
+            // SKU DIATAS
+            const skuDiv = document.createElement('div');
+            skuDiv.className = 'lbl-sku';
+            skuDiv.innerText = item.sku;
+            sticker.appendChild(skuDiv);
+
+            // DATA MATRIX BARCODE (Canvas)
+            const canvas = document.createElement('canvas');
+            canvas.className = 'barcode-canvas';
+            sticker.appendChild(canvas);
+            
+            try {
+                bwipjs.toCanvas(canvas, {
+                    bcid:        'datamatrix',
+                    text:        item.sku,
+                    scale:       3,
+                    height:      10,
+                    includetext: false,
+                });
+            } catch(e) {}
+
+            // NAMA BARANG
             const nameDiv = document.createElement('div');
             nameDiv.className = 'lbl-name';
             nameDiv.innerText = item.name;
             sticker.appendChild(nameDiv);
 
-            const svg = document.createElement('svg');
-            svg.className = 'barcode-svg';
-            try {
-                JsBarcode(svg, item.sku, {
-                    format: "CODE128", width: 2, height: 35, displayValue: true, fontSize: 12, margin: 0, fontOptions: "bold"
-                });
-            } catch(e) {}
-            sticker.appendChild(svg);
-
+            // HARGA
             const priceDiv = document.createElement('div');
             priceDiv.className = 'lbl-price';
             priceDiv.innerText = 'Rp ' + new Intl.NumberFormat('id-ID').format(item.sell_price);

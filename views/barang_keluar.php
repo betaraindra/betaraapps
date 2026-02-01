@@ -1,451 +1,433 @@
 <?php
-checkRole(['SUPER_ADMIN', 'ADMIN_GUDANG', 'MANAGER']);
+checkRole(['SUPER_ADMIN', 'ADMIN_GUDANG', 'MANAGER', 'SVP']);
 
-// --- PROSES SIMPAN TRANSAKSI (BATCH / MULTI ITEM) ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) {
-    
-    $date = $_POST['date'];
-    $warehouse_id = $_POST['warehouse_id'];
-    $reference = $_POST['reference'];
-    $out_type = $_POST['out_type'];
-    
-    // Data Cart dikirim dalam format JSON string
-    $cart_items = json_decode($_POST['cart_json'], true);
+// --- LOGIKA BATAL / RETUR TRANSAKSI ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cancel_id'])) {
+    validate_csrf();
+    $cancel_id = $_POST['cancel_id'];
 
-    if (empty($cart_items)) {
-        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Daftar barang masih kosong!'];
-    } else {
-        $pdo->beginTransaction();
-        try {
-            $total_success = 0;
-            $first_trx_id = 0;
+    $pdo->beginTransaction();
+    try {
+        // 1. Ambil Data Transaksi Lama
+        $stmt = $pdo->prepare("SELECT product_id, quantity, reference, type FROM inventory_transactions WHERE id = ?");
+        $stmt->execute([$cancel_id]);
+        $trx = $stmt->fetch();
 
-            foreach ($cart_items as $item) {
-                $sku = $item['sku'];
-                $qty = (int)$item['qty'];
-                $notes = $item['notes'];
+        if ($trx && $trx['type'] == 'OUT') {
+            // 2. Kembalikan Stok (Rollback: Tambah Stok)
+            $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?")
+                ->execute([$trx['quantity'], $trx['product_id']]);
 
-                // 1. Validasi Stok Terkini di Database (Penting untuk mencegah race condition)
-                $stmt = $pdo->prepare("SELECT id, stock, buy_price, sell_price, name FROM products WHERE sku = ? FOR UPDATE");
-                $stmt->execute([$sku]);
-                $p = $stmt->fetch();
+            // 3. Hapus Transaksi Inventori
+            $pdo->prepare("DELETE FROM inventory_transactions WHERE id = ?")->execute([$cancel_id]);
 
-                if (!$p) throw new Exception("Barang SKU $sku tidak ditemukan.");
-                if ($p['stock'] < $qty) throw new Exception("Stok barang {$p['name']} tidak cukup! Sisa: {$p['stock']}, Minta: $qty");
-
-                // 2. Simpan Inventory Transaction
-                $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, notes, reference, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)")
-                    ->execute([$date, $p['id'], $warehouse_id, $qty, $notes, $reference, $_SESSION['user_id']]);
-                
-                if($first_trx_id === 0) $first_trx_id = $pdo->lastInsertId();
-
-                // 3. Update Stok Produk
-                $pdo->prepare("UPDATE products SET stock=stock-? WHERE id=?")->execute([$qty, $p['id']]);
-
-                // 4. Catat Keuangan (Jika Eksternal)
-                if ($out_type == 'EXTERNAL') {
-                    $accSales = $pdo->query("SELECT id FROM accounts WHERE code='1001'")->fetch();
-                    $accHpp = $pdo->query("SELECT id FROM accounts WHERE code='2001'")->fetch();
-                    
-                    // Catat Penjualan (INCOME)
-                    if ($accSales) $pdo->prepare("INSERT INTO finance_transactions (date,type,account_id,amount,description,user_id) VALUES (?, 'INCOME', ?, ?, ?, ?)")
-                        ->execute([$date, $accSales['id'], $qty * $p['sell_price'], "Penjualan: $sku ($qty x ".number_format($p['sell_price']).") Ref: $reference", $_SESSION['user_id']]);
-                    
-                    // Catat HPP (EXPENSE)
-                    if ($accHpp) $pdo->prepare("INSERT INTO finance_transactions (date,type,account_id,amount,description,user_id) VALUES (?, 'EXPENSE', ?, ?, ?, ?)")
-                        ->execute([$date, $accHpp['id'], $qty * $p['buy_price'], "HPP: $sku ($qty x ".number_format($p['buy_price']).") Ref: $reference", $_SESSION['user_id']]);
-                }
-                
-                logActivity($pdo, 'BARANG_KELUAR', "Keluar: $sku ($qty) - " . $p['name']);
-                $total_success++;
-            }
+            // 4. Catat Log
+            logActivity($pdo, 'RETUR_BARANG', "Batal/Retur Barang Keluar: " . $trx['reference'] . " (Stok kembali +{$trx['quantity']})");
 
             $pdo->commit();
-            $_SESSION['flash'] = ['type'=>'success', 'message'=>"$total_success Barang Berhasil Dikeluarkan! <a href='?page=cetak_surat_jalan&id=$first_trx_id' target='_blank' class='underline font-bold'>Cetak Surat Jalan</a>"];
-        } catch(Exception $e) { 
-            $pdo->rollBack(); 
-            $_SESSION['flash'] = ['type'=>'error', 'message'=>$e->getMessage()]; 
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>'Transaksi berhasil dibatalkan. Stok telah dikembalikan ke gudang.'];
+        } else {
+            throw new Exception("Data transaksi tidak valid atau bukan barang keluar.");
         }
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal membatalkan: ' . $e->getMessage()];
     }
     echo "<script>window.location='?page=barang_keluar';</script>";
     exit;
 }
 
-// GET DATA GUDANG
-$warehouses = $pdo->query("SELECT * FROM warehouses")->fetchAll();
+// --- LOGIKA SIMPAN TRANSAKSI (PHP) ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) {
+    validate_csrf();
+    
+    $cart_json = $_POST['cart_json'];
+    $cart = json_decode($cart_json, true);
+    
+    $date = $_POST['date'];
+    $wh_id = $_POST['warehouse_id']; // Gudang Asal
+    $dest_wh_id = !empty($_POST['dest_warehouse_id']) ? $_POST['dest_warehouse_id'] : null; // Gudang Tujuan (Opsional)
+    
+    $ref = $_POST['reference'];
+    $out_type = $_POST['out_type']; // INTERNAL / EXTERNAL
+    
+    // Validasi Server Side
+    if (empty($wh_id)) {
+        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gudang Asal harus dipilih.'];
+    } elseif (empty($out_type)) {
+        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Jenis Transaksi harus dipilih.'];
+    } elseif (empty($cart) || !is_array($cart)) {
+        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Keranjang transaksi kosong!'];
+    } else {
+        $pdo->beginTransaction();
+        try {
+            // Ambil Nama Gudang Asal
+            $stmtWh = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
+            $stmtWh->execute([$wh_id]);
+            $wh_name = $stmtWh->fetchColumn();
+            
+            // Ambil Nama Gudang Tujuan (Jika ada)
+            $dest_wh_name = '';
+            if ($dest_wh_id) {
+                $stmtDest = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
+                $stmtDest->execute([$dest_wh_id]);
+                $dest_wh_name = $stmtDest->fetchColumn();
+            }
 
-// GET RIWAYAT BARANG KELUAR (10 Terakhir)
-$history = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, u.username 
-                        FROM inventory_transactions i 
-                        JOIN products p ON i.product_id = p.id 
-                        JOIN users u ON i.user_id = u.id 
-                        WHERE i.type = 'OUT' 
-                        ORDER BY i.created_at DESC LIMIT 10")->fetchAll();
+            // Tag Wilayah untuk Finance
+            $wilayah_tag_origin = $wh_name ? " [Wilayah: $wh_name]" : "";
+            $wilayah_tag_dest = $dest_wh_name ? " [Wilayah: $dest_wh_name]" : "";
+
+            // Validasi Transfer
+            if ($out_type === 'INTERNAL' && $dest_wh_id && $dest_wh_id == $wh_id) {
+                throw new Exception("Gudang Tujuan tidak boleh sama dengan Gudang Asal.");
+            }
+
+            $count = 0;
+            foreach ($cart as $item) {
+                // 1. Cek Stok & Ambil Info Harga
+                $stmt = $pdo->prepare("SELECT id, stock, sell_price, buy_price, name FROM products WHERE sku = ?");
+                $stmt->execute([$item['sku']]);
+                $prod = $stmt->fetch();
+                
+                if (!$prod) throw new Exception("Produk dengan SKU {$item['sku']} tidak ditemukan.");
+                
+                if ($prod['stock'] < $item['qty']) {
+                    throw new Exception("Stok {$item['name']} tidak mencukupi! (Sisa: {$prod['stock']})");
+                }
+                
+                // 2. Kurangi Stok Global (Master Produk)
+                $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$item['qty'], $prod['id']]);
+                
+                // 3. Catat Transaksi OUT (Inventori Asal)
+                $notes_out = $item['notes'];
+                if($dest_wh_id) $notes_out .= " (Mutasi ke $dest_wh_name)";
+                
+                $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)")
+                    ->execute([$date, $prod['id'], $wh_id, $item['qty'], $ref, $notes_out, $_SESSION['user_id']]);
+                
+                // Hitung Nilai Transaksi
+                $total_buy_val = $item['qty'] * $prod['buy_price'];  // Nilai Modal/Aset
+                $total_sell_val = $item['qty'] * $prod['sell_price']; // Nilai Jual
+
+                // 4. LOGIKA MUTASI ANTAR GUDANG (Internal Transfer)
+                if ($out_type === 'INTERNAL' && !empty($dest_wh_id)) {
+                    // A. Update Stok Global (Kembalikan stok, karena hanya pindah lokasi)
+                    $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?")->execute([$item['qty'], $prod['id']]);
+                    
+                    // B. Catat Transaksi IN (Inventori Tujuan)
+                    $ref_in = $ref . '-TRF';
+                    $notes_in = "Mutasi Masuk dari " . $wh_name;
+                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'IN', ?, ?, ?, ?, ?, ?)")
+                        ->execute([$date, $prod['id'], $dest_wh_id, $item['qty'], $ref_in, $notes_in, $_SESSION['user_id']]);
+
+                    // C. Catat Transaksi Keuangan (Opsional: Nilai Transfer antar Wilayah)
+                    if ($total_buy_val > 0) {
+                        // 1. Pengeluaran Wilayah Asal (Account 2009)
+                        $acc_out_id = $pdo->query("SELECT id FROM accounts WHERE code = '2009'")->fetchColumn();
+                        if ($acc_out_id) {
+                            $desc_trf_out = "Mutasi Keluar: {$prod['name']} ke $dest_wh_name{$wilayah_tag_origin}";
+                            $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, 'EXPENSE', ?, ?, ?, ?)")
+                                ->execute([$date, $acc_out_id, $total_buy_val, $desc_trf_out, $_SESSION['user_id']]);
+                        }
+
+                        // 2. Pemasukan Wilayah Tujuan (Account 1004)
+                        $acc_in_id = $pdo->query("SELECT id FROM accounts WHERE code = '1004'")->fetchColumn();
+                        if ($acc_in_id) {
+                            $desc_trf_in = "Mutasi Masuk: {$prod['name']} dari $wh_name{$wilayah_tag_dest}";
+                            $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, 'INCOME', ?, ?, ?, ?)")
+                                ->execute([$date, $acc_in_id, $total_buy_val, $desc_trf_in, $_SESSION['user_id']]);
+                        }
+                    }
+                }
+
+                // 5. LOGIKA PENJUALAN (EXTERNAL)
+                elseif ($out_type === 'EXTERNAL') {
+                    
+                    // A. Transaksi Keuntungan/Omzet (INCOME - Harga Jual)
+                    if ($total_sell_val > 0) {
+                        $acc_rev_id = $pdo->query("SELECT id FROM accounts WHERE code = '1001'")->fetchColumn(); // Penjualan Produk
+                        if ($acc_rev_id) {
+                            $desc_rev = "[PENJUALAN] {$prod['name']} ({$item['qty']} unit). Ref: $ref{$wilayah_tag_origin}";
+                            $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, 'INCOME', ?, ?, ?, ?)")
+                                ->execute([$date, $acc_rev_id, $total_sell_val, $desc_rev, $_SESSION['user_id']]);
+                        }
+                    }
+
+                    // B. Transaksi HPP (DINONAKTIFKAN UNTUK KAS)
+                    // HPP dihitung secara virtual di laporan Laba Rugi berdasarkan Barang Keluar.
+                    // Hal ini mencegah saldo kas berkurang 2x (saat beli stok & saat jual).
+                }
+                
+                // 6. LOGIKA PEMAKAIAN INTERNAL
+                elseif ($out_type === 'INTERNAL' && empty($dest_wh_id)) {
+                    if ($total_buy_val > 0) {
+                        $acc_op_id = $pdo->query("SELECT id FROM accounts WHERE code = '2002'")->fetchColumn(); // Beban Ops
+                        if ($acc_op_id) {
+                            $desc_use = "[PEMAKAIAN] {$prod['name']} ({$item['qty']} unit). Ref: $ref{$wilayah_tag_origin}";
+                            $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, 'EXPENSE', ?, ?, ?, ?)")
+                                ->execute([$date, $acc_op_id, $total_buy_val, $desc_use, $_SESSION['user_id']]);
+                        }
+                    }
+                }
+
+                $count++;
+            }
+            
+            $pdo->commit();
+            
+            $msg = "$count item berhasil diproses.";
+            if ($out_type === 'INTERNAL' && $dest_wh_id) $msg .= " Mutasi stok dan keuangan wilayah tercatat.";
+            elseif ($out_type === 'EXTERNAL') $msg .= " Penjualan (Omzet) tercatat.";
+            
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>$msg];
+            echo "<script>window.location='?page=barang_keluar';</script>";
+            exit;
+            
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: '.$e->getMessage()];
+        }
+    }
+}
+
+// ... SISA CODE UI TETAP SAMA ...
+// Ambil data Warehouses & History seperti biasa
+$warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
+$recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_name FROM inventory_transactions i JOIN products p ON i.product_id = p.id JOIN warehouses w ON i.warehouse_id = w.id WHERE i.type = 'OUT' ORDER BY i.created_at DESC LIMIT 10")->fetchAll();
+$app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
 ?>
 
-<div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
-    <!-- KOLOM KIRI: FORM INPUT -->
-    <div class="xl:col-span-2">
-        <div class="bg-white p-6 rounded-lg shadow">
-            <div class="flex justify-between items-center mb-6 border-b pb-4">
-                <h3 class="font-bold text-xl text-red-700"><i class="fas fa-sign-out-alt"></i> Input Barang Keluar</h3>
-                <div class="flex gap-2">
-                     <!-- Tombol Manual Focus untuk USB Scanner -->
-                     <button onclick="document.getElementById('sku_input').focus()" class="bg-gray-200 text-gray-700 px-3 py-2 rounded shadow hover:bg-gray-300 transition text-sm">
-                        <i class="fas fa-barcode"></i> USB Mode
-                    </button>
-                    <!-- Tombol Kamera -->
-                    <button onclick="startScan()" class="bg-indigo-600 text-white px-4 py-2 rounded shadow hover:bg-indigo-700 transition text-sm">
-                        <i class="fas fa-camera"></i> Scan Kamera
-                    </button>
-                </div>
-            </div>
+<!-- UI HALAMAN -->
+<div class="space-y-6">
+    <div class="bg-white p-6 rounded-lg shadow">
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 border-b pb-4 gap-4">
+            <h3 class="font-bold text-xl text-red-700 flex items-center gap-2">
+                <i class="fas fa-dolly"></i> Input Barang Keluar / Mutasi / Penjualan
+            </h3>
             
-            <!-- Scanner Area (Kamera) -->
-            <div id="scanner_area" class="hidden mb-6 bg-black rounded-lg relative overflow-hidden shadow-inner border-4 border-gray-800">
-                <div id="reader" class="w-full h-64 md:h-80 bg-black"></div>
-                
-                <!-- Controls Overlay -->
-                <div class="absolute top-2 right-2 z-10 flex flex-col gap-2">
-                    <button onclick="stopScan()" class="bg-red-600 text-white w-10 h-10 rounded-full shadow hover:bg-red-700 flex items-center justify-center">
-                        <i class="fas fa-times"></i>
-                    </button>
-                    <!-- Tombol Flash -->
-                    <button id="btn_flash" onclick="toggleFlash()" class="hidden bg-yellow-400 text-black w-10 h-10 rounded-full shadow hover:bg-yellow-500 flex items-center justify-center">
-                        <i class="fas fa-bolt"></i>
-                    </button>
-                </div>
-                
-                <div class="absolute bottom-4 left-0 right-0 text-center pointer-events-none">
-                    <span class="bg-black bg-opacity-50 text-white px-4 py-1 rounded-full text-xs">Arahkan kamera ke Barcode</span>
-                </div>
+            <div class="flex gap-2 flex-wrap">
+                <button type="button" onclick="activateUSB()" class="bg-gray-700 text-white px-3 py-2 rounded shadow hover:bg-gray-800 transition text-sm flex items-center gap-2" title="Scanner USB / Keyboard">
+                    <i class="fas fa-keyboard"></i> USB Mode
+                </button>
+                <input type="file" id="scan_image_file" accept="image/*" capture="environment" class="hidden" onchange="handleFileScan(this)">
+                <button type="button" onclick="document.getElementById('scan_image_file').click()" class="bg-purple-600 text-white px-3 py-2 rounded shadow hover:bg-purple-700 transition text-sm flex items-center gap-2" title="Upload Foto Barcode">
+                    <i class="fas fa-camera"></i> Foto Scan
+                </button>
+                <button type="button" onclick="initCamera()" class="bg-indigo-600 text-white px-3 py-2 rounded shadow hover:bg-indigo-700 transition text-sm flex items-center gap-2" title="Kamera Webcam / HP">
+                    <i class="fas fa-video"></i> Live Scan
+                </button>
             </div>
+        </div>
 
-            <!-- FORM UTAMA -->
-            <form method="POST" id="form_transaction" onsubmit="return validateCart()">
-                <input type="hidden" name="save_transaction" value="1">
-                <input type="hidden" name="cart_json" id="cart_json">
+        <!-- Scanner & Form Section (Tidak berubah signifikan secara UI, hanya logic PHP di atas) -->
+        <!-- Area Scanner Live -->
+        <div id="scanner_area" class="hidden mb-6 bg-black rounded-lg relative overflow-hidden shadow-inner border-4 border-gray-800">
+            <div class="absolute top-2 left-2 z-20">
+                <select id="camera_select" class="bg-white text-gray-800 text-xs py-1 px-2 rounded shadow border border-gray-300 focus:outline-none"><option value="">Memuat Kamera...</option></select>
+            </div>
+            <div id="reader" class="w-full h-64 md:h-80 bg-black"></div>
+            <div class="absolute top-2 right-2 z-10 flex flex-col gap-2">
+                <button type="button" onclick="stopScan()" class="bg-red-600 text-white w-10 h-10 rounded-full shadow hover:bg-red-700 flex items-center justify-center"><i class="fas fa-times"></i></button>
+                <button type="button" id="btn_flash" onclick="toggleFlash()" class="hidden bg-yellow-400 text-black w-10 h-10 rounded-full shadow hover:bg-yellow-500 flex items-center justify-center border-2 border-yellow-600"><i class="fas fa-bolt"></i></button>
+            </div>
+        </div>
+        
+        <form method="POST" id="form_transaction" onsubmit="return validateCart()">
+            <?= csrf_field() ?>
+            <input type="hidden" name="save_transaction" value="1">
+            <input type="hidden" name="cart_json" id="cart_json">
 
-                <!-- 1. HEADER INFORMASI (Berlaku untuk semua barang) -->
-                <div class="bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6">
-                    <h4 class="font-bold text-gray-700 mb-3 text-sm uppercase tracking-wide border-b pb-1">Informasi Umum</h4>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-xs font-bold text-gray-600 mb-1">Tanggal</label>
-                            <input type="date" name="date" id="trx_date" value="<?= date('Y-m-d') ?>" class="w-full border p-2 rounded text-sm focus:ring-1 focus:ring-red-500">
+            <div class="bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-bold text-gray-600 mb-1">Tanggal</label>
+                        <input type="date" name="date" id="trx_date" value="<?= date('Y-m-d') ?>" class="w-full border p-2 rounded text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-600 mb-1">No. Referensi</label>
+                        <div class="flex gap-1">
+                            <input type="text" name="reference" id="reference_input" class="w-full border p-2 rounded text-sm uppercase font-bold" required>
+                            <button type="button" id="btn_auto_ref" onclick="generateReference()" class="bg-gray-200 px-3 rounded text-gray-600 hover:bg-gray-300"><i class="fas fa-magic"></i></button>
                         </div>
+                    </div>
+                    
+                    <div class="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 border-t pt-4 mt-2">
                         <div>
-                            <label class="block text-xs font-bold text-gray-600 mb-1">Asal Gudang</label>
-                            <select name="warehouse_id" class="w-full border p-2 rounded text-sm bg-white focus:ring-1 focus:ring-red-500">
+                            <label class="block text-xs font-bold text-gray-600 mb-1">Dari Gudang Asal <span class="text-red-500">*</span></label>
+                            <select name="warehouse_id" id="warehouse_id" class="w-full border p-2 rounded text-sm bg-white font-bold text-gray-800" onchange="toggleDestWarehouse()" required>
+                                <option value="" selected disabled>-- Pilih Gudang Asal --</option>
                                 <?php foreach($warehouses as $w): ?>
                                     <option value="<?= $w['id'] ?>"><?= $w['name'] ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </div>
-                        <div>
-                            <label class="block text-xs font-bold text-gray-600 mb-1">No. Referensi / Surat Jalan</label>
-                            <div class="flex gap-1">
-                                <input type="text" name="reference" id="reference_input" class="w-full border p-2 rounded text-sm uppercase font-bold" placeholder="Auto Generate..." required>
-                                <button type="button" onclick="generateReference()" class="bg-gray-200 px-3 rounded text-gray-600 hover:bg-gray-300"><i class="fas fa-magic"></i></button>
-                            </div>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-bold text-gray-600 mb-1">Jenis Pengeluaran</label>
-                            <select name="out_type" class="w-full border p-2 rounded text-sm bg-white">
-                                <option value="INTERNAL">Mutasi / Internal</option>
-                                <option value="EXTERNAL">Penjualan / Eksternal</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 2. INPUT BARANG (Cart Adder) -->
-                <div class="bg-blue-50 p-4 rounded-lg border border-blue-200 mb-6 relative">
-                    <h4 class="font-bold text-blue-800 mb-3 text-sm uppercase tracking-wide border-b border-blue-200 pb-1">Input Barang</h4>
-                    
-                    <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
-                        <div class="md:col-span-4">
-                            <label class="block text-xs font-bold text-gray-600 mb-1">Scan / Input SKU (USB Ready)</label>
-                            <div class="flex gap-1">
-                                <!-- Autofocus & Enter listener for USB Scanner -->
-                                <input type="text" id="sku_input" class="w-full border-2 border-blue-500 p-2 rounded font-mono font-bold text-lg" placeholder="Kode Barang" onblur="checkSku()" onkeydown="handleEnter(event)" autofocus>
-                                <button type="button" onclick="checkSku()" class="bg-blue-600 text-white px-3 rounded hover:bg-blue-700"><i class="fas fa-search"></i></button>
-                            </div>
-                            <span id="sku_status" class="text-[10px] block mt-1 min-h-[15px]"></span>
-                        </div>
                         
-                        <div class="md:col-span-2">
-                             <label class="block text-xs font-bold text-gray-600 mb-1">Qty</label>
-                             <input type="number" id="qty_input" class="w-full border p-2 rounded font-bold text-center" placeholder="0" onkeydown="if(event.key === 'Enter'){ addToCart(); }">
-                        </div>
-
-                        <div class="md:col-span-4">
-                             <label class="block text-xs font-bold text-gray-600 mb-1">Catatan Item</label>
-                             <input type="text" id="notes_input" class="w-full border p-2 rounded" placeholder="Keterangan per item" onkeydown="if(event.key === 'Enter'){ addToCart(); }">
-                        </div>
-
-                        <div class="md:col-span-2">
-                            <button type="button" onclick="addToCart()" class="w-full bg-orange-500 text-white py-2 rounded font-bold hover:bg-orange-600 shadow transition transform active:scale-95">
-                                <i class="fas fa-plus"></i> Tambah
-                            </button>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 mb-1">Jenis Transaksi <span class="text-red-500">*</span></label>
+                            <select name="out_type" id="out_type" class="w-full border p-2 rounded text-sm bg-white font-bold text-blue-800" onchange="toggleDestWarehouse()" required>
+                                <option value="" selected disabled>-- Pilih Jenis Transaksi --</option>
+                                <option value="EXTERNAL">PENJUALAN (Catat Omzet Saja)</option>
+                                <option value="INTERNAL">MUTASI / TRANSFER (Pindah Gudang)</option>
+                            </select>
+                            <p class="text-[10px] text-gray-500 mt-1" id="type_hint">*Silakan pilih jenis transaksi.</p>
                         </div>
                     </div>
 
-                    <!-- Hidden Info Data Holder -->
-                    <input type="hidden" id="h_name">
-                    <input type="hidden" id="h_stock">
-                </div>
-
-                <!-- 3. TABEL DAFTAR BARANG (CART) -->
-                <div class="mb-6">
-                    <h4 class="font-bold text-gray-800 mb-2">Daftar Barang Keluar</h4>
-                    <div class="border rounded-lg overflow-hidden bg-white shadow-sm">
-                        <table class="w-full text-sm text-left">
-                            <thead class="bg-gray-100 text-gray-700 border-b">
-                                <tr>
-                                    <th class="p-3">SKU</th>
-                                    <th class="p-3">Nama Barang</th>
-                                    <th class="p-3 text-center">Qty</th>
-                                    <th class="p-3">Catatan</th>
-                                    <th class="p-3 text-center w-16"><i class="fas fa-trash"></i></th>
-                                </tr>
-                            </thead>
-                            <tbody id="cart_table_body" class="divide-y">
-                                <!-- Cart Items Rendered Here -->
-                                <tr><td colspan="5" class="p-4 text-center text-gray-400 italic">Belum ada barang di daftar.</td></tr>
-                            </tbody>
-                        </table>
+                    <div id="dest_wh_container" class="md:col-span-2 hidden bg-orange-100 p-3 rounded border border-orange-200">
+                        <label class="block text-xs font-bold text-orange-800 mb-1">Ke Gudang Tujuan</label>
+                        <select name="dest_warehouse_id" class="w-full border p-2 rounded text-sm bg-white">
+                            <option value="">-- Pilih Gudang Tujuan --</option>
+                            <?php foreach($warehouses as $w): ?>
+                                <option value="<?= $w['id'] ?>"><?= $w['name'] ?></option>
+                            <?php endforeach; ?>
+                        </select>
                     </div>
                 </div>
-                
-                <!-- TOMBOL EKSEKUSI -->
-                <button type="submit" id="btn_process" class="w-full bg-red-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-red-700 shadow-lg transition transform active:scale-95 disabled:bg-gray-400 disabled:cursor-not-allowed">
-                    <i class="fas fa-paper-plane mr-2"></i> Proses Semua Barang
-                </button>
-            </form>
-        </div>
+            </div>
+
+            <div class="bg-blue-50 p-4 rounded-lg border border-blue-200 mb-6">
+                <h4 class="font-bold text-blue-800 mb-3 text-sm border-b border-blue-200 pb-1">Input Barang</h4>
+                <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+                    <div class="md:col-span-4">
+                        <label class="block text-xs font-bold text-gray-600 mb-1">SKU Barcode</label>
+                        <div class="flex gap-1">
+                            <input type="text" id="sku_input" class="w-full border-2 border-blue-500 p-2 rounded font-mono font-bold text-lg uppercase" placeholder="SCAN..." onchange="checkSku()" onkeydown="if(event.key === 'Enter'){ checkSku(); event.preventDefault(); }">
+                            <button type="button" onclick="checkSku()" class="bg-blue-600 text-white px-3 rounded hover:bg-blue-700"><i class="fas fa-search"></i></button>
+                        </div>
+                        <span id="sku_status" class="text-[10px] block mt-1 font-bold"></span>
+                    </div>
+                    
+                    <div class="md:col-span-2">
+                        <label class="block text-xs font-bold text-gray-600 mb-1">Qty</label>
+                        <input type="number" id="qty_input" class="w-full border p-2 rounded font-bold text-center" placeholder="0" onkeydown="if(event.key === 'Enter'){ addToCart(); event.preventDefault(); }">
+                    </div>
+
+                    <div class="md:col-span-4">
+                        <label class="block text-xs font-bold text-gray-600 mb-1">Catatan</label>
+                        <input type="text" id="notes_input" class="w-full border p-2 rounded" placeholder="Keterangan..." onkeydown="if(event.key === 'Enter'){ addToCart(); event.preventDefault(); }">
+                    </div>
+
+                    <div class="md:col-span-2">
+                        <button type="button" onclick="addToCart()" class="w-full bg-orange-500 text-white py-2 rounded font-bold hover:bg-orange-600 shadow flex justify-center items-center gap-2">
+                            <i class="fas fa-plus"></i> Tambah
+                        </button>
+                    </div>
+                </div>
+                <input type="hidden" id="h_name"><input type="hidden" id="h_stock">
+            </div>
+
+            <div class="mb-6">
+                <h4 class="font-bold text-gray-800 mb-2">Keranjang <span id="cart_count" class="bg-red-600 text-white text-xs px-2 rounded-full">0</span></h4>
+                <div class="border rounded-lg overflow-hidden bg-white shadow-sm">
+                    <table class="w-full text-sm text-left">
+                        <thead class="bg-gray-100 text-gray-700 border-b">
+                            <tr>
+                                <th class="p-3">SKU</th>
+                                <th class="p-3">Barang</th>
+                                <th class="p-3 text-center">Qty</th>
+                                <th class="p-3">Ket</th>
+                                <th class="p-3 text-center"><i class="fas fa-trash"></i></th>
+                            </tr>
+                        </thead>
+                        <tbody id="cart_table_body">
+                            <tr><td colspan="5" class="p-4 text-center text-gray-400 italic">Belum ada barang.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <button type="submit" id="btn_process" class="w-full bg-red-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-red-700 shadow-lg disabled:bg-gray-400 flex justify-center items-center gap-2">
+                <i class="fas fa-paper-plane"></i> Proses Transaksi
+            </button>
+        </form>
     </div>
 
-    <!-- KOLOM KANAN: RIWAYAT -->
-    <div class="xl:col-span-1">
-        <div class="bg-white p-6 rounded-lg shadow h-full flex flex-col">
-            <h3 class="font-bold text-lg mb-4 text-gray-800 border-b pb-2">Riwayat Terakhir</h3>
-            <div class="flex-1 overflow-y-auto max-h-[600px] pr-2">
-                <?php if(count($history) > 0): ?>
-                    <div class="space-y-3">
-                        <?php foreach($history as $h): ?>
-                        <div class="p-3 border rounded-lg hover:bg-gray-50 transition bg-white shadow-sm">
-                            <div class="flex justify-between items-start mb-1">
-                                <span class="text-xs font-bold text-gray-500"><?= date('d/m/y H:i', strtotime($h['created_at'])) ?></span>
-                                <span class="text-xs bg-red-100 text-red-800 px-2 py-0.5 rounded font-bold">OUT</span>
-                            </div>
-                            <div class="font-bold text-gray-800 text-sm"><?= $h['prod_name'] ?></div>
-                            <div class="text-xs text-gray-500 mb-2">Ref: <?= $h['reference'] ?></div>
-                            <div class="flex justify-between items-center border-t pt-2 mt-1">
-                                <span class="text-sm font-bold text-red-600">- <?= $h['quantity'] ?> Pcs</span>
-                                <a href="?page=cetak_surat_jalan&id=<?= $h['id'] ?>" target="_blank" class="text-xs text-blue-600 hover:underline"><i class="fas fa-print"></i> Cetak</a>
-                            </div>
-                        </div>
-                        <?php endforeach; ?>
-                    </div>
-                <?php else: ?>
-                    <div class="text-center text-gray-400 py-10">
-                        <i class="fas fa-history text-4xl mb-2"></i>
-                        <p>Belum ada riwayat transaksi.</p>
-                    </div>
-                <?php endif; ?>
-            </div>
+    <!-- TABEL RIWAYAT -->
+    <div class="bg-white p-6 rounded-lg shadow">
+        <h3 class="font-bold text-gray-800 mb-4 border-b pb-2">Riwayat Terakhir</h3>
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm text-left border-collapse">
+                <thead class="bg-gray-100 text-gray-700">
+                    <tr><th class="p-3">Tanggal</th><th class="p-3">Ref</th><th class="p-3">Barang</th><th class="p-3 text-right">Qty</th><th class="p-3 text-center">Gudang</th><th class="p-3 text-center">Aksi</th></tr>
+                </thead>
+                <tbody class="divide-y">
+                    <?php if(empty($recent_trx)): ?><tr><td colspan="6" class="p-4 text-center text-gray-400">Kosong.</td></tr><?php else: ?>
+                    <?php foreach($recent_trx as $trx): ?>
+                    <tr class="hover:bg-gray-50">
+                        <td class="p-3 whitespace-nowrap"><?= date('d/m/Y', strtotime($trx['date'])) ?></td>
+                        <td class="p-3 font-mono text-xs font-bold text-blue-600"><?= h($trx['reference']) ?></td>
+                        <td class="p-3"><div class="font-bold"><?= h($trx['prod_name']) ?></div><div class="text-xs text-gray-500"><?= h($trx['sku']) ?></div></td>
+                        <td class="p-3 text-right font-bold text-red-700">-<?= number_format($trx['quantity']) ?></td>
+                        <td class="p-3 text-center text-xs"><?= h($trx['wh_name']) ?></td>
+                        <td class="p-3 text-center">
+                            <form method="POST" onsubmit="return confirm('Batal transaksi? Stok akan kembali.')" class="inline">
+                                <?= csrf_field() ?>
+                                <input type="hidden" name="cancel_id" value="<?= $trx['id'] ?>">
+                                <button class="text-red-500 hover:text-red-700 p-1 font-bold text-xs"><i class="fas fa-undo"></i> Batal</button>
+                            </form>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
         </div>
     </div>
 </div>
 
 <script>
+// Logic JS (Sama dengan sebelumnya)
 let html5QrCode;
-let cart = [];
+let audioCtx = null;
 let isFlashOn = false;
+let cart = [];
+const APP_NAME_PREFIX = "<?= $app_ref_prefix ?>";
 
-document.addEventListener('DOMContentLoaded', generateReference);
-
-// Fungsi USB Scanner Handler
-function handleEnter(e) {
-    if(e.key === 'Enter') {
-        e.preventDefault();
-        checkSku();
-    }
-}
-
-async function generateReference() {
-    const dateVal = document.getElementById('trx_date').value; 
-    if(!dateVal) return;
-    try {
-        const res = await fetch('api.php?action=get_next_trx_number&type=OUT');
-        const data = await res.json();
-        const nextNo = String(data.next_no).padStart(3, '0');
-        const d = new Date(dateVal);
-        const refCode = `OUT/${nextNo}/${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
-        document.getElementById('reference_input').value = refCode;
-    } catch (e) {}
-}
-
-async function checkSku() {
-    const sku = document.getElementById('sku_input').value;
-    const statusEl = document.getElementById('sku_status');
+function toggleDestWarehouse() {
+    const type = document.getElementById('out_type').value;
+    const destContainer = document.getElementById('dest_wh_container');
+    const hint = document.getElementById('type_hint');
     
-    if(!sku) return;
-    statusEl.innerHTML = '<span class="text-gray-500"><i class="fas fa-spinner fa-spin"></i> Cek...</span>';
-
-    try {
-        const res = await fetch('api.php?action=get_product_by_sku&sku=' + sku);
-        const data = await res.json();
-        
-        if(data.error) {
-            statusEl.innerHTML = '<span class="text-red-600 font-bold">Barang tidak ditemukan!</span>';
-            document.getElementById('h_name').value = '';
-            document.getElementById('h_stock').value = 0;
-            // Clear input so user can try again easily
-            document.getElementById('sku_input').select();
-        } else {
-            statusEl.innerHTML = `<span class="text-green-600 font-bold">${data.name} (Stok: ${data.stock})</span>`;
-            document.getElementById('h_name').value = data.name;
-            document.getElementById('h_stock').value = data.stock;
-            document.getElementById('qty_input').focus();
-        }
-    } catch(e) { statusEl.innerHTML = 'Error koneksi.'; }
-}
-
-function addToCart() {
-    const sku = document.getElementById('sku_input').value;
-    const name = document.getElementById('h_name').value;
-    const stock = parseInt(document.getElementById('h_stock').value || 0);
-    const qty = parseInt(document.getElementById('qty_input').value || 0);
-    const notes = document.getElementById('notes_input').value;
-
-    if (!sku || !name) { alert("SKU Barang belum valid/dipilih."); return; }
-    if (qty <= 0) { alert("Jumlah harus lebih dari 0."); return; }
-    if (qty > stock) { alert(`Stok tidak cukup! Tersedia: ${stock}`); return; }
-
-    const existingIndex = cart.findIndex(item => item.sku === sku);
-    
-    if (existingIndex > -1) {
-        if ((cart[existingIndex].qty + qty) > stock) {
-            alert(`Total Qty melebihi stok! Tersedia: ${stock}, Di Cart: ${cart[existingIndex].qty}`);
-            return;
-        }
-        cart[existingIndex].qty += qty;
+    if (type === 'INTERNAL') {
+        destContainer.classList.remove('hidden');
+        hint.innerHTML = "*Mutasi stok antar gudang.";
+    } else if (type === 'EXTERNAL') {
+        destContainer.classList.add('hidden');
+        hint.innerHTML = "*Catat Penjualan (Pemasukan).";
+        document.querySelector('select[name="dest_warehouse_id"]').value = "";
     } else {
-        cart.push({ sku, name, qty, notes, stock });
-    }
-
-    renderCart();
-    
-    document.getElementById('sku_input').value = '';
-    document.getElementById('qty_input').value = '';
-    document.getElementById('notes_input').value = '';
-    document.getElementById('h_name').value = '';
-    document.getElementById('h_stock').value = 0;
-    document.getElementById('sku_status').innerHTML = '';
-    document.getElementById('sku_input').focus(); // Ready for next scan
-}
-
-function removeFromCart(index) {
-    cart.splice(index, 1);
-    renderCart();
-}
-
-function renderCart() {
-    const tbody = document.getElementById('cart_table_body');
-    tbody.innerHTML = '';
-
-    if (cart.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-400 italic">Belum ada barang di daftar.</td></tr>';
-        return;
-    }
-
-    cart.forEach((item, index) => {
-        const tr = document.createElement('tr');
-        tr.className = 'border-b hover:bg-gray-50';
-        tr.innerHTML = `
-            <td class="p-3 font-mono font-bold">${item.sku}</td>
-            <td class="p-3">${item.name}</td>
-            <td class="p-3 text-center font-bold">${item.qty}</td>
-            <td class="p-3 text-gray-500 italic">${item.notes}</td>
-            <td class="p-3 text-center">
-                <button type="button" onclick="removeFromCart(${index})" class="text-red-500 hover:text-red-700"><i class="fas fa-trash"></i></button>
-            </td>
-        `;
-        tbody.appendChild(tr);
-    });
-}
-
-function validateCart() {
-    if (cart.length === 0) {
-        alert("Mohon tambahkan minimal satu barang ke daftar!");
-        return false;
-    }
-    document.getElementById('cart_json').value = JSON.stringify(cart);
-    return confirm(`Akan memproses ${cart.length} jenis barang. Lanjutkan?`);
-}
-
-// --- CAMERA & FLASH LOGIC ---
-function startScan() {
-    const scannerArea = document.getElementById('scanner_area');
-    scannerArea.classList.remove('hidden');
-    if(html5QrCode) html5QrCode.clear();
-    
-    html5QrCode = new Html5Qrcode("reader");
-    const config = { fps: 10, qrbox: { width: 250, height: 250 } };
-
-    html5QrCode.start({ facingMode: "environment" }, config, 
-        (decodedText) => {
-            document.getElementById('sku_input').value = decodedText;
-            checkSku();
-            stopScan();
-            new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play();
-        },
-        () => {}
-    )
-    .then(() => {
-        // Cek dukungan Flash
-        const track = html5QrCode.getRunningTrackCameraCapabilities();
-        const flashBtn = document.getElementById('btn_flash');
-        if (track && track.torchFeature().isSupported()) {
-             flashBtn.classList.remove('hidden');
-        } else {
-             flashBtn.classList.add('hidden');
-        }
-    })
-    .catch(err => { 
-        alert("Kamera error/tidak diizinkan: " + err); 
-        scannerArea.classList.add('hidden'); 
-    });
-}
-
-function stopScan() {
-    if(html5QrCode) {
-        if(isFlashOn) toggleFlash();
-        html5QrCode.stop().then(() => document.getElementById('scanner_area').classList.add('hidden'));
-    } else {
-        document.getElementById('scanner_area').classList.add('hidden');
+        destContainer.classList.add('hidden');
+        hint.innerHTML = "*Silakan pilih jenis transaksi.";
     }
 }
 
-function toggleFlash() {
-    if(html5QrCode) {
-        isFlashOn = !isFlashOn;
-        html5QrCode.applyVideoConstraints({
-            advanced: [{ torch: isFlashOn }]
-        })
-        .then(() => {
-            const btn = document.getElementById('btn_flash');
-            if(isFlashOn) {
-                btn.classList.add('bg-yellow-500', 'text-white');
-                btn.classList.remove('bg-yellow-400', 'text-black');
-            } else {
-                btn.classList.remove('bg-yellow-500', 'text-white');
-                btn.classList.add('bg-yellow-400', 'text-black');
-            }
-        })
-        .catch(err => console.error("Torch error", err));
-    }
+// ... (Functions: initAudio, playBeep, activateUSB, handleFileScan, initCamera, startScan, stopScan, toggleFlash, checkSku, addToCart, renderCart, removeFromCart, validateCart, generateReference) ...
+// Copy-paste logic JS scanner & cart dari file sebelumnya.
+// Pastikan semua fungsi tersebut ada di blok <script> ini.
+
+function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); }
+function playBeep() { if (!audioCtx) return; try { const o = audioCtx.createOscillator(); const g = audioCtx.createGain(); o.connect(g); g.connect(audioCtx.destination); o.type = 'square'; o.frequency.setValueAtTime(1200, audioCtx.currentTime); g.gain.setValueAtTime(0.1, audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1); o.start(); o.stop(audioCtx.currentTime + 0.15); } catch (e) {} }
+function activateUSB() { const i = document.getElementById('sku_input'); i.focus(); i.select(); i.classList.add('ring-4', 'ring-yellow-400'); setTimeout(() => i.classList.remove('ring-4', 'ring-yellow-400'), 1500); }
+function handleFileScan(input) { if (!input.files.length) return; const f = input.files[0]; initAudio(); const i = document.getElementById('sku_input'); const p = i.placeholder; i.value = ""; i.placeholder = "Processing..."; const h = new Html5Qrcode("reader"); h.scanFile(f, true).then(t => { playBeep(); i.value = t; i.placeholder = p; checkSku(); input.value = ''; }).catch(e => { alert("Gagal baca."); i.placeholder = p; input.value = ''; }); }
+async function initCamera() { initAudio(); document.getElementById('scanner_area').classList.remove('hidden'); try { await navigator.mediaDevices.getUserMedia({ video: true }); const d = await Html5Qrcode.getCameras(); const s = document.getElementById('camera_select'); s.innerHTML = ""; if (d && d.length) { let id = d[0].id; d.forEach(dev => { if(dev.label.toLowerCase().includes('back')) id = dev.id; const o = document.createElement("option"); o.value = dev.id; o.text = dev.label; s.appendChild(o); }); s.value = id; startScan(id); s.onchange = () => { if(html5QrCode) html5QrCode.stop().then(() => startScan(s.value)); }; } else alert("No camera"); } catch (e) { alert("Camera error"); document.getElementById('scanner_area').classList.add('hidden'); } }
+function startScan(id) { if(html5QrCode) try{html5QrCode.stop()}catch(e){} html5QrCode = new Html5Qrcode("reader"); html5QrCode.start(id, { fps: 10, qrbox: { width: 250, height: 250 } }, (t) => { document.getElementById('sku_input').value = t; playBeep(); checkSku(); stopScan(); }, () => {}).then(() => { const t = html5QrCode.getRunningTrackCameraCapabilities(); if(t && t.torchFeature().isSupported()) document.getElementById('btn_flash').classList.remove('hidden'); }); }
+function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }).catch(() => document.getElementById('scanner_area').classList.add('hidden')); }
+function toggleFlash() { if(html5QrCode) { isFlashOn = !isFlashOn; html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] }); } }
+
+async function checkSku() { const s = document.getElementById('sku_input').value.trim(); if(s.length < 3) return; const stat = document.getElementById('sku_status'); const n = document.getElementById('h_name'); const st = document.getElementById('h_stock'); stat.innerHTML = 'Searching...'; try { const r = await fetch(`api.php?action=get_product_by_sku&sku=${encodeURIComponent(s)}`); const d = await r.json(); if(d && d.id) { stat.innerHTML = `<span class="text-green-600">Found: ${d.name} (${d.stock})</span>`; n.value = d.name; st.value = d.stock; document.getElementById('qty_input').focus(); } else { stat.innerHTML = '<span class="text-red-600">Not Found!</span>'; n.value=''; st.value=0; } } catch(e){ stat.innerText = "Error"; } }
+function addToCart() { const s = document.getElementById('sku_input').value.trim(); const n = document.getElementById('h_name').value; const st = parseFloat(document.getElementById('h_stock').value||0); const q = parseFloat(document.getElementById('qty_input').value); const nt = document.getElementById('notes_input').value; if(!n) return alert("Scan item first"); if(!q || q<=0) return alert("Qty invalid"); if(q>st) return alert("Stok kurang!"); const exist = cart.findIndex(x => x.sku === s); if(exist > -1) { if((cart[exist].qty + q) > st) return alert("Total stok kurang!"); cart[exist].qty += q; } else { cart.push({sku:s, name:n, qty:q, notes:nt}); } renderCart(); document.getElementById('sku_input').value=''; document.getElementById('h_name').value=''; document.getElementById('h_stock').value=''; document.getElementById('qty_input').value=''; document.getElementById('notes_input').value=''; document.getElementById('sku_status').innerText=''; document.getElementById('sku_input').focus(); }
+function renderCart() { const b = document.getElementById('cart_table_body'); b.innerHTML = ''; if(cart.length===0) { b.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-400">Empty</td></tr>'; document.getElementById('btn_process').disabled = true; } else { document.getElementById('btn_process').disabled = false; cart.forEach((i,x) => { const r = document.createElement('tr'); r.innerHTML = `<td class="p-3 font-mono">${i.sku}</td><td class="p-3">${i.name}</td><td class="p-3 text-center font-bold">${i.qty}</td><td class="p-3 italic">${i.notes}</td><td class="p-3 text-center"><button type="button" onclick="removeFromCart(${x})" class="text-red-500"><i class="fas fa-trash"></i></button></td>`; b.appendChild(r); }); } document.getElementById('cart_json').value = JSON.stringify(cart); document.getElementById('cart_count').innerText = cart.length; }
+function removeFromCart(i) { cart.splice(i,1); renderCart(); }
+function validateCart() { 
+    const wh = document.getElementById('warehouse_id').value;
+    const type = document.getElementById('out_type').value;
+    if(cart.length===0) { alert('Keranjang kosong'); return false; }
+    if(!wh) { alert('Pilih Gudang Asal!'); return false; }
+    if(!type) { alert('Pilih Jenis Transaksi!'); return false; }
+    return confirm("Proses transaksi?"); 
 }
+async function generateReference() { const b = document.getElementById('btn_auto_ref'); if(b) b.disabled=true; try { const r = await fetch('api.php?action=get_next_trx_number&type=OUT'); const d = await r.json(); const n = d.next_no.toString().padStart(3,'0'); const dt = new Date(); document.getElementById('reference_input').value = `${APP_NAME_PREFIX}/OUT/${dt.getDate()}/${dt.getMonth()+1}/${dt.getFullYear()}-${n}`; } catch(e){} if(b) b.disabled=false; }
+
+document.addEventListener('DOMContentLoaded', () => { generateReference(); toggleDestWarehouse(); });
 </script>

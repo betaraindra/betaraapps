@@ -28,6 +28,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         foreach($keys_to_update as $k) {
             $val = $_POST[$k] ?? ''; // Default empty string if not set
             
+            // Khusus Initial Capital, bersihkan format rupiah (hapus titik, ubah koma ke titik desimal)
+            if ($k === 'initial_capital') {
+                $val = cleanNumber($val);
+            }
+            
             // Cek apakah key sudah ada
             $check = $pdo->prepare("SELECT setting_key FROM settings WHERE setting_key = ?");
             $check->execute([$k]);
@@ -73,74 +78,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // 3. BACKUP SQL
-    if (isset($_POST['backup'])) {
-        logActivity($pdo, 'BACKUP', "Melakukan backup database");
-        
-        $sqlScript = "SET FOREIGN_KEY_CHECKS=0;\n";
-        $sqlScript .= "-- SIKI DATABASE BACKUP\n";
-        $sqlScript .= "-- Generated: " . date('Y-m-d H:i:s') . "\n\n";
-        
-        $tables = ['users', 'accounts', 'warehouses', 'products', 'finance_transactions', 'inventory_transactions', 'settings', 'system_logs'];
-        
-        foreach ($tables as $table) {
-            $sqlScript .= "-- Table structure and data for table `$table`\n";
-            $sqlScript .= "TRUNCATE TABLE $table;\n";
-            
-            $result = $pdo->query("SELECT * FROM $table");
-            $num_fields = $result->columnCount();
-            
-            while ($row = $result->fetch(PDO::FETCH_NUM)) {
-                $sqlScript .= "INSERT INTO $table VALUES(";
-                for ($j = 0; $j < $num_fields; $j++) {
-                    if (!isset($row[$j])) {
-                        $sqlScript .= "NULL";
-                    } else {
-                        $row[$j] = addslashes($row[$j]);
-                        $row[$j] = str_replace("\n", "\\n", $row[$j]);
-                        $sqlScript .= '"' . $row[$j] . '"';
-                    }
-                    if ($j < ($num_fields - 1)) { $sqlScript .= ','; }
-                }
-                $sqlScript .= ");\n";
-            }
-            $sqlScript .= "\n";
-        }
-        
-        $sqlScript .= "SET FOREIGN_KEY_CHECKS=1;";
-
-        $filename = 'backup_siki_' . date('Y-m-d_H-i-s') . '.sql';
-
-        header('Content-Description: File Transfer');
-        header('Content-Type: application/octet-stream');
-        header('Content-Disposition: attachment; filename=' . $filename);
-        header('Expires: 0');
-        header('Cache-Control: must-revalidate');
-        header('Pragma: public');
-        header('Content-Length: ' . strlen($sqlScript));
-        
-        echo $sqlScript;
-        exit;
-    }
-
-    // 4. RESTORE SQL
+    // 3. RESTORE SQL
     if (isset($_POST['restore']) && isset($_FILES['backup_file'])) {
         if ($_FILES['backup_file']['error'] == 0) {
             $sql = file_get_contents($_FILES['backup_file']['tmp_name']);
+            
+            // Split SQL by semicolon + newline to execute statement by statement
+            $queries = explode(";\n", $sql);
+            
+            $pdo->beginTransaction();
             try {
-                // Execute SQL script
-                // Note: PDO::exec handles one statement usually, splitting might be needed for huge files
-                // but for simple dumps generated above, this often works if emulated prepares are on.
-                $pdo->exec($sql);
+                // Disable foreign key checks for restore
+                $pdo->exec("SET FOREIGN_KEY_CHECKS=0");
+                
+                foreach ($queries as $query) {
+                    $query = trim($query);
+                    if (!empty($query) && (strpos($query, 'INSERT') === 0 || strpos($query, 'TRUNCATE') === 0 || strpos($query, 'SET') === 0)) {
+                        $pdo->exec($query);
+                    }
+                }
+                
+                $pdo->exec("SET FOREIGN_KEY_CHECKS=1");
+                $pdo->commit();
+                
                 logActivity($pdo, 'RESTORE', "Melakukan restore database");
                 echo "<script>alert('Restore Berhasil! Database telah dipulihkan.'); window.location='?page=pengaturan';</script>";
             } catch (PDOException $e) {
+                $pdo->rollBack();
                 echo "<script>alert('Error Restore: " . addslashes($e->getMessage()) . "'); window.location='?page=pengaturan';</script>";
             }
         }
     }
 
-    // 5. RESET DATA
+    // 4. RESET DATA
     if (isset($_POST['reset']) && $_POST['confirm'] == 'RESET') {
         $pdo->query("SET FOREIGN_KEY_CHECKS=0");
         $pdo->query("TRUNCATE TABLE finance_transactions");
@@ -204,7 +174,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <h3 class="font-bold mt-6 mb-4 border-b pb-2">Pengaturan Aplikasi</h3>
             <div class="mb-4">
                 <label class="block text-sm font-medium mb-1">Modal Awal (Saldo Awal)</label>
-                <input type="number" name="initial_capital" value="<?= htmlspecialchars($settings['initial_capital'] ?? 0) ?>" class="w-full border p-2 rounded bg-gray-50">
+                <div class="relative">
+                    <span class="absolute left-3 top-2 text-gray-500 text-sm">Rp</span>
+                    <input type="text" name="initial_capital" id="initial_capital" 
+                           value="<?= number_format((float)($settings['initial_capital'] ?? 0), 0, ',', '.') ?>" 
+                           onkeyup="formatRupiah(this)" 
+                           class="w-full border p-2 pl-10 rounded bg-gray-50 font-mono text-right font-bold">
+                </div>
             </div>
             
             <button class="bg-blue-600 text-white px-4 py-2 rounded font-bold hover:bg-blue-700 w-full shadow">Simpan Perubahan</button>
@@ -215,11 +191,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="bg-white p-6 rounded shadow">
             <h3 class="font-bold mb-4">Backup & Restore Database</h3>
             <div class="flex gap-4 mb-6">
-                <form method="POST" class="w-full">
+                <!-- FORM DOWNLOAD DIUBAH KE HALAMAN STANDALONE -->
+                <form method="POST" action="?page=download_backup" class="w-full">
                     <input type="hidden" name="backup" value="1">
                     <button class="bg-green-600 text-white px-4 py-2 rounded flex items-center gap-2 font-medium hover:bg-green-700 w-full justify-center shadow">
                         <i class="fas fa-download"></i> Download Backup (.sql)
                     </button>
+                    <p class="text-[10px] text-gray-500 mt-2 text-center italic">
+                        (Jika tidak download otomatis: Select All, Copy text, Open Notepad, Save As nama.sql)
+                    </p>
                 </form>
             </div>
             <hr class="mb-4">
@@ -247,3 +227,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
     </div>
 </div>
+
+<script>
+function formatRupiah(input) {
+    // Hapus karakter selain angka
+    let value = input.value.replace(/\D/g, '');
+    if(value === '') {
+        input.value = '';
+        return;
+    }
+    // Format angka dengan separator ribuan (titik untuk ID)
+    input.value = new Intl.NumberFormat('id-ID').format(value);
+}
+</script>

@@ -3,22 +3,35 @@ checkRole(['SUPER_ADMIN', 'ADMIN_GUDANG', 'MANAGER', 'SVP']);
 
 $start = $_GET['start'] ?? date('Y-m-01');
 $end = $_GET['end'] ?? date('Y-m-d');
+$warehouse_filter = $_GET['warehouse_id'] ?? 'ALL';
 
 // --- CONFIG & HEADER DATA ---
 $config_query = $pdo->query("SELECT * FROM settings");
 $config = [];
 while ($row = $config_query->fetch()) $config[$row['setting_key']] = $row['setting_value'];
 
-// Query untuk mendapatkan data transaksi beserta harga dari produk master
+// --- GET WAREHOUSES FOR FILTER ---
+$warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
+
+// --- PREPARE QUERY ---
 $sql = "SELECT i.*, p.sku, p.name as prod_name, p.unit, p.buy_price, p.sell_price, p.image_url, w.name as wh_name 
         FROM inventory_transactions i 
         JOIN products p ON i.product_id=p.id 
         JOIN warehouses w ON i.warehouse_id=w.id 
-        WHERE i.date BETWEEN ? AND ? 
-        ORDER BY i.date DESC, i.created_at DESC";
+        WHERE i.date BETWEEN ? AND ?";
+
+$params = [$start, $end];
+
+// Apply Warehouse Filter
+if ($warehouse_filter !== 'ALL') {
+    $sql .= " AND i.warehouse_id = ?";
+    $params[] = $warehouse_filter;
+}
+
+$sql .= " ORDER BY i.date DESC, i.created_at DESC";
 
 $stmt = $pdo->prepare($sql);
-$stmt->execute([$start, $end]);
+$stmt->execute($params);
 $transactions = $stmt->fetchAll();
 
 // Grouping Logic
@@ -40,6 +53,17 @@ foreach($transactions as $t) {
     // Asumsi: Total Material = Qty Transaksi * Harga Beli (Nilai barang yang bergerak)
     $grouped_data[$group_key]['total'] += ($t['quantity'] * $t['buy_price']);
 }
+
+// Get Selected Warehouse Name for Header
+$selected_wh_name = "Semua Gudang";
+if ($warehouse_filter !== 'ALL') {
+    foreach($warehouses as $w) {
+        if ($w['id'] == $warehouse_filter) {
+            $selected_wh_name = $w['name'];
+            break;
+        }
+    }
+}
 ?>
 
 <!-- Load Library PDF -->
@@ -48,11 +72,17 @@ foreach($transactions as $t) {
 <!-- CSS Print -->
 <style>
     @media print {
-        @page { size: landscape; margin: 10mm; }
+        /* Set margin halaman 0 untuk menyembunyikan Header/Footer browser (Tanggal, URL) */
+        @page { size: landscape; margin: 0mm; }
+        
+        /* Tambahkan margin kembali pada body agar konten tidak terpotong */
+        body { margin: 10mm 10mm 10mm 10mm !important; }
+
         .no-print { display: none !important; }
         body { font-size: 10px; -webkit-print-color-adjust: exact; print-color-adjust: exact; font-family: sans-serif; }
         table { border-collapse: collapse; width: 100%; }
         th, td { border: 1px solid #000 !important; padding: 4px; }
+        
         .bg-red-300 { background-color: #fca5a5 !important; }
         .bg-yellow-400 { background-color: #facc15 !important; }
         .bg-green-100 { background-color: #dcfce7 !important; }
@@ -60,7 +90,10 @@ foreach($transactions as $t) {
         
         .header-print { display: block !important; margin-bottom: 20px; }
         
-        /* Kop Surat Styles - Consistent v0.0.1 */
+        /* Hilangkan shadow & border container utama saat print */
+        #report_content { box-shadow: none !important; border: none !important; margin: 0 !important; width: 100% !important; }
+
+        /* Kop Surat Styles */
         .kop-container {
             display: flex;
             align-items: center;
@@ -92,6 +125,19 @@ foreach($transactions as $t) {
     <div class="flex flex-col md:flex-row justify-between items-end gap-4">
         <form class="flex flex-wrap gap-4 items-end">
             <input type="hidden" name="page" value="laporan_gudang">
+            
+            <div>
+                <label class="block text-xs font-bold text-gray-700 mb-1">Lokasi Gudang</label>
+                <select name="warehouse_id" class="border p-2 rounded text-sm min-w-[200px] bg-white focus:ring-2 focus:ring-blue-500">
+                    <option value="ALL">-- Semua Gudang --</option>
+                    <?php foreach($warehouses as $wh): ?>
+                        <option value="<?= $wh['id'] ?>" <?= $warehouse_filter == $wh['id'] ? 'selected' : '' ?>>
+                            <?= $wh['name'] ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+
             <div>
                 <label class="block text-xs font-bold text-gray-700 mb-1">Dari Tanggal</label>
                 <input type="date" name="start" value="<?= $start ?>" class="border p-2 rounded text-sm">
@@ -131,14 +177,18 @@ foreach($transactions as $t) {
         </div>
         <div style="text-align: center; margin-bottom: 20px;">
             <h3 style="font-size: 14pt; font-weight: bold; text-transform: uppercase; text-decoration: underline; margin-bottom: 5px;">Laporan Transaksi Gudang</h3>
-            <p style="font-size: 10pt; font-weight: bold;">Periode: <?= date('d/m/Y', strtotime($start)) ?> - <?= date('d/m/Y', strtotime($end)) ?></p>
+            <p style="font-size: 10pt; font-weight: bold;">
+                Lokasi: <?= htmlspecialchars($selected_wh_name) ?> <br>
+                Periode: <?= date('d/m/Y', strtotime($start)) ?> - <?= date('d/m/Y', strtotime($end)) ?>
+            </p>
         </div>
     </div>
 
     <!-- Judul Layar (No Print) -->
     <div class="mb-4 border-b pb-2 text-center no-print">
         <h2 class="text-xl font-bold text-gray-800 uppercase">Laporan Transaksi Gudang</h2>
-        <p class="text-sm text-gray-600">Periode: <?= date('d/m/Y', strtotime($start)) ?> - <?= date('d/m/Y', strtotime($end)) ?></p>
+        <p class="text-sm text-gray-600 font-bold mb-1">Lokasi: <?= htmlspecialchars($selected_wh_name) ?></p>
+        <p class="text-xs text-gray-500">Periode: <?= date('d/m/Y', strtotime($start)) ?> - <?= date('d/m/Y', strtotime($end)) ?></p>
     </div>
 
     <table class="w-full text-xs border text-left border-collapse border-gray-400">

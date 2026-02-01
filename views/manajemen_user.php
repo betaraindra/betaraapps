@@ -3,16 +3,31 @@
 // SVP bisa semua kecuali pengaturan DAN user management.
 checkRole(['SUPER_ADMIN', 'MANAGER']); 
 
+// Hitung jumlah Super Admin saat ini
+$superAdminCount = $pdo->query("SELECT COUNT(*) FROM users WHERE role='SUPER_ADMIN'")->fetchColumn();
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     // --- 1. HAPUS USER ---
     if (isset($_POST['delete'])) {
-        $userToDelete = $pdo->query("SELECT username FROM users WHERE id=".$_POST['delete'])->fetch();
-        if($userToDelete) {
-             logActivity($pdo, 'DELETE_USER', "Menghapus user: " . $userToDelete['username']);
+        $idToDelete = $_POST['delete'];
+        $userToDelete = $pdo->query("SELECT id, username, role FROM users WHERE id=$idToDelete")->fetch();
+        
+        if ($userToDelete) {
+            // Validasi: Jangan hapus diri sendiri
+            if ($userToDelete['id'] == $_SESSION['user_id']) {
+                $_SESSION['flash'] = ['type'=>'error', 'message'=>'Anda tidak bisa menghapus akun sendiri.'];
+            } 
+            // Validasi: Super Admin terakhir tidak boleh dihapus
+            elseif ($userToDelete['role'] == 'SUPER_ADMIN' && $superAdminCount <= 1) {
+                $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: Harus tersisa minimal 1 Super Admin.'];
+            } 
+            else {
+                $pdo->prepare("DELETE FROM users WHERE id=?")->execute([$idToDelete]);
+                logActivity($pdo, 'DELETE_USER', "Menghapus user: " . $userToDelete['username']);
+                $_SESSION['flash'] = ['type'=>'success', 'message'=>'User berhasil dihapus'];
+            }
         }
-        $pdo->prepare("DELETE FROM users WHERE id=?")->execute([$_POST['delete']]);
-        $_SESSION['flash'] = ['type'=>'success', 'message'=>'User berhasil dihapus'];
     } 
     
     // --- 2. EDIT USER ---
@@ -22,6 +37,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $email = $_POST['email'];
         $role = $_POST['role'];
         $password = $_POST['password'];
+
+        // Cek jika mengubah Role Super Admin terakhir menjadi role lain
+        $currentUserData = $pdo->query("SELECT role FROM users WHERE id=$id")->fetch();
+        if ($currentUserData && $currentUserData['role'] == 'SUPER_ADMIN' && $role != 'SUPER_ADMIN' && $superAdminCount <= 1) {
+             $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: Ini adalah Super Admin terakhir. Tidak bisa ganti role.'];
+             echo "<script>window.location='?page=manajemen_user';</script>";
+             exit;
+        }
 
         try {
             if (!empty($password)) {
@@ -128,26 +151,30 @@ $users = $pdo->query("SELECT * FROM users ORDER BY role ASC, username ASC")->fet
                             <span class="<?= $bg ?> px-2 py-1 rounded text-xs font-bold"><?= $u['role'] ?></span>
                         </td>
                         <td class="p-3 text-center">
-                            <?php if($u['username'] != 'superadmin' || $_SESSION['role'] == 'SUPER_ADMIN'): ?>
-                                <div class="flex justify-center gap-2">
-                                    <!-- Tombol Edit -->
-                                    <button onclick='openEditModal(<?= json_encode($u) ?>)' class="text-blue-600 hover:bg-blue-100 p-2 rounded transition" title="Edit User">
-                                        <i class="fas fa-edit"></i>
+                            <div class="flex justify-center gap-2">
+                                <!-- Tombol Edit -->
+                                <button onclick='openEditModal(<?= json_encode($u) ?>)' class="text-blue-600 hover:bg-blue-100 p-2 rounded transition" title="Edit User">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                
+                                <!-- Tombol Hapus Logic -->
+                                <?php 
+                                $canDelete = true;
+                                if ($u['id'] == $_SESSION['user_id']) $canDelete = false; // Self
+                                if ($u['role'] == 'SUPER_ADMIN' && $superAdminCount <= 1) $canDelete = false; // Last Super Admin
+                                ?>
+
+                                <?php if($canDelete): ?>
+                                <form method="POST" onsubmit="return confirm('Hapus user <?= $u['username'] ?>?')" class="inline">
+                                    <input type="hidden" name="delete" value="<?= $u['id'] ?>">
+                                    <button class="text-red-600 hover:bg-red-100 p-2 rounded transition" title="Hapus User">
+                                        <i class="fas fa-trash-alt"></i>
                                     </button>
-                                    
-                                    <!-- Tombol Hapus (Proteksi diri sendiri) -->
-                                    <?php if($u['id'] != $_SESSION['user_id']): ?>
-                                    <form method="POST" onsubmit="return confirm('Hapus user <?= $u['username'] ?>?')" class="inline">
-                                        <input type="hidden" name="delete" value="<?= $u['id'] ?>">
-                                        <button class="text-red-600 hover:bg-red-100 p-2 rounded transition" title="Hapus User">
-                                            <i class="fas fa-trash-alt"></i>
-                                        </button>
-                                    </form>
-                                    <?php endif; ?>
-                                </div>
-                            <?php else: ?>
-                                <span class="text-gray-400 text-xs italic">Protected</span>
-                            <?php endif; ?>
+                                </form>
+                                <?php else: ?>
+                                    <span class="text-gray-300 p-2 cursor-not-allowed" title="Tidak bisa dihapus (Akun Sendiri / Super Admin Terakhir)"><i class="fas fa-trash-alt"></i></span>
+                                <?php endif; ?>
+                            </div>
                         </td>
                     </tr>
                     <?php endforeach; ?>

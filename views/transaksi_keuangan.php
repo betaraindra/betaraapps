@@ -1,13 +1,19 @@
 <?php
 checkRole(['SUPER_ADMIN', 'ADMIN_KEUANGAN', 'SVP', 'MANAGER']);
 
-// --- 1. HANDLE POST REQUESTS ---
+// --- AMBIL DATA MASTER ---
+$accounts = $pdo->query("SELECT * FROM accounts ORDER BY code ASC")->fetchAll();
+$warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
+
+// --- HANDLE POST REQUESTS ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // SECURITY: Validate CSRF
+    validate_csrf();
     
-    // DELETE
+    // 1. HAPUS TRANSAKSI
     if (isset($_POST['delete_id'])) {
-        $id = $_POST['delete_id'];
-        $stmt = $pdo->prepare("SELECT amount, type FROM finance_transactions WHERE id=?");
+        $id = (int)$_POST['delete_id']; 
+        $stmt = $pdo->prepare("SELECT amount, type, description FROM finance_transactions WHERE id=?");
         $stmt->execute([$id]);
         $trx = $stmt->fetch();
 
@@ -20,238 +26,248 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // ADD NEW
+    // 2. SIMPAN TRANSAKSI BARU
     if (isset($_POST['save_trx'])) {
         $date = $_POST['date'];
-        $type = $_POST['type'];
-        $account_id = $_POST['account_id'];
-        $amount = (float)str_replace(['.',','], '', $_POST['amount']); 
-        $description = $_POST['description'];
-
-        $stmt = $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, ?, ?, ?, ?, ?)");
-        if ($stmt->execute([$date, $type, $account_id, $amount, $description, $_SESSION['user_id']])) {
-            $accName = $pdo->query("SELECT name FROM accounts WHERE id=$account_id")->fetchColumn();
-            logActivity($pdo, 'ADD_KEUANGAN', "Input $type: Rp " . number_format($amount) . " ($accName)");
-            $_SESSION['flash'] = ['type' => 'success', 'message' => 'Transaksi berhasil disimpan'];
-            echo "<script>window.location='?page=transaksi_keuangan';</script>";
-            exit;
-        }
-    }
-
-    // UPDATE
-    if (isset($_POST['update_trx'])) {
-        $id = $_POST['edit_id'];
-        $date = $_POST['edit_date'];
-        $account_id = $_POST['edit_account_id'];
-        $amount = (float)str_replace(['.',','], '', $_POST['edit_amount']);
-        $description = $_POST['edit_description'];
+        $account_id = (int)$_POST['account_id'];
         
-        // Ambil tipe akun untuk update tipe transaksi otomatis
-        $accType = $pdo->query("SELECT type FROM accounts WHERE id=$account_id")->fetchColumn();
+        // GUNAKAN cleanNumber() UNTUK MEMBERSIHKAN FORMAT RUPIAH (TITIK/KOMA)
+        $amount = cleanNumber($_POST['amount']); 
+        
+        $description = strip_tags($_POST['description']); 
+        
+        // Ambil info akun dari DB untuk validasi tipe
+        $accTypeStmt = $pdo->prepare("SELECT type, code, name FROM accounts WHERE id = ?");
+        $accTypeStmt->execute([$account_id]);
+        $accData = $accTypeStmt->fetch(); 
 
-        $stmt = $pdo->prepare("UPDATE finance_transactions SET date=?, type=?, account_id=?, amount=?, description=? WHERE id=?");
-        if ($stmt->execute([$date, $accType, $account_id, $amount, $description, $id])) {
-            logActivity($pdo, 'EDIT_KEUANGAN', "Edit Transaksi ID: $id");
-            $_SESSION['flash'] = ['type' => 'success', 'message' => 'Transaksi berhasil diperbarui'];
-            echo "<script>window.location='?page=transaksi_keuangan';</script>";
-            exit;
+        if (!$accData) {
+            $_SESSION['flash'] = ['type' => 'error', 'message' => 'Akun tidak valid'];
+        } else {
+            // Tentukan Tipe Transaksi (INCOME/EXPENSE) berdasarkan input user, bukan tipe akun semata
+            // Karena EQUITY bisa INCOME (Modal Masuk) atau EXPENSE (Prive)
+            $trx_type_input = $_POST['trx_type']; // INCOME atau EXPENSE dari radio button
+
+            // Logic Wilayah & Material
+            // Jika user memilih Gudang, tambahkan tag ke deskripsi
+            if (!empty($_POST['warehouse_id'])) {
+                $wh_id = (int)$_POST['warehouse_id'];
+                
+                // Cek apakah akun ini mendukung fitur wilayah/gudang?
+                // Rule: 1004 (Pemasukan Wilayah), 2009 (Pengeluaran Wilayah), 2005 (Material/Stok), 3003 (Persediaan)
+                $special_codes = ['1004', '2009', '2005', '3003']; 
+                
+                if (in_array($accData['code'], $special_codes)) {
+                    $whNameStmt = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
+                    $whNameStmt->execute([$wh_id]);
+                    $whName = $whNameStmt->fetchColumn();
+                    if ($whName) $description .= " [Wilayah: $whName]";
+                }
+            }
+
+            $stmt = $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, ?, ?, ?, ?, ?)");
+            if ($stmt->execute([$date, $trx_type_input, $account_id, $amount, $description, $_SESSION['user_id']])) {
+                $_SESSION['flash'] = ['type' => 'success', 'message' => 'Transaksi berhasil disimpan'];
+            }
         }
+        echo "<script>window.location='?page=transaksi_keuangan';</script>";
+        exit;
     }
 }
 
-$accounts = $pdo->query("SELECT * FROM accounts ORDER BY type, code")->fetchAll();
+// AMBIL RIWAYAT TERAKHIR
+$recent = $pdo->query("SELECT f.*, a.name as acc_name, a.code as acc_code, u.username FROM finance_transactions f JOIN accounts a ON f.account_id = a.id JOIN users u ON f.user_id = u.id ORDER BY f.created_at DESC LIMIT 10")->fetchAll();
 ?>
 
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-    <!-- FORM INPUT -->
-    <div class="bg-white p-6 rounded-lg shadow lg:col-span-1 h-fit">
-        <h3 class="text-xl font-bold mb-4 text-blue-800 border-b pb-2"><i class="fas fa-money-bill-wave"></i> Input Keuangan</h3>
-        
-        <form method="POST" id="financeForm">
-            <input type="hidden" name="save_trx" value="1">
+    <div class="lg:col-span-1">
+        <div class="bg-white p-6 rounded-lg shadow sticky top-6">
+            <h3 class="font-bold text-xl mb-4 text-blue-800 border-b pb-2"><i class="fas fa-edit"></i> Input Keuangan</h3>
             
-            <div class="mb-4">
-                <label class="block text-sm font-bold text-gray-700 mb-1">Tanggal</label>
-                <input type="date" name="date" value="<?= date('Y-m-d') ?>" class="w-full border border-gray-300 rounded p-2 focus:ring-2 focus:ring-blue-500 focus:outline-none">
-            </div>
-
-            <div class="mb-4">
-                <label class="block text-sm font-bold text-gray-700 mb-2">Jenis Transaksi</label>
-                <div class="grid grid-cols-2 gap-4">
-                    <label class="cursor-pointer border p-2 rounded hover:bg-green-50 flex items-center gap-2">
-                        <input type="radio" name="type" value="INCOME" checked class="text-green-600 focus:ring-green-500" onchange="filterAccounts()"> 
-                        <span class="font-medium text-green-800">Pemasukan</span>
-                    </label>
-                    <label class="cursor-pointer border p-2 rounded hover:bg-red-50 flex items-center gap-2">
-                        <input type="radio" name="type" value="EXPENSE" class="text-red-600 focus:ring-red-500" onchange="filterAccounts()"> 
-                        <span class="font-medium text-red-800">Pengeluaran</span>
-                    </label>
+            <form method="POST" autocomplete="off">
+                <?= csrf_field() ?>
+                <input type="hidden" name="save_trx" value="1">
+                
+                <div class="mb-4">
+                    <label class="block text-sm font-bold text-gray-700 mb-1">Tanggal</label>
+                    <input type="date" name="date" value="<?= date('Y-m-d') ?>" class="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500" required>
                 </div>
-            </div>
 
-            <div class="mb-4">
-                <label class="block text-sm font-bold text-gray-700 mb-1">Akun</label>
-                <select name="account_id" id="accountSelect" class="w-full border border-gray-300 rounded p-2 focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white" required>
-                    <option value="">-- Pilih Akun --</option>
-                    <?php foreach ($accounts as $acc): ?>
-                        <option value="<?= $acc['id'] ?>" data-type="<?= $acc['type'] ?>"><?= $acc['code'] ?> - <?= $acc['name'] ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-
-            <div class="mb-4">
-                <label class="block text-sm font-bold text-gray-700 mb-1">Nominal (Rp)</label>
-                <div class="relative">
-                    <span class="absolute left-3 top-2 text-gray-500 text-sm">Rp</span>
-                    <input type="number" name="amount" class="w-full border border-gray-300 rounded p-2 pl-10 font-bold text-lg focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="0" required>
+                <!-- PILIHAN TIPE TRANSAKSI (RADIO) -->
+                <div class="mb-4">
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Arus Kas (Cash Flow)</label>
+                    <div class="flex gap-4">
+                        <label class="flex items-center cursor-pointer p-2 border rounded hover:bg-green-50 transition border-green-200 w-full justify-center">
+                            <input type="radio" name="trx_type" value="INCOME" class="mr-2" checked onchange="filterAccounts()">
+                            <span class="text-green-700 font-bold text-xs md:text-sm"><i class="fas fa-arrow-down"></i> Masuk (In)</span>
+                        </label>
+                        <label class="flex items-center cursor-pointer p-2 border rounded hover:bg-red-50 transition border-red-200 w-full justify-center">
+                            <input type="radio" name="trx_type" value="EXPENSE" class="mr-2" onchange="filterAccounts()">
+                            <span class="text-red-700 font-bold text-xs md:text-sm"><i class="fas fa-arrow-up"></i> Keluar (Out)</span>
+                        </label>
+                    </div>
+                    <p class="text-[10px] text-gray-500 mt-1 italic" id="type_hint">
+                        * Pemasukan Penjualan, Modal, atau Pinjaman.
+                    </p>
                 </div>
-            </div>
+                
+                <div class="mb-4">
+                    <label class="block text-sm font-bold text-gray-700 mb-1">Akun / Kategori</label>
+                    <select name="account_id" id="account_select" class="w-full border p-2 rounded bg-white focus:ring-2 focus:ring-blue-500" required onchange="checkSpecialAccount(this)">
+                        <option value="">-- Pilih Akun --</option>
+                        <?php foreach($accounts as $acc): ?>
+                            <option value="<?= h($acc['id']) ?>" data-type="<?= h($acc['type']) ?>" data-code="<?= h($acc['code']) ?>">
+                                <?= h($acc['code']) ?> - <?= h($acc['name']) ?> (<?= h($acc['type']) ?>)
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
 
-            <div class="mb-6">
-                <label class="block text-sm font-bold text-gray-700 mb-1">Keterangan</label>
-                <textarea name="description" class="w-full border border-gray-300 rounded p-2 focus:ring-2 focus:ring-blue-500 focus:outline-none" rows="3" placeholder="Contoh: Pembayaran Listrik Bulan Januari"></textarea>
-            </div>
+                <!-- WAREHOUSE INPUT (HIDDEN BY DEFAULT) -->
+                <div id="warehouse_container" class="mb-4 hidden bg-yellow-50 p-3 rounded border border-yellow-200 animate-fade-in">
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Alokasi Gudang / Wilayah</label>
+                    <select name="warehouse_id" class="w-full border p-2 rounded bg-white text-sm focus:ring-2 focus:ring-yellow-500">
+                        <?php foreach($warehouses as $w): ?>
+                            <option value="<?= $w['id'] ?>"><?= $w['name'] ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <p class="text-[10px] text-gray-500 mt-1 italic">
+                        <i class="fas fa-info-circle"></i> Transaksi ini akan ditandai untuk gudang yang dipilih (Material/Wilayah).
+                    </p>
+                </div>
 
-            <button type="submit" class="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition shadow-lg transform active:scale-95">
-                <i class="fas fa-save mr-2"></i> Simpan Transaksi
-            </button>
-        </form>
+                <div class="mb-4">
+                    <label class="block text-sm font-bold text-gray-700 mb-1">Nominal (Rp)</label>
+                    <!-- Input Type Text agar bisa diformat -->
+                    <input type="text" name="amount" id="amount_input" onkeyup="formatRupiah(this)" class="w-full border p-2 rounded text-right font-mono font-bold text-lg focus:ring-2 focus:ring-blue-500" placeholder="0" required>
+                </div>
+
+                <div class="mb-6">
+                    <label class="block text-sm font-bold text-gray-700 mb-1">Keterangan</label>
+                    <textarea name="description" class="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500" rows="3" placeholder="Contoh: Setoran Modal Rekan A..."></textarea>
+                </div>
+
+                <button type="submit" class="w-full bg-blue-600 text-white py-3 rounded font-bold shadow hover:bg-blue-700 transition transform active:scale-95">
+                    <i class="fas fa-save"></i> Simpan Transaksi
+                </button>
+            </form>
+        </div>
     </div>
 
-    <!-- RIWAYAT TRANSAKSI -->
-    <div class="bg-white p-6 rounded-lg shadow lg:col-span-2 flex flex-col h-full min-h-[500px]">
-        <h3 class="text-xl font-bold mb-4 text-gray-800 border-b pb-2">Riwayat Transaksi Hari Ini</h3>
-        
-        <div class="flex-1 overflow-y-auto max-h-[600px]">
-            <table class="w-full text-sm text-left border-collapse">
-                <thead class="bg-gray-100 text-gray-600 sticky top-0 z-10 shadow-sm">
-                    <tr>
-                        <th class="p-3 border-b">Waktu</th>
-                        <th class="p-3 border-b">Akun</th>
-                        <th class="p-3 border-b">Ket</th>
-                        <th class="p-3 border-b text-right">Nominal</th>
-                        <th class="p-3 border-b text-center w-24">Aksi</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y">
-                    <?php
-                    $today = date('Y-m-d');
-                    // Tampilkan semua jika manager/admin, atau filter per hari ini saja
-                    $txs = $pdo->query("SELECT f.*, a.name as account_name FROM finance_transactions f JOIN accounts a ON f.account_id = a.id WHERE f.date = '$today' ORDER BY f.created_at DESC")->fetchAll();
-                    
-                    foreach($txs as $t): 
-                        $time = date('H:i', strtotime($t['created_at']));
-                    ?>
-                        <tr class="hover:bg-gray-50 transition">
-                            <td class="p-3 text-gray-500 font-mono"><?= $time ?></td>
-                            <td class="p-3 font-bold text-gray-700"><?= $t['account_name'] ?></td>
-                            <td class="p-3 text-gray-600 max-w-xs truncate"><?= $t['description'] ?></td>
-                            <td class="p-3 text-right font-bold <?= $t['type']=='INCOME'?'text-green-600':'text-red-600' ?>">
-                                <?= $t['type']=='INCOME' ? '+' : '-' ?> <?= formatRupiah($t['amount']) ?>
+    <!-- TABLE RIWAYAT -->
+    <div class="lg:col-span-2">
+        <div class="bg-white p-6 rounded-lg shadow h-full flex flex-col">
+            <h3 class="font-bold text-lg text-gray-800 mb-4 border-b pb-2">Riwayat Transaksi Terakhir</h3>
+            <div class="flex-1 overflow-y-auto">
+                <table class="w-full text-sm text-left border-collapse">
+                    <thead class="bg-gray-100 text-gray-700">
+                        <tr>
+                            <th class="p-3 border-b">Tanggal</th>
+                            <th class="p-3 border-b">Akun</th>
+                            <th class="p-3 border-b">Ket</th>
+                            <th class="p-3 border-b text-right">Jumlah</th>
+                            <th class="p-3 border-b text-center">Aksi</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y">
+                        <?php foreach($recent as $r): ?>
+                        <tr class="hover:bg-gray-50 group">
+                            <td class="p-3 whitespace-nowrap text-gray-600"><?= date('d/m/y', strtotime($r['date'])) ?></td>
+                            <td class="p-3">
+                                <div class="font-bold text-gray-800"><?= h($r['acc_name']) ?></div>
+                                <div class="text-xs text-gray-500 font-mono"><?= h($r['acc_code']) ?></div>
+                            </td>
+                            <td class="p-3 text-gray-600 italic truncate max-w-xs" title="<?= h($r['description']) ?>">
+                                <?= h($r['description']) ?>
+                            </td>
+                            <td class="p-3 text-right font-bold font-mono <?= $r['type']=='INCOME'?'text-green-600':'text-red-600' ?>">
+                                <?= $r['type']=='INCOME' ? '+' : '-' ?> <?= number_format($r['amount'], 0, ',', '.') ?>
                             </td>
                             <td class="p-3 text-center">
-                                <div class="flex justify-center gap-1">
-                                    <button onclick='editTrx(<?= json_encode($t) ?>)' class="bg-yellow-100 text-yellow-600 hover:bg-yellow-200 p-2 rounded transition" title="Edit">
-                                        <i class="fas fa-edit"></i>
-                                    </button>
-                                    <form method="POST" onsubmit="return confirm('Apakah Anda yakin ingin menghapus transaksi ini?');" class="inline">
-                                        <input type="hidden" name="delete_id" value="<?= $t['id'] ?>">
-                                        <button type="submit" class="bg-red-100 text-red-600 hover:bg-red-200 p-2 rounded transition" title="Hapus">
-                                            <i class="fas fa-trash-alt"></i>
-                                        </button>
-                                    </form>
-                                </div>
+                                <form method="POST" onsubmit="return confirm('Hapus transaksi ini?')" class="inline opacity-50 group-hover:opacity-100 transition">
+                                    <?= csrf_field() ?>
+                                    <input type="hidden" name="delete_id" value="<?= h($r['id']) ?>">
+                                    <button class="text-red-400 hover:text-red-600 p-1"><i class="fas fa-trash"></i></button>
+                                </form>
                             </td>
                         </tr>
-                    <?php endforeach; ?>
-                    
-                    <?php if(empty($txs)): ?>
-                        <tr>
-                            <td colspan="5" class="p-8 text-center text-gray-400">
-                                <i class="fas fa-file-invoice-dollar text-4xl mb-2"></i>
-                                <p>Belum ada transaksi hari ini.</p>
-                            </td>
-                        </tr>
-                    <?php endif; ?>
-                </tbody>
-            </table>
+                        <?php endforeach; ?>
+                        <?php if(empty($recent)): ?>
+                            <tr><td colspan="5" class="p-4 text-center text-gray-400">Belum ada transaksi.</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 </div>
 
-<!-- MODAL EDIT -->
-<div id="editModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-    <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
-        <button onclick="document.getElementById('editModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
-            <i class="fas fa-times text-xl"></i>
-        </button>
-        <h3 class="text-xl font-bold mb-4 border-b pb-2 text-blue-800"><i class="fas fa-edit"></i> Edit Transaksi</h3>
-        
-        <form method="POST">
-            <input type="hidden" name="update_trx" value="1">
-            <input type="hidden" name="edit_id" id="edit_id">
-            
-            <div class="mb-3">
-                <label class="block text-sm font-bold text-gray-700 mb-1">Tanggal</label>
-                <input type="date" name="edit_date" id="edit_date" class="w-full border p-2 rounded text-sm">
-            </div>
-            
-            <div class="mb-3">
-                <label class="block text-sm font-bold text-gray-700 mb-1">Akun</label>
-                <select name="edit_account_id" id="edit_account_id" class="w-full border p-2 rounded text-sm bg-white">
-                    <?php foreach($accounts as $acc): ?>
-                        <option value="<?= $acc['id'] ?>"><?= $acc['code'] ?> - <?= $acc['name'] ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            
-            <div class="mb-3">
-                <label class="block text-sm font-bold text-gray-700 mb-1">Nominal (Rp)</label>
-                <input type="number" name="edit_amount" id="edit_amount" class="w-full border p-2 rounded text-sm">
-            </div>
-            
-            <div class="mb-4">
-                <label class="block text-sm font-bold text-gray-700 mb-1">Keterangan</label>
-                <textarea name="edit_description" id="edit_description" class="w-full border p-2 rounded text-sm" rows="3"></textarea>
-            </div>
-            
-            <div class="flex gap-2">
-                <button type="button" onclick="document.getElementById('editModal').classList.add('hidden')" class="flex-1 bg-gray-300 text-gray-700 py-2 rounded font-bold hover:bg-gray-400">Batal</button>
-                <button type="submit" class="flex-1 bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700">Update</button>
-            </div>
-        </form>
-    </div>
-</div>
-
 <script>
+// Format Rupiah saat mengetik (contoh: 10.000.000)
+function formatRupiah(input) {
+    let value = input.value.replace(/\D/g, '');
+    if(value === '') { input.value = ''; return; }
+    input.value = new Intl.NumberFormat('id-ID').format(value);
+}
+
 function filterAccounts() {
-    const type = document.querySelector('input[name="type"]:checked').value;
-    const select = document.getElementById('accountSelect');
-    const options = select.querySelectorAll('option');
+    const type = document.querySelector('input[name="trx_type"]:checked').value;
+    const select = document.getElementById('account_select');
+    const options = select.options;
+    const hint = document.getElementById('type_hint');
     
-    let firstVisible = "";
-    options.forEach(opt => {
-        if (!opt.value) return; 
-        const accType = opt.getAttribute('data-type');
-        let isVisible = false;
-        if (type === 'INCOME') isVisible = ['INCOME', 'EQUITY', 'LIABILITY'].includes(accType);
-        else isVisible = ['EXPENSE', 'ASSET', 'LIABILITY'].includes(accType);
+    // Reset selection
+    select.value = "";
+    document.getElementById('warehouse_container').classList.add('hidden');
 
-        opt.style.display = isVisible ? 'block' : 'none';
-        if (isVisible && !firstVisible) firstVisible = opt.value;
-    });
-    select.value = ""; 
+    // Update Hint
+    if (type === 'INCOME') {
+        hint.innerHTML = "* Pemasukan Penjualan (INCOME), Modal Rekan (EQUITY), atau Pinjaman (LIABILITY).";
+    } else {
+        hint.innerHTML = "* Biaya Operasional (EXPENSE), Beli Aset, Bayar Utang (LIABILITY), atau Prive (EQUITY).";
+    }
+
+    for (let i = 0; i < options.length; i++) {
+        const opt = options[i];
+        const optType = opt.getAttribute('data-type');
+        
+        if (!optType) { // Placeholder
+            opt.style.display = 'block';
+            continue; 
+        }
+
+        // LOGIKA FILTER PENTING:
+        // Jika INCOME (Uang Masuk): Tampilkan Akun INCOME, EQUITY (Modal), LIABILITY (Hutang)
+        // Jika EXPENSE (Uang Keluar): Tampilkan Akun EXPENSE, EQUITY (Prive), LIABILITY (Bayar Hutang), ASSET (Beli Aset)
+        
+        let show = false;
+        if (type === 'INCOME') {
+            if (optType === 'INCOME' || optType === 'EQUITY' || optType === 'LIABILITY') show = true;
+        } else {
+            if (optType === 'EXPENSE' || optType === 'EQUITY' || optType === 'LIABILITY' || optType === 'ASSET') show = true;
+        }
+
+        opt.style.display = show ? 'block' : 'none';
+    }
 }
 
-function editTrx(data) {
-    document.getElementById('edit_id').value = data.id;
-    document.getElementById('edit_date').value = data.date;
-    document.getElementById('edit_account_id').value = data.account_id;
-    document.getElementById('edit_amount').value = data.amount;
-    document.getElementById('edit_description').value = data.description;
+function checkSpecialAccount(select) {
+    const opt = select.options[select.selectedIndex];
+    if(!opt || !opt.getAttribute('data-code')) return;
+
+    const code = opt.getAttribute('data-code');
+    const container = document.getElementById('warehouse_container');
     
-    document.getElementById('editModal').classList.remove('hidden');
+    // Rule: Show warehouse for specific logic
+    const specialCodes = ['1004', '2009', '2005', '3003'];
+    
+    if (specialCodes.includes(code)) {
+        container.classList.remove('hidden');
+    } else {
+        container.classList.add('hidden');
+    }
 }
 
+// Init filter on load
 document.addEventListener('DOMContentLoaded', filterAccounts);
 </script>

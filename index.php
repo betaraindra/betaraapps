@@ -2,6 +2,18 @@
 require_once 'config.php';
 requireLogin();
 
+// --- FETCH GLOBAL SETTINGS ---
+$settings = [];
+try {
+    $stmt = $pdo->query("SELECT * FROM settings");
+    while ($row = $stmt->fetch()) {
+        $settings[$row['setting_key']] = $row['setting_value'];
+    }
+} catch (Exception $e) { 
+    // Fallback jika tabel belum ada atau error
+    error_log("Settings fetch error: " . $e->getMessage());
+}
+
 // Routing Sederhana
 $page = $_GET['page'] ?? 'dashboard';
 $role = $_SESSION['role'];
@@ -27,6 +39,30 @@ if ($page === 'logout') {
     header("Location: login.php");
     exit;
 }
+
+// --- STANDALONE PAGE LOGIC (Untuk Cetak & Download) ---
+// Jika halaman adalah cetak_surat_jalan, cetak_barcode, atau download_backup, jangan load layout utama
+$standalone_pages = ['cetak_surat_jalan', 'cetak_barcode', 'download_backup'];
+if (in_array($page, $standalone_pages)) {
+    $filename = "views/" . $page . ".php";
+    if (file_exists($filename)) {
+        include $filename;
+    } else {
+        echo "Halaman tidak ditemukan.";
+    }
+    exit; // Stop script agar tidak load layout bawahnya
+}
+
+// --- LOGIC MENU ACTIVE STATE ---
+// Menentukan menu mana yang terbuka otomatis berdasarkan halaman aktif
+$menu_data_pages = ['data_barang', 'lokasi_gudang', 'data_keuangan', 'akun_kategori', 'data_transaksi'];
+$menu_laporan_pages = ['laporan_gudang', 'laporan_aset', 'laporan_keuangan', 'laporan_internal'];
+$menu_admin_pages = ['manajemen_user', 'system_logs', 'pengaturan', 'update_system'];
+
+// Default: Data & Laporan OPEN, Admin CLOSED (kecuali sedang aktif)
+$is_menu_data_open = true; 
+$is_menu_laporan_open = true;
+$is_menu_admin_open = in_array($page, $menu_admin_pages);
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -42,6 +78,22 @@ if ($page === 'logout') {
     <style>
         .sidebar-scroll::-webkit-scrollbar { width: 5px; }
         .sidebar-scroll::-webkit-scrollbar-thumb { background: #475569; border-radius: 5px; }
+        
+        /* CSS KHUSUS PRINT GLOBAL - Menyembunyikan UI Aplikasi */
+        @media print {
+            aside, header, .no-print { display: none !important; }
+            body, main { 
+                background-color: white !important; 
+                margin: 0 !important; 
+                padding: 0 !important; 
+                height: auto !important; 
+                overflow: visible !important;
+                width: 100% !important;
+            }
+            /* Reset Layout Flexbox agar block normal */
+            body { display: block !important; }
+            main { display: block !important; }
+        }
     </style>
 </head>
 <body class="bg-gray-100 flex h-screen overflow-hidden font-sans">
@@ -51,16 +103,13 @@ if ($page === 'logout') {
         </div>
         <div class="flex-1 overflow-y-auto sidebar-scroll py-4">
             <nav class="px-2 space-y-1">
-                <div class="px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Dashboards</div>
+                <!-- DASHBOARDS -->
+                <div class="px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Home</div>
                 <a href="?page=dashboard" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'dashboard' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-chart-pie mr-3 w-6 text-center"></i> Dash. Keuangan
+                    <i class="fas fa-home mr-3 w-6 text-center"></i> Dashboard Utama
                 </a>
-                <?php if ($access_inventory): ?>
-                <a href="?page=dashboard_gudang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'dashboard_gudang' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-boxes mr-3 w-6 text-center"></i> Dash. Gudang
-                </a>
-                <?php endif; ?>
 
+                <!-- INPUT TRANSAKSI -->
                 <div class="mt-4 px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">Input Transaksi</div>
                 <?php if ($access_finance): ?>
                 <a href="?page=transaksi_keuangan" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'transaksi_keuangan' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
@@ -76,96 +125,118 @@ if ($page === 'logout') {
                 </a>
                 <?php endif; ?>
 
-                <div class="mt-4 px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">Data Master</div>
-                <?php if ($access_inventory): ?>
-                <a href="?page=data_barang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_barang' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-cube mr-3 w-6 text-center"></i> Data Barang
-                </a>
-                <a href="?page=lokasi_gudang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'lokasi_gudang' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-map-marker-alt mr-3 w-6 text-center"></i> Lokasi Gudang
-                </a>
-                <?php endif; ?>
-                <?php if ($access_finance): ?>
-                <a href="?page=data_keuangan" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_keuangan' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-table mr-3 w-6 text-center"></i> Data Keuangan
-                </a>
-                <a href="?page=akun_kategori" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'akun_kategori' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-tags mr-3 w-6 text-center"></i> Akun & Kategori
-                </a>
-                <?php endif; ?>
-                
-                <?php if($access_finance || $access_inventory): ?>
-                <a href="?page=data_transaksi" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_transaksi' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-list-alt mr-3 w-6 text-center"></i> Data Transaksi
-                </a>
-                <?php endif; ?>
+                <!-- COLLAPSIBLE: DATA KEUANGAN & INVENTORI -->
+                <button onclick="toggleMenu('menu-data', this)" class="w-full flex justify-between items-center mt-4 px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider hover:text-white focus:outline-none transition-colors">
+                    <span>Data Keuangan & Inventori</span>
+                    <i class="fas <?= $is_menu_data_open ? 'fa-minus' : 'fa-plus' ?> text-[10px]"></i>
+                </button>
+                <div id="menu-data" class="<?= $is_menu_data_open ? '' : 'hidden' ?> space-y-1 mt-1 pl-2 border-l-2 border-slate-700 ml-2">
+                    <?php if ($access_inventory): ?>
+                        <a href="?page=data_barang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_barang' ? 'text-white' : 'text-slate-300' ?>">Data Barang</a>
+                        <a href="?page=lokasi_gudang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'lokasi_gudang' ? 'text-white' : 'text-slate-300' ?>">Lokasi Gudang</a>
+                    <?php endif; ?>
+                    <?php if ($access_finance): ?>
+                        <a href="?page=data_keuangan" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_keuangan' ? 'text-white' : 'text-slate-300' ?>">Data Keuangan</a>
+                        <a href="?page=akun_kategori" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'akun_kategori' ? 'text-white' : 'text-slate-300' ?>">Akun & Kategori</a>
+                    <?php endif; ?>
+                    <a href="?page=data_transaksi" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_transaksi' ? 'text-white' : 'text-slate-300' ?>">Semua Transaksi</a>
+                </div>
 
-                <div class="mt-4 px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">Laporan</div>
-                <?php if ($access_inventory): ?>
-                <a href="?page=laporan_gudang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'laporan_gudang' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-warehouse mr-3 w-6 text-center"></i> Laporan Gudang
-                </a>
-                <?php endif; ?>
-                <?php if ($access_finance): ?>
-                <a href="?page=laporan_keuangan" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'laporan_keuangan' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-file-invoice-dollar mr-3 w-6 text-center"></i> Lap. Keuangan Pajak
-                </a>
-                <a href="?page=laporan_internal" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'laporan_internal' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-chart-line mr-3 w-6 text-center"></i> Lap. Keuangan Internal
-                </a>
-                <?php endif; ?>
+                <!-- COLLAPSIBLE: LAPORAN -->
+                <button onclick="toggleMenu('menu-laporan', this)" class="w-full flex justify-between items-center mt-4 px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider hover:text-white focus:outline-none transition-colors">
+                    <span>Laporan</span>
+                    <i class="fas <?= $is_menu_laporan_open ? 'fa-minus' : 'fa-plus' ?> text-[10px]"></i>
+                </button>
+                <div id="menu-laporan" class="<?= $is_menu_laporan_open ? '' : 'hidden' ?> space-y-1 mt-1 pl-2 border-l-2 border-slate-700 ml-2">
+                    <?php if ($access_inventory): ?>
+                        <a href="?page=laporan_gudang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'laporan_gudang' ? 'text-white' : 'text-slate-300' ?>">Laporan Gudang</a>
+                        <a href="?page=laporan_aset" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'laporan_aset' ? 'text-white' : 'text-slate-300' ?>">Laporan Aset</a>
+                    <?php endif; ?>
+                    <?php if ($access_finance): ?>
+                        <a href="?page=laporan_keuangan" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'laporan_keuangan' ? 'text-white' : 'text-slate-300' ?>">Laporan Pajak</a>
+                        <a href="?page=laporan_internal" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'laporan_internal' ? 'text-white' : 'text-slate-300' ?>">Laporan Internal</a>
+                    <?php endif; ?>
+                </div>
 
-                <div class="mt-4 px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">Admin</div>
-                <?php if ($access_user_mgmt): ?>
-                <a href="?page=manajemen_user" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'manajemen_user' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-users-cog mr-3 w-6 text-center"></i> Manajemen User
-                </a>
-                <?php endif; ?>
-                
-                <?php if ($is_super || $is_svp): ?>
-                <a href="?page=system_logs" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'system_logs' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-history mr-3 w-6 text-center"></i> System Logs
-                </a>
-                <?php endif; ?>
-                
-                <?php if ($access_settings): ?>
-                <a href="?page=pengaturan" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'pengaturan' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-cogs mr-3 w-6 text-center"></i> Pengaturan
-                </a>
-                <?php endif; ?>
+                <!-- COLLAPSIBLE: ADMIN -->
+                <button onclick="toggleMenu('menu-admin', this)" class="w-full flex justify-between items-center mt-4 px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider hover:text-white focus:outline-none transition-colors">
+                    <span>Admin</span>
+                    <i class="fas <?= $is_menu_admin_open ? 'fa-minus' : 'fa-plus' ?> text-[10px]"></i>
+                </button>
+                <div id="menu-admin" class="<?= $is_menu_admin_open ? '' : 'hidden' ?> space-y-1 mt-1 pl-2 border-l-2 border-slate-700 ml-2">
+                    <?php if ($access_user_mgmt): ?>
+                        <a href="?page=manajemen_user" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'manajemen_user' ? 'text-white' : 'text-slate-300' ?>">Manajemen User</a>
+                    <?php endif; ?>
+                    <?php if ($access_settings): ?>
+                        <a href="?page=system_logs" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'system_logs' ? 'text-white' : 'text-slate-300' ?>">System Logs</a>
+                        <a href="?page=pengaturan" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'pengaturan' ? 'text-white' : 'text-slate-300' ?>">Pengaturan</a>
+                        <a href="?page=update_system" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'update_system' ? 'text-white' : 'text-slate-300' ?>">
+                            <i class="fas fa-sync-alt mr-2"></i> Update Sistem
+                        </a>
+                    <?php endif; ?>
+                </div>
             </nav>
         </div>
-        <div class="p-4 border-t border-slate-700">
+        
+        <!-- USER FOOTER -->
+        <div class="border-t border-slate-700 p-4 bg-slate-900">
             <div class="flex items-center">
+                <div class="flex-shrink-0">
+                    <div class="h-8 w-8 rounded-full bg-slate-600 flex items-center justify-center text-xs font-bold">
+                        <?= strtoupper(substr($_SESSION['username'], 0, 2)) ?>
+                    </div>
+                </div>
                 <div class="ml-3">
                     <p class="text-sm font-medium text-white"><?= $_SESSION['username'] ?></p>
-                    <p class="text-xs text-slate-400"><?= str_replace('_', ' ', $_SESSION['role']) ?></p>
+                    <p class="text-xs text-slate-400"><?= $_SESSION['role'] ?></p>
                 </div>
-                <a href="?page=logout" class="ml-auto text-slate-400 hover:text-white"><i class="fas fa-sign-out-alt"></i></a>
+                <a href="?page=logout" class="ml-auto text-slate-400 hover:text-white" title="Logout">
+                    <i class="fas fa-sign-out-alt"></i>
+                </a>
             </div>
-            <div class="mt-2 text-center text-[10px] text-slate-600">v0.0.1</div>
         </div>
     </aside>
-    <div class="flex-1 flex flex-col overflow-hidden">
-        <header class="md:hidden flex items-center justify-between bg-white border-b p-4">
-            <div class="font-bold text-lg uppercase"><?= $app_name ?></div>
-            <button onclick="document.querySelector('aside').classList.toggle('hidden');" class="text-gray-600 focus:outline-none"><i class="fas fa-bars"></i></button>
+
+    <!-- CONTENT -->
+    <main class="flex-1 flex flex-col h-screen overflow-hidden">
+        <!-- TOPBAR MOBILE -->
+        <header class="bg-white shadow-sm h-16 flex items-center justify-between px-4 md:hidden z-20">
+            <h1 class="font-bold text-gray-800"><?= $app_name ?></h1>
+            <button onclick="document.querySelector('aside').classList.toggle('hidden')" class="text-gray-600 focus:outline-none">
+                <i class="fas fa-bars text-xl"></i>
+            </button>
         </header>
-        <main class="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-6">
+
+        <!-- MAIN SCROLL -->
+        <div class="flex-1 overflow-x-hidden overflow-y-auto bg-gray-100 p-4 md:p-6">
             <?php
-            if (isset($_SESSION['flash'])) {
-                $bg = $_SESSION['flash']['type'] == 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700';
-                echo "<div class='mb-4 p-4 rounded $bg'>{$_SESSION['flash']['message']}</div>";
-                unset($_SESSION['flash']);
-            }
             $filename = "views/" . $page . ".php";
             if (file_exists($filename)) {
                 include $filename;
             } else {
-                echo "<div class='text-center mt-10'><h1 class='text-4xl font-bold text-gray-300'>404</h1><p>Halaman tidak ditemukan.</p></div>";
+                echo "<div class='bg-white p-6 rounded shadow text-center'>
+                        <h2 class='text-2xl font-bold text-gray-800'>404</h2>
+                        <p>Halaman tidak ditemukan.</p>
+                      </div>";
             }
             ?>
-        </main>
-    </div>
+        </div>
+    </main>
+
+    <script>
+        function toggleMenu(id, btn) {
+            const menu = document.getElementById(id);
+            const icon = btn.querySelector('i');
+            if (menu.classList.contains('hidden')) {
+                menu.classList.remove('hidden');
+                icon.classList.remove('fa-plus');
+                icon.classList.add('fa-minus');
+            } else {
+                menu.classList.add('hidden');
+                icon.classList.remove('fa-minus');
+                icon.classList.add('fa-plus');
+            }
+        }
+    </script>
 </body>
 </html>

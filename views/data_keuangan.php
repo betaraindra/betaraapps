@@ -32,7 +32,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Gunakan cleanNumber untuk sanitasi format rupiah
             $amount = cleanNumber($_POST['edit_amount']);
             
-            $desc = $_POST['edit_description'];
+            $desc = $_POST['edit_description']; // Uraian
+            $notes = $_POST['edit_notes']; // Keterangan
+            
+            // Gabungkan Notes ke Description jika ada
+            $final_desc = $desc;
+            if (!empty($notes)) {
+                $final_desc .= " [Ket: $notes]";
+            }
             
             // Cek Tipe Akun untuk update tipe transaksi (jika akun berubah)
             $accStmt = $pdo->prepare("SELECT type FROM accounts WHERE id = ?");
@@ -40,7 +47,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $accType = $accStmt->fetchColumn(); // INCOME/EXPENSE
             
             $stmt = $pdo->prepare("UPDATE finance_transactions SET date=?, account_id=?, type=?, amount=?, description=? WHERE id=?");
-            $stmt->execute([$date, $acc_id, $accType, $amount, $desc, $id]);
+            $stmt->execute([$date, $acc_id, $accType, $amount, $final_desc, $id]);
             
             logActivity($pdo, 'UPDATE_KEUANGAN', "Update transaksi ID: $id");
             $_SESSION['flash'] = ['type'=>'success', 'message'=>'Transaksi berhasil diperbarui.'];
@@ -51,7 +58,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // 3. IMPORT EXCEL SESUAI FORMAT BARU (3 ROW HEADER)
+    // 3. IMPORT EXCEL SESUAI FORMAT MASTER
     if (isset($_POST['import_data'])) {
         $data = json_decode($_POST['import_data'], true);
         $count = 0;
@@ -59,7 +66,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         $pdo->beginTransaction();
         try {
-            // Cache Existing Accounts: Map Code -> Data AND Name -> Data
+            // Cache Existing Accounts
             $accStmt = $pdo->query("SELECT id, code, name, type FROM accounts");
             $existingAccounts = []; // Map Code -> Data
             $existingAccountsByName = []; // Map Name -> Data
@@ -68,7 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $existingAccountsByName[strtoupper(trim($a['name']))] = $a;
             }
 
-            // Helper sanitasi currency dari Excel
+            // Helper sanitasi currency
             $cleanExcelCurrency = function($val) {
                 if (is_numeric($val)) return (float)$val;
                 $val = strval($val);
@@ -77,91 +84,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 // Deteksi format: 1.000.000 (Indo) vs 1,000,000 (US)
                 if (strpos($val, '.') !== false && strpos($val, ',') !== false) {
-                    // Ada titik dan koma.
                     if (strrpos($val, ',') > strrpos($val, '.')) {
-                         // Indo: 1.000,00
                          $val = str_replace('.', '', $val);
                          $val = str_replace(',', '.', $val);
                     } else {
-                        // US: 1,000.00
                         $val = str_replace(',', '', $val);
                     }
                 } elseif (strpos($val, ',') !== false) {
-                    // Cuma ada koma
                     if (substr_count($val, ',') > 1) {
-                        $val = str_replace(',', '', $val); // 1,000,000 -> 1000000
+                        $val = str_replace(',', '', $val);
                     } else {
-                        // Cek panjang desimal
                         $parts = explode(',', $val);
                         if (strlen(end($parts)) == 2) { 
-                            $val = str_replace(',', '.', $val); // 500,00 -> 500.00
+                            $val = str_replace(',', '.', $val); 
                         } else {
-                            $val = str_replace(',', '', $val); // 500,000 -> 500000
+                            $val = str_replace(',', '', $val); 
                         }
                     }
                 } else {
-                    // Cuma ada titik
                     if (substr_count($val, '.') > 1) {
-                        $val = str_replace('.', '', $val); // 1.000.000 -> 1000000
+                        $val = str_replace('.', '', $val);
                     } else {
                          $parts = explode('.', $val);
                          if (strlen(end($parts)) == 3) {
-                             $val = str_replace('.', '', $val); // 500.000 -> 500000
+                             $val = str_replace('.', '', $val); 
                          }
                     }
                 }
-                
                 return (float)$val;
             };
 
             foreach($data as $index => $row) {
-                // Pastikan row memiliki minimal kolom
-                if (empty($row) || count($row) < 2) continue;
+                // Ignore empty rows or rows with less than 3 columns
+                if (empty($row) || count($row) < 3) continue;
+
+                // Column Mapping based on Master Spreadsheet
+                // 0: Tanggal, 1: Reference, 2: URAIAN, 3: Pemasukan Hari, 4: Pemasukan Bulan, 5: Pengeluaran Hari, 6: Pengeluaran Bulan, 7: Saldo, 8: KETERANGAN
                 
                 $col0 = trim(strval($row[0] ?? '')); // Tanggal
+                $col2 = trim(strval($row[2] ?? '')); // Uraian
+
+                // Skip Headers
+                if ($index < 2) continue;
+                if (stripos($col0, 'Tanggal') !== false) continue;
                 
-                // --- SKIP LOGIC HEADER ---
-                // Skip jika kolom Tanggal berisi "TANGGAL"
-                if (stripos($col0, 'TANGGAL') !== false) continue;
-                // Skip jika kolom Tanggal kosong DAN kolom Pemasukan/Pengeluaran berisi Header
-                $col3 = isset($row[3]) ? strval($row[3]) : '';
-                if (empty($col0) && (stripos($col3, 'Pemasukan') !== false || stripos($col3, 'RP') !== false)) continue;
-                // Skip baris Total/Periode di dalam data
-                if (stripos($col0, 'Periode') !== false || stripos($col0, 'TOTAL') !== false) continue;
+                // Skip Rows "Total Tahun", "Mutasi All Transaksi", etc.
+                if (stripos($col0, 'Total') !== false || stripos($col2, 'Mutasi') !== false) continue;
+                if (stripos($col0, ' - ') !== false && stripos($col2, 'Mutasi') !== false) continue;
 
-                // --- MAPPING KOLOM (SESUAI EXCEL USER) ---
-                // [0] TANGGAL
-                // [1] Referensi
-                // [2] URAIAN
-                // [3] Pemasukan (RP)
-                // [4] Pemasukan Bulanan (Ignored)
-                // [5] Pengeluaran (RP)
-                // [6] Pengeluaran Bulanan (Ignored)
-                // [7] Sisa Saldo (Ignored)
-                // [8] Keterangan
-
-                // 1. Parsing Tanggal
+                // Parsing Tanggal
                 $dateRaw = $row[0] ?? '';
-                if (empty($dateRaw)) continue; // Skip jika tanggal kosong
+                if (empty($dateRaw)) continue;
 
                 $dateDB = date('Y-m-d');
                 if (is_numeric($dateRaw)) {
                     $unixDate = ($dateRaw - 25569) * 86400;
                     $dateDB = gmdate("Y-m-d", $unixDate);
                 } else {
-                    $dateRaw = trim($dateRaw);
-                    // Support Indo Text Dates: "3 Jan 2025" or "03 Januari 2025"
-                    $id_months = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember',
-                                  'Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
-                    $en_months = ['January','February','March','April','May','June','July','August','September','October','November','December',
-                                  'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-                    
-                    $dateStr = str_ireplace($id_months, $en_months, $dateRaw);
-                    $ts = strtotime($dateStr);
+                    // Try parsing string date
+                    $ts = strtotime($dateRaw);
                     if ($ts) $dateDB = date('Y-m-d', $ts);
                 }
 
-                // 2. Nominal & Tipe
+                // Nominal (Hanya baca kolom Per HARI)
                 $valIn = isset($row[3]) ? $cleanExcelCurrency($row[3]) : 0;
                 $valOut = isset($row[5]) ? $cleanExcelCurrency($row[5]) : 0;
                 
@@ -175,61 +160,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $amount = $valOut;
                     $trxType = 'EXPENSE';
                 } else {
-                    continue; // Skip jika nominal 0
+                    continue; // Skip nominal 0
                 }
 
-                // 3. Resolve Account (Referensi -> Kode/Nama Akun)
+                // Resolve Account (Reference)
                 $refInput = isset($row[1]) ? trim(strval($row[1])) : '';
                 $uraian = isset($row[2]) ? trim(strval($row[2])) : 'Transaksi Import';
                 $refUpper = strtoupper($refInput);
                 
                 $accId = null;
 
-                // A. Cek berdasarkan KODE
                 if (!empty($refInput) && isset($existingAccounts[$refUpper])) {
                     $accId = $existingAccounts[$refUpper]['id'];
-                }
-                // B. Cek berdasarkan NAMA
-                elseif (!empty($refInput) && isset($existingAccountsByName[$refUpper])) {
+                } elseif (!empty($refInput) && isset($existingAccountsByName[$refUpper])) {
                     $accId = $existingAccountsByName[$refUpper]['id'];
-                }
-                // C. Auto-Create
-                else {
-                    if (empty($refInput)) {
-                        $refInput = ($trxType == 'INCOME') ? 'Pendapatan Lain' : 'Pengeluaran Umum';
-                    }
-
-                    $prefix = ($trxType == 'INCOME') ? '1' : '2';
-                    $newCode = $prefix . str_pad(mt_rand(1, 999), 3, '0', STR_PAD_LEFT);
-                    
-                    // Ensure unique code
-                    $safety = 0;
-                    while(isset($existingAccounts[$newCode]) && $safety < 100) {
+                } else {
+                    // Auto create account if reference is not empty and not found
+                    if (!empty($refInput)) {
+                        $prefix = ($trxType == 'INCOME') ? '1' : '2';
                         $newCode = $prefix . str_pad(mt_rand(1, 999), 3, '0', STR_PAD_LEFT);
-                        $safety++;
+                        $newAccName = $refInput;
+
+                        $stmtNew = $pdo->prepare("INSERT INTO accounts (code, name, type) VALUES (?, ?, ?)");
+                        $stmtNew->execute([$newCode, $newAccName, $trxType]);
+                        $accId = $pdo->lastInsertId();
+                        
+                        $newAccountData = ['id'=>$accId, 'code'=>$newCode, 'name'=>$newAccName, 'type'=>$trxType];
+                        $existingAccounts[$newCode] = $newAccountData;
+                        $existingAccountsByName[strtoupper($newAccName)] = $newAccountData;
+                        $new_accounts++;
+                    } else {
+                        // Fallback default account
+                        $defName = ($trxType == 'INCOME') ? 'Pendapatan Lain' : 'Pengeluaran Umum';
+                        if(isset($existingAccountsByName[strtoupper($defName)])) {
+                            $accId = $existingAccountsByName[strtoupper($defName)]['id'];
+                        }
                     }
-
-                    $newAccName = $refInput;
-
-                    $stmtNew = $pdo->prepare("INSERT INTO accounts (code, name, type) VALUES (?, ?, ?)");
-                    $stmtNew->execute([$newCode, $newAccName, $trxType]);
-                    $accId = $pdo->lastInsertId();
-                    
-                    $newAccountData = ['id'=>$accId, 'code'=>$newCode, 'name'=>$newAccName, 'type'=>$trxType];
-                    $existingAccounts[$newCode] = $newAccountData;
-                    $existingAccountsByName[strtoupper($newAccName)] = $newAccountData;
-                    $new_accounts++;
                 }
+                
+                if(!$accId) continue; // Skip if no account
 
-                // 4. Keterangan (Col 8 / Index 8)
+                // Keterangan (Col 8)
                 $keteranganCol = isset($row[8]) ? trim(strval($row[8])) : '';
                 $desc = $uraian;
-                
                 if (!empty($keteranganCol) && $keteranganCol !== '-') {
                     $desc .= " [Ket: $keteranganCol]";
                 }
 
-                // 5. Insert Transaction
                 $stmtIns = $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, ?, ?, ?, ?, ?)");
                 $stmtIns->execute([$dateDB, $trxType, $accId, $amount, $desc, $_SESSION['user_id']]);
                 $count++;
@@ -251,42 +228,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // --- GET DATA & FILTER ---
-// Set Default Range to Current Year to show more data
 $start = $_GET['start'] ?? date('Y-01-01');
 $end = $_GET['end'] ?? date('Y-12-31');
 $search = $_GET['q'] ?? '';
 $filter_acc = $_GET['account_id'] ?? 'ALL';
-$filter_type = $_GET['type'] ?? 'ALL';
-$filter_user = $_GET['user_id'] ?? 'ALL';
 $filter_wh = $_GET['warehouse_id'] ?? 'ALL';
 
-$sql = "SELECT f.*, a.name as acc_name, a.code as acc_code, u.username 
+$sql = "SELECT f.*, a.name as acc_name, a.code as acc_code 
         FROM finance_transactions f 
         JOIN accounts a ON f.account_id = a.id 
-        LEFT JOIN users u ON f.user_id = u.id
         WHERE f.date BETWEEN ? AND ?";
 
 $params = [$start, $end];
 
 if (!empty($search)) {
-    $sql .= " AND (f.description LIKE ? OR a.name LIKE ? OR a.code LIKE ?)";
-    $params[] = "%$search%"; $params[] = "%$search%"; $params[] = "%$search%";
+    $sql .= " AND (f.description LIKE ? OR a.name LIKE ?)";
+    $params[] = "%$search%"; $params[] = "%$search%";
 }
 if ($filter_acc !== 'ALL') {
     $sql .= " AND f.account_id = ?"; $params[] = $filter_acc;
 }
-if ($filter_type !== 'ALL') {
-    $sql .= " AND f.type = ?"; $params[] = $filter_type;
-}
-if ($filter_user !== 'ALL') {
-    $sql .= " AND f.user_id = ?"; $params[] = $filter_user;
-}
+
+// FILTER WILAYAH (Berdasarkan Tag Description)
 if ($filter_wh !== 'ALL') {
-    $stmt_wh = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
-    $stmt_wh->execute([$filter_wh]);
-    $wh_name = $stmt_wh->fetchColumn();
-    if ($wh_name) {
-        $sql .= " AND f.description LIKE ?"; $params[] = "%$wh_name%";
+    $stmt_wh_name = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
+    $stmt_wh_name->execute([$filter_wh]);
+    $wh_target_name = $stmt_wh_name->fetchColumn();
+    if ($wh_target_name) {
+        $sql .= " AND f.description LIKE ?";
+        $params[] = "%[Wilayah: $wh_target_name]%";
     }
 }
 
@@ -323,51 +293,50 @@ foreach ($transactions as $t) {
         
         table { width: 100%; border-collapse: collapse; font-size: 9pt; }
         th, td { border: 1px solid #000 !important; padding: 4px !important; }
-        .bg-purple-200 { background-color: #e9d5ff !important; }
+        .bg-purple-200, .bg-gray-100 { background-color: #f3f4f6 !important; }
         .bg-green-100 { background-color: #dcfce7 !important; }
         .bg-red-100 { background-color: #fee2e2 !important; }
         .bg-blue-100 { background-color: #dbeafe !important; }
-        .bg-cyan-300 { background-color: #67e8f9 !important; }
     }
     .print-only { display: none; }
 </style>
 
 <!-- UI HEADER (SCREEN ONLY) -->
 <div class="mb-6 flex flex-col md:flex-row justify-between items-center gap-4 no-print">
-    <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-table text-blue-600"></i> Data Keuangan</h2>
+    <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-table text-blue-600"></i> Data Keuangan (Master)</h2>
     
     <div class="flex gap-2">
         <button onclick="document.getElementById('importModal').classList.remove('hidden')" class="bg-indigo-600 text-white px-4 py-2 rounded font-bold hover:bg-indigo-700 shadow flex items-center gap-2">
-            <i class="fas fa-file-import"></i> Import Excel
+            <i class="fas fa-file-import"></i> Import Master
         </button>
         <button onclick="exportToExcel()" class="bg-green-600 text-white px-4 py-2 rounded font-bold hover:bg-green-700 shadow flex items-center gap-2">
-            <i class="fas fa-file-export"></i> Export Excel
+            <i class="fas fa-file-export"></i> Export Master
         </button>
     </div>
 </div>
 
-<!-- FILTER GRID -->
+<!-- FILTER -->
 <div class="bg-white p-4 rounded-lg shadow mb-6 border-l-4 border-blue-600 no-print">
-    <form method="GET" class="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-5 gap-4 items-end">
+    <form method="GET" class="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-6 gap-4 items-end">
         <input type="hidden" name="page" value="data_keuangan">
         
         <div>
             <label class="block text-xs font-bold text-gray-600 mb-1">Cari (Uraian/Ref)</label>
-            <input type="text" name="q" value="<?= htmlspecialchars($search) ?>" class="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500" placeholder="Ketik kata kunci...">
+            <input type="text" name="q" value="<?= htmlspecialchars($search) ?>" class="w-full border p-2 rounded text-sm" placeholder="Ketik kata kunci...">
         </div>
 
         <div>
             <label class="block text-xs font-bold text-gray-600 mb-1">Dari Tanggal</label>
-            <input type="date" name="start" value="<?= $start ?>" class="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500">
+            <input type="date" name="start" value="<?= $start ?>" class="w-full border p-2 rounded text-sm">
         </div>
         <div>
             <label class="block text-xs font-bold text-gray-600 mb-1">Sampai Tanggal</label>
-            <input type="date" name="end" value="<?= $end ?>" class="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500">
+            <input type="date" name="end" value="<?= $end ?>" class="w-full border p-2 rounded text-sm">
         </div>
 
         <div>
             <label class="block text-xs font-bold text-gray-600 mb-1">Akun</label>
-            <select name="account_id" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-blue-500">
+            <select name="account_id" class="w-full border p-2 rounded text-sm bg-white">
                 <option value="ALL">-- Semua --</option>
                 <?php foreach($accounts as $acc): ?>
                     <option value="<?= $acc['id'] ?>" <?= $filter_acc == $acc['id'] ? 'selected' : '' ?>>
@@ -378,9 +347,9 @@ foreach ($transactions as $t) {
         </div>
 
         <div>
-            <label class="block text-xs font-bold text-gray-600 mb-1">Filter Wilayah</label>
-            <select name="warehouse_id" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-blue-500">
-                <option value="ALL">-- Semua Wilayah --</option>
+            <label class="block text-xs font-bold text-gray-600 mb-1">Wilayah</label>
+            <select name="warehouse_id" class="w-full border p-2 rounded text-sm bg-white">
+                <option value="ALL">-- Semua --</option>
                 <?php foreach($warehouses as $wh): ?>
                     <option value="<?= $wh['id'] ?>" <?= $filter_wh == $wh['id'] ? 'selected' : '' ?>>
                         <?= $wh['name'] ?>
@@ -389,72 +358,62 @@ foreach ($transactions as $t) {
             </select>
         </div>
 
-        <div class="md:col-span-4 lg:col-span-5 flex justify-end gap-2 border-t pt-3 mt-1">
-            <button type="submit" class="bg-blue-600 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 shadow text-sm">
+        <div>
+            <button type="submit" class="bg-blue-600 text-white px-6 py-2 rounded font-bold hover:bg-blue-700 shadow text-sm w-full">
                 <i class="fas fa-filter"></i> Tampilkan
-            </button>
-            <button type="button" onclick="window.print()" class="bg-gray-700 text-white px-6 py-2 rounded font-bold hover:bg-gray-800 shadow text-sm">
-                <i class="fas fa-print"></i> Cetak
             </button>
         </div>
     </form>
 </div>
 
-<!-- TABEL DATA SESUAI REQUEST (HEADER BERTINGKAT 3 BARIS) -->
+<!-- TABEL DATA -->
 <div class="bg-white rounded-lg shadow overflow-hidden">
     <div class="overflow-x-auto">
         <table id="financeTable" class="w-full text-sm text-left border-collapse border border-gray-400">
-            <!-- 3 HEADER ROWS -->
-            <thead class="bg-purple-200 text-gray-900 font-bold border-b-2 border-gray-400">
+            <!-- HEADER SESUAI MASTER SPREADSHEET -->
+            <thead class="bg-gray-100 text-gray-900 font-bold border-b-2 border-gray-400 text-center">
                 <tr>
-                    <th rowspan="3" class="p-2 border border-gray-400 text-center w-24 align-middle">TANGGAL</th>
-                    <th rowspan="3" class="p-2 border border-gray-400 text-center w-32 align-middle">Referensi</th>
-                    <th rowspan="3" class="p-2 border border-gray-400 align-middle">URAIAN</th>
+                    <th rowspan="2" class="p-2 border border-gray-400 w-24 align-middle bg-white">Tanggal</th>
+                    <th rowspan="2" class="p-2 border border-gray-400 w-32 align-middle bg-white">Reference</th>
+                    <th rowspan="2" class="p-2 border border-gray-400 align-middle bg-white">URAIAN</th>
                     
-                    <th colspan="2" class="p-2 border border-gray-400 text-center bg-green-100">Pemasukan</th>
-                    <th colspan="2" class="p-2 border border-gray-400 text-center bg-red-100">Pengeluaran</th>
+                    <th colspan="2" class="p-2 border border-gray-400 bg-green-50">PEMASUKAN</th>
+                    <th colspan="2" class="p-2 border border-gray-400 bg-red-50">PENGELUARAN</th>
                     
-                    <th rowspan="3" class="p-2 border border-gray-400 text-right w-32 align-middle">Sisa Saldo/<br>Sub Total Perbulan</th>
-                    <th rowspan="3" class="p-2 border border-gray-400 align-middle w-48">Keterangan</th>
-                    <!-- Kolom Aksi (No Print) -->
-                    <th rowspan="3" class="p-2 border border-gray-400 text-center w-16 align-middle no-print">Aksi</th>
+                    <th rowspan="2" class="p-2 border border-gray-400 w-32 align-middle bg-white">Sisa Saldo / Selisih Perbulan</th>
+                    <th rowspan="2" class="p-2 border border-gray-400 w-48 align-middle bg-white">KETERANGAN</th>
+                    <th rowspan="2" class="p-2 border border-gray-400 w-16 align-middle no-print bg-white">Aksi</th>
                 </tr>
                 <tr>
-                    <!-- Sub Header Level 2 -->
-                    <th class="p-2 border border-gray-400 text-center w-28 bg-green-50">Pemasukan</th>
-                    <th class="p-2 border border-gray-400 text-center w-28 bg-green-50">Bulanan</th>
-                    <th class="p-2 border border-gray-400 text-center w-28 bg-red-50">Pengeluaran</th>
-                    <th class="p-2 border border-gray-400 text-center w-28 bg-red-50">Bulanan</th>
-                </tr>
-                <tr>
-                    <!-- Sub Header Level 3 -->
-                    <th class="p-1 border border-gray-400 text-center text-xs">RP</th>
-                    <th class="p-1 border border-gray-400 text-center text-xs">RP</th>
-                    <th class="p-1 border border-gray-400 text-center text-xs">RP</th>
-                    <th class="p-1 border border-gray-400 text-center text-xs">RP</th>
+                    <!-- Sub Headers -->
+                    <th class="p-2 border border-gray-400 w-28 bg-green-50 text-xs">Per HARI</th>
+                    <th class="p-2 border border-gray-400 w-28 bg-green-50 text-xs">PER BULAN</th>
+                    <th class="p-2 border border-gray-400 w-28 bg-red-50 text-xs">Per HARI</th>
+                    <th class="p-2 border border-gray-400 w-28 bg-red-50 text-xs">PER BULAN</th>
                 </tr>
             </thead>
             <tbody>
-                <!-- BARIS GRAND TOTAL DI ATAS -->
+                <!-- GRAND TOTAL ROW (Top) -->
                 <?php if(!empty($transactions)): ?>
-                    <tr class="bg-cyan-300 text-gray-900 font-extrabold border-b-4 border-double border-gray-800">
-                        <td colspan="3" class="p-2 text-center uppercase border border-gray-800">URAIAN (TOTAL)</td>
+                    <tr class="bg-blue-100 text-gray-900 font-bold border-b border-gray-400">
+                        <td class="p-2 border border-gray-400">Total Periode</td>
+                        <td class="p-2 border border-gray-400"></td>
+                        <td class="p-2 border border-gray-400"></td>
                         
-                        <!-- Total Pemasukan -->
-                        <td class="p-2 text-right border border-gray-800"><?= formatRupiah($grand_total_in) ?></td>
-                        <td class="p-2 text-right border border-gray-800"><?= formatRupiah($grand_total_in) ?></td>
+                        <!-- Total Pemasukan Harian -->
+                        <td class="p-2 text-right border border-gray-400 text-green-900"><?= formatRupiah($grand_total_in) ?></td>
+                        <td class="p-2 border border-gray-400 bg-gray-200"></td>
                         
-                        <!-- Total Pengeluaran -->
-                        <td class="p-2 text-right border border-gray-800"><?= formatRupiah($grand_total_out) ?></td>
-                        <td class="p-2 text-right border border-gray-800"><?= formatRupiah($grand_total_out) ?></td>
+                        <!-- Total Pengeluaran Harian -->
+                        <td class="p-2 text-right border border-gray-400 text-red-900"><?= formatRupiah($grand_total_out) ?></td>
+                        <td class="p-2 border border-gray-400 bg-gray-200"></td>
                         
                         <!-- Net -->
-                        <td class="p-2 text-right border border-gray-800 <?= ($grand_total_in - $grand_total_out) >= 0 ? 'text-blue-900' : 'text-red-900' ?>">
+                        <td class="p-2 text-right border border-gray-400 <?= ($grand_total_in - $grand_total_out) >= 0 ? 'text-blue-900' : 'text-red-900' ?>">
                             <?= formatRupiah($grand_total_in - $grand_total_out) ?>
                         </td>
-                        
-                        <td class="border border-gray-800"></td>
-                        <td class="border border-gray-800 no-print"></td>
+                        <td class="border border-gray-400 bg-gray-200"></td>
+                        <td class="border border-gray-400 bg-gray-200 no-print"></td>
                     </tr>
                 <?php endif; ?>
 
@@ -468,62 +427,67 @@ foreach ($transactions as $t) {
                         $month_net = 0;
                         
                         $id_months = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
-                        $month_num = date('n', strtotime($month_key . '-01'));
-                        $month_display = $id_months[$month_num-1] . " " . date('Y', strtotime($month_key . '-01'));
+                        $month_ts = strtotime($month_key . '-01');
+                        $month_name_id = $id_months[date('n', $month_ts)-1];
+                        $month_display = $month_name_id . " " . date('Y', $month_ts);
+                        
+                        $month_start_date = date('1 F Y', $month_ts);
+                        $month_end_date = date('t F Y', $month_ts);
+                        // Translate English months to ID for display
+                        $en_m = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+                        $month_start_date = str_ireplace($en_m, $id_months, $month_start_date);
+                        $month_end_date = str_ireplace($en_m, $id_months, $month_end_date);
                 ?>
                     
-                    <!-- DATA TRANSAKSI -->
+                    <!-- DATA TRANSAKSI ROWS -->
                     <?php foreach($items as $row): 
                         $in_amount = ($row['type'] == 'INCOME') ? $row['amount'] : 0;
                         $out_amount = ($row['type'] == 'EXPENSE') ? $row['amount'] : 0;
                         $month_in += $in_amount;
                         $month_out += $out_amount;
 
-                        // Ekstrak Keterangan [Ket: ...] -> Masukkan ke kolom Keterangan
-                        $desc_clean = $row['description'];
-                        $extra_ket = '';
-                        if (preg_match('/\[Ket:\s*(.*?)\]/', $row['description'], $matches)) {
-                            $extra_ket = $matches[1];
-                            $desc_clean = trim(str_replace($matches[0], '', $row['description']));
+                        // Separate Description and Notes
+                        $desc_main = $row['description'];
+                        $desc_note = '';
+                        // Pattern: "Main Description [Ket: Additional Notes]"
+                        if (preg_match('/^(.*?)\[Ket:\s*(.*?)\]$/s', $row['description'], $matches)) {
+                            $desc_main = trim($matches[1]);
+                            $desc_note = trim($matches[2]);
                         }
+                        
+                        // Row Date Format (d F Y for export compatibility or d Month Y)
+                        $row_date_ts = strtotime($row['date']);
+                        $row_date_str = date('j F Y', $row_date_ts); // e.g. 1 January 2026
+                        $row_date_str = str_ireplace($en_m, $id_months, $row_date_str); // Indo
                     ?>
                     <tr class="hover:bg-gray-50 border-b border-gray-300">
-                        <!-- Tanggal: 3 Jan 2025 -->
-                        <td class="p-2 border border-gray-300 text-center whitespace-nowrap">
-                            <?= date('d M Y', strtotime($row['date'])) ?>
-                        </td>
-                        <!-- Referensi (Nama Akun) -->
-                        <td class="p-2 border border-gray-300 text-center font-bold text-gray-700">
-                            <?= $row['acc_name'] ?>
-                        </td>
-                        <!-- Uraian -->
-                        <td class="p-2 border border-gray-300">
-                            <?= $desc_clean ?>
-                        </td>
+                        <td class="p-2 border border-gray-400 text-center whitespace-nowrap"><?= $row_date_str ?></td>
+                        <td class="p-2 border border-gray-400 text-center font-bold text-gray-700"><?= $row['acc_name'] ?></td>
+                        <td class="p-2 border border-gray-400"><?= $desc_main ?></td>
                         
-                        <!-- Pemasukan -->
-                        <td class="p-2 border border-gray-300 text-right text-gray-700 bg-green-50/30">
+                        <!-- Pemasukan Per Hari -->
+                        <td class="p-2 border border-gray-400 text-right text-green-700">
                             <?= $in_amount > 0 ? formatRupiah($in_amount) : '' ?>
                         </td>
-                        <td class="p-2 border border-gray-300 bg-gray-50"></td>
+                        <!-- Pemasukan Per Bulan (Empty) -->
+                        <td class="p-2 border border-gray-400 bg-gray-50"></td>
                         
-                        <!-- Pengeluaran -->
-                        <td class="p-2 border border-gray-300 text-right text-gray-700 bg-red-50/30">
+                        <!-- Pengeluaran Per Hari -->
+                        <td class="p-2 border border-gray-400 text-right text-red-700">
                             <?= $out_amount > 0 ? formatRupiah($out_amount) : '' ?>
                         </td>
-                        <td class="p-2 border border-gray-300 bg-gray-50"></td>
+                        <!-- Pengeluaran Per Bulan (Empty) -->
+                        <td class="p-2 border border-gray-400 bg-gray-50"></td>
                         
                         <!-- Sisa Saldo (Empty) -->
-                        <td class="p-2 border border-gray-300 bg-gray-50"></td>
+                        <td class="p-2 border border-gray-400 bg-gray-50"></td>
 
                         <!-- Keterangan -->
-                        <td class="p-2 border border-gray-300 text-sm text-gray-600">
-                            <?= $extra_ket ?>
-                        </td>
+                        <td class="p-2 border border-gray-400 text-sm text-gray-600"><?= $desc_note ?></td>
                         
-                        <!-- Aksi (No Print) -->
-                        <td class="p-2 border border-gray-300 text-center no-print">
-                            <div class="flex justify-center gap-2">
+                        <!-- Aksi -->
+                        <td class="p-2 border border-gray-400 text-center no-print">
+                            <div class="flex justify-center gap-1">
                                 <button onclick='editTrx(<?= json_encode($row) ?>)' class="text-blue-500 hover:text-blue-700"><i class="fas fa-edit"></i></button>
                                 <form method="POST" onsubmit="return confirm('Hapus?')" class="inline">
                                     <input type="hidden" name="delete_id" value="<?= $row['id'] ?>">
@@ -534,19 +498,25 @@ foreach ($transactions as $t) {
                     </tr>
                     <?php endforeach; ?>
 
-                    <!-- SUMMARY BULANAN -->
+                    <!-- SUMMARY BULANAN (MUTASI) -->
                     <?php $month_net = $month_in - $month_out; ?>
-                    <tr class="bg-orange-100 font-bold text-gray-800 border-t-2 border-gray-400">
-                        <td colspan="3" class="p-2 border border-gray-400 text-center uppercase">
-                            Periode <?= $month_display ?>
+                    <tr class="bg-gray-100 font-bold text-gray-900 border-t-2 border-gray-600">
+                        <td class="p-2 border border-gray-400 text-center text-xs">
+                            <?= $month_start_date ?> - <?= $month_end_date ?>
+                        </td>
+                        <td class="p-2 border border-gray-400 bg-gray-200"></td>
+                        <td class="p-2 border border-gray-400 text-center uppercase">
+                            Mutasi All Transaksi Periode <?= $month_display ?>
                         </td>
                         
+                        <!-- Daily Cols (Empty) -->
+                        <td class="p-2 border border-gray-400 bg-gray-200"></td>
                         <!-- Total Pemasukan Bulanan -->
-                        <td class="p-2 border border-gray-400 bg-gray-100"></td>
                         <td class="p-2 border border-gray-400 text-right text-green-800"><?= formatRupiah($month_in) ?></td>
                         
+                        <!-- Daily Cols (Empty) -->
+                        <td class="p-2 border border-gray-400 bg-gray-200"></td>
                         <!-- Total Pengeluaran Bulanan -->
-                        <td class="p-2 border border-gray-400 bg-gray-100"></td>
                         <td class="p-2 border border-gray-400 text-right text-red-800"><?= formatRupiah($month_out) ?></td>
                         
                         <!-- Sisa Saldo Bulanan -->
@@ -554,12 +524,11 @@ foreach ($transactions as $t) {
                             <?= formatRupiah($month_net) ?>
                         </td>
                         
-                        <td class="p-2 border border-gray-400 text-center text-xs italic text-gray-500">
-                            <?= $month_net >= 0 ? 'Surplus' : 'Defisit' ?>
-                        </td>
-                        <td class="p-2 border border-gray-400 no-print"></td>
+                        <td class="p-2 border border-gray-400 bg-gray-200"></td>
+                        <td class="p-2 border border-gray-400 bg-gray-200 no-print"></td>
                     </tr>
                     
+                    <!-- Spacer -->
                     <tr><td colspan="10" class="h-4 border-none bg-white"></td></tr>
 
                 <?php endforeach; endif; ?>
@@ -599,9 +568,14 @@ foreach ($transactions as $t) {
                 <input type="text" name="edit_amount" id="edit_amount" onkeyup="formatRupiah(this)" class="w-full border p-2 rounded text-sm text-right" required>
             </div>
             
+            <div class="mb-3">
+                <label class="block text-sm font-bold text-gray-700 mb-1">Uraian (Utama)</label>
+                <input type="text" name="edit_description" id="edit_description" class="w-full border p-2 rounded text-sm">
+            </div>
+
             <div class="mb-4">
-                <label class="block text-sm font-bold text-gray-700 mb-1">Uraian / Keterangan</label>
-                <textarea name="edit_description" id="edit_description" class="w-full border p-2 rounded text-sm" rows="3"></textarea>
+                <label class="block text-sm font-bold text-gray-700 mb-1">Keterangan (Tambahan)</label>
+                <textarea name="edit_notes" id="edit_notes" class="w-full border p-2 rounded text-sm" rows="2"></textarea>
             </div>
             
             <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700">Simpan Perubahan</button>
@@ -616,14 +590,15 @@ foreach ($transactions as $t) {
             <i class="fas fa-times text-xl"></i>
         </button>
         <h3 class="text-xl font-bold mb-4 border-b pb-2 flex items-center gap-2">
-            <i class="fas fa-file-excel text-green-600"></i> Import Excel
+            <i class="fas fa-file-excel text-green-600"></i> Import Master
         </h3>
         <div class="text-sm text-gray-600 mb-4 bg-yellow-50 p-3 rounded border border-yellow-200">
             <p class="font-bold mb-1">Panduan Import:</p>
             <ul class="list-disc ml-4">
-                <li>Gunakan <b>Export Excel</b> untuk mendapatkan template.</li>
-                <li>Format Tanggal Excel (misal: 3 Jan 2025) akan otomatis dikenali.</li>
-                <li>Jika Nama Akun di kolom Referensi tidak ditemukan, akun baru akan dibuat otomatis.</li>
+                <li>Gunakan <b>Export Excel</b> untuk template yang sesuai.</li>
+                <li>Format Tanggal Excel (misal: 1 January 2026) akan dikenali.</li>
+                <li>Data "Total" dan "Mutasi" (baris rekap) akan otomatis dilewati.</li>
+                <li>Kolom: Tanggal(A), Ref(B), Uraian(C), Masuk Hari(D), Masuk Bulan(E), Keluar Hari(F), Keluar Bulan(G), Saldo(H), Keterangan(I).</li>
             </ul>
         </div>
         <form id="form_import" method="POST">
@@ -654,21 +629,45 @@ function editTrx(data) {
     document.getElementById('edit_account_id').value = data.account_id;
     document.getElementById('edit_amount').value = new Intl.NumberFormat('id-ID').format(data.amount);
     
-    // Bersihkan tag ket dari deskripsi untuk edit (opsional)
-    // let cleanDesc = data.description.replace(/\[Ket:.*?\]/, '').trim();
-    document.getElementById('edit_description').value = data.description;
+    // Split Description & Notes
+    let desc = data.description;
+    let notes = '';
+    const match = desc.match(/^(.*?)\[Ket:\s*(.*?)\]$/s);
+    if(match) {
+        desc = match[1].trim();
+        notes = match[2].trim();
+    }
     
+    document.getElementById('edit_description').value = desc;
+    document.getElementById('edit_notes').value = notes;
     document.getElementById('editModal').classList.remove('hidden');
 }
 
-// --- EXPORT FUNCTION ---
+// --- EXPORT FUNCTION (CLIENT SIDE) ---
 function exportToExcel() {
     const table = document.getElementById("financeTable");
     const clone = table.cloneNode(true);
+    
+    // 1. Hapus kolom/elemen yang tidak perlu (no-print)
     const noExports = clone.querySelectorAll('.no-print');
     noExports.forEach(el => el.remove());
+
+    // 2. Hapus Baris Summary (Total Periode & Mutasi Bulanan) agar sesuai format Master
+    const rows = clone.querySelectorAll('tbody tr'); // Hanya cek di body
+    rows.forEach(row => {
+        // Ambil text dari row, convert ke lowercase untuk safety
+        const text = (row.innerText || row.textContent).toLowerCase();
+        
+        // Keyword yang menandakan baris summary
+        // "Total Periode" ada di baris paling atas body
+        // "Mutasi All Transaksi" ada di akhir setiap bulan
+        if(text.includes('total periode') || text.includes('mutasi all transaksi')) {
+            row.remove();
+        }
+    });
+
     let wb = XLSX.utils.table_to_book(clone, {sheet: "Laporan Keuangan"});
-    XLSX.writeFile(wb, "Laporan_Keuangan_Export.xlsx");
+    XLSX.writeFile(wb, "Laporan_Keuangan_Master.xlsx");
 }
 
 // --- IMPORT FUNCTION ---

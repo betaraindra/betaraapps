@@ -55,9 +55,10 @@ if (in_array($page, $standalone_pages)) {
 
 // --- LOGIC MENU ACTIVE STATE ---
 // Menentukan menu mana yang terbuka otomatis berdasarkan halaman aktif
-$menu_data_pages = ['data_barang', 'lokasi_gudang', 'data_keuangan', 'akun_kategori', 'data_transaksi'];
+// UPDATE: lokasi_gudang dan akun_kategori dipindah ke admin pages
+$menu_data_pages = ['data_barang', 'data_keuangan', 'data_transaksi'];
 $menu_laporan_pages = ['laporan_gudang', 'laporan_aset', 'laporan_keuangan', 'laporan_internal'];
-$menu_admin_pages = ['manajemen_user', 'system_logs', 'pengaturan', 'update_system'];
+$menu_admin_pages = ['lokasi_gudang', 'akun_kategori', 'manajemen_user', 'system_logs', 'pengaturan', 'update_system'];
 
 // Default: Data & Laporan OPEN, Admin CLOSED (kecuali sedang aktif)
 $is_menu_data_open = true; 
@@ -133,11 +134,11 @@ $is_menu_admin_open = in_array($page, $menu_admin_pages);
                 <div id="menu-data" class="<?= $is_menu_data_open ? '' : 'hidden' ?> space-y-1 mt-1 pl-2 border-l-2 border-slate-700 ml-2">
                     <?php if ($access_inventory): ?>
                         <a href="?page=data_barang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_barang' ? 'text-white' : 'text-slate-300' ?>">Data Barang</a>
-                        <a href="?page=lokasi_gudang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'lokasi_gudang' ? 'text-white' : 'text-slate-300' ?>">Lokasi Gudang</a>
+                        <!-- Lokasi Gudang dipindah ke Admin -->
                     <?php endif; ?>
                     <?php if ($access_finance): ?>
                         <a href="?page=data_keuangan" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_keuangan' ? 'text-white' : 'text-slate-300' ?>">Data Keuangan</a>
-                        <a href="?page=akun_kategori" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'akun_kategori' ? 'text-white' : 'text-slate-300' ?>">Akun & Kategori</a>
+                        <!-- Akun Kategori dipindah ke Admin -->
                     <?php endif; ?>
                     <a href="?page=data_transaksi" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_transaksi' ? 'text-white' : 'text-slate-300' ?>">Semua Transaksi</a>
                 </div>
@@ -149,7 +150,7 @@ $is_menu_admin_open = in_array($page, $menu_admin_pages);
                 </button>
                 <div id="menu-laporan" class="<?= $is_menu_laporan_open ? '' : 'hidden' ?> space-y-1 mt-1 pl-2 border-l-2 border-slate-700 ml-2">
                     <?php if ($access_inventory): ?>
-                        <a href="?page=laporan_gudang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'laporan_gudang' ? 'text-white' : 'text-slate-300' ?>">Laporan Gudang</a>
+                        <a href="?page=laporan_gudang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'laporan_gudang' ? 'text-white' : 'text-slate-300' ?>">Transaksi Gudang</a>
                         <a href="?page=laporan_aset" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'laporan_aset' ? 'text-white' : 'text-slate-300' ?>">Laporan Aset</a>
                     <?php endif; ?>
                     <?php if ($access_finance): ?>
@@ -158,18 +159,28 @@ $is_menu_admin_open = in_array($page, $menu_admin_pages);
                     <?php endif; ?>
                 </div>
 
-                <!-- COLLAPSIBLE: ADMIN -->
+                <!-- COLLAPSIBLE: PENGATURAN (ADMIN) -->
                 <button onclick="toggleMenu('menu-admin', this)" class="w-full flex justify-between items-center mt-4 px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider hover:text-white focus:outline-none transition-colors">
-                    <span>Admin</span>
+                    <span>Pengaturan</span>
                     <i class="fas <?= $is_menu_admin_open ? 'fa-minus' : 'fa-plus' ?> text-[10px]"></i>
                 </button>
                 <div id="menu-admin" class="<?= $is_menu_admin_open ? '' : 'hidden' ?> space-y-1 mt-1 pl-2 border-l-2 border-slate-700 ml-2">
+                    <!-- PINDAHAN DARI DATA: Lokasi Gudang -->
+                    <?php if ($access_inventory): ?>
+                        <a href="?page=lokasi_gudang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'lokasi_gudang' ? 'text-white' : 'text-slate-300' ?>">Lokasi Gudang</a>
+                    <?php endif; ?>
+                    
+                    <!-- PINDAHAN DARI DATA: Akun & Kategori -->
+                    <?php if ($access_finance): ?>
+                        <a href="?page=akun_kategori" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'akun_kategori' ? 'text-white' : 'text-slate-300' ?>">Akun & Kategori</a>
+                    <?php endif; ?>
+
                     <?php if ($access_user_mgmt): ?>
                         <a href="?page=manajemen_user" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'manajemen_user' ? 'text-white' : 'text-slate-300' ?>">Manajemen User</a>
                     <?php endif; ?>
                     <?php if ($access_settings): ?>
                         <a href="?page=system_logs" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'system_logs' ? 'text-white' : 'text-slate-300' ?>">System Logs</a>
-                        <a href="?page=pengaturan" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'pengaturan' ? 'text-white' : 'text-slate-300' ?>">Pengaturan</a>
+                        <a href="?page=pengaturan" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'pengaturan' ? 'text-white' : 'text-slate-300' ?>">Pengaturan Perusahaan</a>
                         <a href="?page=update_system" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'update_system' ? 'text-white' : 'text-slate-300' ?>">
                             <i class="fas fa-sync-alt mr-2"></i> Update Sistem
                         </a>

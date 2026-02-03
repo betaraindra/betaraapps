@@ -3,6 +3,7 @@ checkRole(['SUPER_ADMIN', 'ADMIN_GUDANG', 'ADMIN_KEUANGAN', 'MANAGER', 'SVP']);
 
 $id = $_GET['id'] ?? 0;
 
+// Header Transaksi
 $stmt = $pdo->prepare("SELECT i.reference, i.date, i.type, i.notes, 
                               w.name as wh_name, w.location as wh_loc, 
                               u.username 
@@ -15,8 +16,10 @@ $header = $stmt->fetch();
 
 if (!$header) die("Data transaksi tidak ditemukan (ID: $id).");
 
+// Items Transaksi
+// UPDATE: Menambahkan p.category untuk detail material yang lebih lengkap
 if (empty($header['reference']) || $header['reference'] == '-') {
-    $sql_items = "SELECT i.*, p.sku, p.name as prod_name, p.unit, w.name as origin_warehouse 
+    $sql_items = "SELECT i.*, p.sku, p.name as prod_name, p.category, p.unit, w.name as origin_warehouse 
                   FROM inventory_transactions i 
                   JOIN products p ON i.product_id = p.id 
                   LEFT JOIN warehouses w ON i.warehouse_id = w.id
@@ -24,7 +27,7 @@ if (empty($header['reference']) || $header['reference'] == '-') {
     $stmt_items = $pdo->prepare($sql_items);
     $stmt_items->execute([$id]);
 } else {
-    $sql_items = "SELECT i.*, p.sku, p.name as prod_name, p.unit, w.name as origin_warehouse 
+    $sql_items = "SELECT i.*, p.sku, p.name as prod_name, p.category, p.unit, w.name as origin_warehouse 
                   FROM inventory_transactions i 
                   JOIN products p ON i.product_id = p.id 
                   LEFT JOIN warehouses w ON i.warehouse_id = w.id
@@ -35,6 +38,7 @@ if (empty($header['reference']) || $header['reference'] == '-') {
 
 $items = $stmt_items->fetchAll();
 
+// Config Perusahaan
 $settings_query = $pdo->query("SELECT * FROM settings");
 $config = [];
 while ($row = $settings_query->fetch()) $config[$row['setting_key']] = $row['setting_value'];
@@ -49,7 +53,6 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
 <head>
     <meta charset="UTF-8">
     <title>Cetak - <?= $header['reference'] ?></title>
-    <!-- Ganti library ke bwip-js untuk support Data Matrix -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/bwip-js/3.4.4/bwip-js-min.js"></script>
     <style>
         @media print {
@@ -89,6 +92,8 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
         .no-print { background: #333; color: #fff; padding: 10px; text-align: center; margin-bottom: 20px; border-radius: 5px; }
         .btn-print { background: #fff; color: #000; border: none; padding: 5px 15px; cursor: pointer; font-weight: bold; border-radius: 3px; }
         canvas.barcode-canvas { max-width: 100%; height: auto; }
+        .item-category { font-size: 10px; font-style: italic; color: #555; }
+        .item-notes { font-size: 10px; margin-top: 2px; }
     </style>
 </head>
 <body>
@@ -150,8 +155,9 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                 <tr>
                     <th style="width: 30px;">No</th>
                     <th style="width: 120px;">SKU / Barcode</th>
-                    <th>Nama Barang</th>
-                    <th style="width: 100px;">Gudang Asal</th>
+                    <th>Detail Material / Barang</th>
+                    <th style="width: 100px;">Gudang</th>
+                    <th>Catatan Item</th>
                     <th style="width: 50px;">Jml</th>
                     <th style="width: 50px;">Unit</th>
                     <th style="width: 40px;">Cek</th>
@@ -166,11 +172,15 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                 <tr>
                     <td class="text-center"><?= $no++ ?></td>
                     <td class="text-center" style="padding: 4px;">
-                        <!-- BARCODE (Code 128) -->
                         <canvas id="<?= $row_id ?>" class="barcode-canvas"></canvas>
+                        <div style="font-size: 9px; margin-top:2px; font-family: monospace;"><?= $item['sku'] ?></div>
                     </td>
-                    <td><?= $item['prod_name'] ?></td>
+                    <td>
+                        <div class="text-bold"><?= $item['prod_name'] ?></div>
+                        <div class="item-category">Kategori: <?= $item['category'] ?></div>
+                    </td>
                     <td class="text-center"><?= $item['origin_warehouse'] ?? '-' ?></td>
+                    <td class="item-notes"><?= $item['notes'] ?? '-' ?></td>
                     <td class="text-center text-bold" style="font-size: 14px;"><?= $item['quantity'] ?></td>
                     <td class="text-center"><?= $item['unit'] ?></td>
                     <td class="text-center">▢</td>
@@ -182,7 +192,7 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
 
     <div class="footer-wrapper">
         <div class="footer-note">
-            * Harap diperiksa kembali kondisi barang.<br>
+            * Harap diperiksa kembali spesifikasi dan jumlah barang.<br>
             * Dokumen ini sah jika disertai tanda tangan penanggung jawab.
         </div>
 
@@ -201,7 +211,7 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
     </div>
 
     <script>
-        // Render Barcode Referensi Surat Jalan (CODE128)
+        // Render Barcode Referensi Surat Jalan
         try {
             bwipjs.toCanvas('barcode_ref', {
                 bcid:        'code128',
@@ -213,7 +223,7 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
             });
         } catch(e) {}
 
-        // Render Barcode Per Item (CODE 128 dengan Teks)
+        // Render Barcode Per Item
         <?php 
         $no = 1;
         foreach($items as $item): 
@@ -221,12 +231,11 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
         ?>
             try {
                 bwipjs.toCanvas('<?= $row_id ?>', {
-                    bcid:        'code128', // Ganti ke Code 128 (1D)
+                    bcid:        'code128',
                     text:        '<?= $item['sku'] ?>',
                     scale:       2,
-                    height:      10,
-                    includetext: true, // Tampilkan teks di bawah barcode
-                    textxalign:  'center'
+                    height:      8, // Slightly shorter for table row
+                    includetext: false, // Text is handled in HTML div for better control
                 });
             } catch(e) {}
         <?php endforeach; ?>

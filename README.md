@@ -1,4 +1,4 @@
-# SIKI APP (Sistem Informasi Keuangan & Inventori) v0.0.1
+# SIKI APP (Sistem Informasi Keuangan & Inventori) v0.0.2
 
 Aplikasi berbasis web untuk manajemen stok barang (Inventori) dan pencatatan keuangan sederhana (Arus Kas). Dibangun menggunakan **PHP Native** dan **MySQL** (tanpa framework berat), sehingga ringan dan mudah dimodifikasi.
 
@@ -26,6 +26,7 @@ Aplikasi berbasis web untuk manajemen stok barang (Inventori) dan pencatatan keu
 - **System Logs:** Mencatat setiap aktivitas user (Audit Trail).
 - **Backup & Restore:** Fitur backup database .sql langsung dari aplikasi.
 - **Kop Surat Dinamis:** Logo dan info perusahaan bisa diatur lewat menu Pengaturan.
+- **Update Sistem:** Fitur update otomatis via GitHub.
 
 ---
 
@@ -84,4 +85,4 @@ Aplikasi berbasis web untuk manajemen stok barang (Inventori) dan pencatatan keu
 
 ---
 
-**SIKI APP v0.0.1** - Initial Release
+**SIKI APP v0.0.2** - Maintenance Update

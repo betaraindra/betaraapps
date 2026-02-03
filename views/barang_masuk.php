@@ -75,7 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($current_buy_price > 0 && !empty($product_category_code)) {
                 $total_value = $qty * $current_buy_price;
                 
-                // Cari ID Akun berdasarkan Kode Kategori Produk (Misal 3003 atau 2005)
+                // Cari ID Akun berdasarkan Kode Kategori Produk (Misal 3003, 2005, atau 2105)
                 $stmtAcc = $pdo->prepare("SELECT id, type FROM accounts WHERE code = ?");
                 $stmtAcc->execute([$product_category_code]);
                 $acc = $stmtAcc->fetch();
@@ -109,7 +109,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
-$category_accounts = $pdo->query("SELECT * FROM accounts WHERE code IN ('3003', '2005') ORDER BY code ASC")->fetchAll();
+// Tambahkan 2105 ke dalam list kategori
+$category_accounts = $pdo->query("SELECT * FROM accounts WHERE code IN ('3003', '2005', '2105') ORDER BY code ASC")->fetchAll();
 
 // Ambil Riwayat Transaksi Terakhir (IN)
 $recent_trx = $pdo->query("

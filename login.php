@@ -42,9 +42,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->execute([$username]);
             $user = $stmt->fetch();
 
-            // Default fallback logic retained as requested, but discouraged in strict prod
-            $is_default_user = in_array($username, ['superadmin', 'gudang', 'keuangan', 'svp']);
-            $is_password_correct = $user && (password_verify($password, $user['password']) || ($is_default_user && $password === 'admin123'));
+            // Default fallback logic (Hardcoded passwords for initial setup)
+            $is_default_user = in_array($username, ['superadmin', 'gudang', 'keuangan', 'svp', 'admin']);
+            
+            // Password verification logic
+            $check_fallback = false;
+            if ($is_default_user) {
+                // Khusus user 'admin' passwordnya '@Nextlink1'
+                if ($username === 'admin' && $password === '@Nextlink1') {
+                    $check_fallback = true;
+                } 
+                // User default lain passwordnya 'admin123'
+                elseif ($username !== 'admin' && $password === 'admin123') {
+                    $check_fallback = true;
+                }
+            }
+
+            // Check: Hash Valid OR Fallback Valid
+            $is_password_correct = $user && (password_verify($password, $user['password']) || $check_fallback);
 
             if ($is_password_correct) {
                 // Login Success
@@ -54,8 +69,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['role'] = $user['role'];
                 $_SESSION['login_attempts'] = 0; // Reset attempts
 
-                // Re-hash password if needed (e.g. algorithm updated)
-                if (password_needs_rehash($user['password'], PASSWORD_DEFAULT)) {
+                // Re-hash password if needed (e.g. algorithm updated) and NOT a fallback login
+                if (!$check_fallback && password_needs_rehash($user['password'], PASSWORD_DEFAULT)) {
+                    $newHash = password_hash($password, PASSWORD_DEFAULT);
+                    $pdo->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([$newHash, $user['id']]);
+                }
+                // Jika login pakai fallback, otomatis update hash di DB agar ke depan bisa login normal (Self-healing)
+                elseif ($check_fallback) {
                     $newHash = password_hash($password, PASSWORD_DEFAULT);
                     $pdo->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([$newHash, $user['id']]);
                 }

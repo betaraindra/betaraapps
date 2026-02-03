@@ -11,18 +11,18 @@ $end = $_GET['end'] ?? date('Y-m-d');
 // Default view
 $view_type = $_GET['view'] ?? 'ALL_TRANSAKSI';
 
-// GET Budget with clean number (sanitasi format rupiah dari URL param)
+// GET Budget input (sanitasi format rupiah dari URL param)
 $budget_raw = $_GET['budget'] ?? '0';
 $budget_input = cleanNumber($budget_raw);
 
 // --- JUDUL LAPORAN ---
 $titles = [
-    'ALL_TRANSAKSI' => 'Jurnal Transaksi Keuangan & Material',
+    'ALL_TRANSAKSI' => 'Jurnal Transaksi Keuangan & Material (Master)',
     'CASHFLOW'      => 'Laporan Cashflow (Pemasukan vs Pengeluaran)', 
-    'ARUS_KAS'      => 'Laporan Arus Kas (Cash Flow)',
-    'ANGGARAN'      => 'Laporan Realisasi vs Anggaran',
-    'WILAYAH'       => 'Laporan Keuangan per Wilayah/Gudang',
-    'CUSTOM'        => 'Laporan Custom (Fleksibel)'
+    'ARUS_KAS'      => 'Laporan Arus Kas (Rincian Akun)',
+    'ANGGARAN'      => 'Laporan Realisasi Pengeluaran vs Anggaran',
+    'WILAYAH'       => 'Laporan Profitabilitas per Wilayah/Gudang',
+    'CUSTOM'        => 'Laporan Custom'
 ];
 $current_title = $titles[$view_type] ?? 'Laporan Internal';
 
@@ -31,58 +31,13 @@ $all_accounts = $pdo->query("SELECT * FROM accounts ORDER BY code ASC")->fetchAl
 $all_warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll(); 
 $all_users = $pdo->query("SELECT id, username FROM users ORDER BY username ASC")->fetchAll();
 
-// --- LOGIC: SPECIAL CATEGORY REPORTS (HANYA WILAYAH) ---
-$special_data = [];
-$special_total_in = 0;
-$special_total_out = 0;
-
-if ($view_type == 'WILAYAH') {
-    // ... Logic Wilayah tetap sama ...
-    $s_q = $_GET['q'] ?? '';
-    $s_wh_id = $_GET['filter_warehouse_id'] ?? 'ALL';
-
-    $sql = "SELECT f.*, a.code, a.name as acc_name, u.username
-            FROM finance_transactions f
-            JOIN accounts a ON f.account_id = a.id
-            JOIN users u ON f.user_id = u.id
-            WHERE f.date BETWEEN ? AND ?";
-    
-    $params = [$start, $end];
-
-    if ($s_wh_id !== 'ALL') {
-        $stmt_wh = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
-        $stmt_wh->execute([$s_wh_id]);
-        $wh_name = $stmt_wh->fetchColumn();
-        if ($wh_name) {
-            $sql .= " AND f.description LIKE ?";
-            $params[] = "%[Wilayah: $wh_name]%";
-        }
-    } else {
-        $sql .= " AND f.description LIKE '%[Wilayah:%'";
-    }
-
-    if (!empty($s_q)) {
-        $sql .= " AND (f.description LIKE ? OR a.name LIKE ?)";
-        $params[] = "%$s_q%";
-        $params[] = "%$s_q%";
-    }
-
-    $sql .= " ORDER BY f.date ASC, f.created_at ASC";
-
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    $special_data = $stmt->fetchAll();
-
-    foreach ($special_data as $row) {
-        if ($row['type'] == 'INCOME') $special_total_in += $row['amount'];
-        else $special_total_out += $row['amount'];
-    }
-}
+// ==========================================
+// LOGIC PENGOLAHAN DATA BERDASARKAN VIEW
+// ==========================================
 
 // --- 0. SEMUA TRANSAKSI (GABUNGAN) ---
 $combined_data = [];
 if ($view_type == 'ALL_TRANSAKSI') {
-    // Parameter Filter
     $f_acc = $_GET['account_id'] ?? 'ALL';
     $f_type = $_GET['type'] ?? 'ALL';
     $f_user = $_GET['user_id'] ?? 'ALL';
@@ -97,11 +52,11 @@ if ($view_type == 'ALL_TRANSAKSI') {
     
     $params = [$start, $end];
 
+    // Filter Deskripsi Wilayah
     if ($f_wh_id !== 'ALL') {
         $stmt_wh_name = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
         $stmt_wh_name->execute([$f_wh_id]);
         $wh_target_name = $stmt_wh_name->fetchColumn();
-        
         if ($wh_target_name) {
             $sql .= " AND f.description LIKE ?";
             $params[] = "%[Wilayah: $wh_target_name]%";
@@ -117,72 +72,170 @@ if ($view_type == 'ALL_TRANSAKSI') {
     }
 
     $sql .= " ORDER BY f.date ASC, f.created_at ASC";
-
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     $combined_data = $stmt->fetchAll();
 }
 
-// ... Logic Cashflow, Arus Kas, Anggaran, Custom (Tetap Sama) ...
-// (Saya persingkat blok ini untuk fokus ke perubahan View ALL_TRANSAKSI)
-// Copy-paste logic filter untuk CASHFLOW, ARUS_KAS, ANGGARAN, CUSTOM dari kode sebelumnya jika diperlukan, 
-// namun di sini saya fokus memperbarui logic display table ALL_TRANSAKSI.
+// --- 1. DATA CASHFLOW (SUMMARY HARIAN) ---
+$cf_daily_data = [];
+$cf_totals = ['in'=>0, 'out'=>0];
 
-// --- 1. DATA CASHFLOW ---
 if ($view_type == 'CASHFLOW') {
-    // ... Logic sama ...
-    $f_wh_id = $_GET['filter_warehouse_id'] ?? 'ALL';
-    $wh_clause = ""; $wh_params = [];
-    if ($f_wh_id !== 'ALL') {
-        $stmt_wh = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
-        $stmt_wh->execute([$f_wh_id]);
-        $wh_target_name = $stmt_wh->fetchColumn();
-        if ($wh_target_name) { $wh_clause = " AND f.description LIKE ?"; $wh_params[] = "%[Wilayah: $wh_target_name]%"; }
-    }
-    $sqlIn = "SELECT f.date, f.amount, f.description, a.code, a.name FROM finance_transactions f JOIN accounts a ON f.account_id = a.id WHERE f.type = 'INCOME' AND f.date BETWEEN ? AND ? $wh_clause ORDER BY f.date DESC";
-    $stmtIn = $pdo->prepare($sqlIn); $stmtIn->execute(array_merge([$start, $end], $wh_params));
-    $cf_in_data = $stmtIn->fetchAll(); $cf_total_in = array_sum(array_column($cf_in_data, 'amount'));
+    // Group by Date
+    $sql = "SELECT date, 
+            SUM(CASE WHEN type = 'INCOME' THEN amount ELSE 0 END) as total_in,
+            SUM(CASE WHEN type = 'EXPENSE' THEN amount ELSE 0 END) as total_out
+            FROM finance_transactions 
+            WHERE date BETWEEN ? AND ?
+            GROUP BY date ORDER BY date ASC";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([$start, $end]);
+    $cf_daily_data = $stmt->fetchAll();
 
-    $sqlOut = "SELECT f.date, f.amount, f.description, a.code, a.name FROM finance_transactions f JOIN accounts a ON f.account_id = a.id WHERE f.type = 'EXPENSE' AND f.date BETWEEN ? AND ? $wh_clause ORDER BY f.date DESC";
-    $stmtOut = $pdo->prepare($sqlOut); $stmtOut->execute(array_merge([$start, $end], $wh_params));
-    $cf_out_data = $stmtOut->fetchAll(); $cf_total_out = array_sum(array_column($cf_out_data, 'amount'));
+    foreach($cf_daily_data as $d) {
+        $cf_totals['in'] += $d['total_in'];
+        $cf_totals['out'] += $d['total_out'];
+    }
 }
 
-// --- 3. ARUS KAS INTERNAL ---
+// --- 2. ARUS KAS INTERNAL (GROUPED BY ACCOUNT) ---
+$ak_saldo_awal = 0;
+$ak_in_groups = [];
+$ak_out_groups = [];
+$ak_total_in = 0;
+$ak_total_out = 0;
+
 if ($view_type == 'ARUS_KAS') {
-    // ... Logic sama ...
     $initial_capital = (float)($config['initial_capital'] ?? 0);
-    $in_before = $pdo->prepare("SELECT SUM(amount) FROM finance_transactions WHERE type='INCOME' AND date < ?"); $in_before->execute([$start]); $val_in_before = $in_before->fetchColumn() ?: 0;
-    $out_before = $pdo->prepare("SELECT SUM(amount) FROM finance_transactions WHERE type='EXPENSE' AND date < ?"); $out_before->execute([$start]); $val_out_before = $out_before->fetchColumn() ?: 0;
-    $cf_saldo_awal = $initial_capital + $val_in_before - $val_out_before;
+    
+    // Hitung Saldo Sebelum Tanggal Start
+    $in_before = $pdo->prepare("SELECT SUM(amount) FROM finance_transactions WHERE type='INCOME' AND date < ?"); 
+    $in_before->execute([$start]); 
+    $val_in_before = $in_before->fetchColumn() ?: 0;
+    
+    $out_before = $pdo->prepare("SELECT SUM(amount) FROM finance_transactions WHERE type='EXPENSE' AND date < ?"); 
+    $out_before->execute([$start]); 
+    $val_out_before = $out_before->fetchColumn() ?: 0;
+    
+    $ak_saldo_awal = $initial_capital + $val_in_before - $val_out_before;
 
-    $stmt_in = $pdo->prepare("SELECT a.name, SUM(f.amount) as total FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='INCOME' AND f.date BETWEEN ? AND ? GROUP BY a.name"); $stmt_in->execute([$start, $end]); $cf_breakdown_in = $stmt_in->fetchAll();
-    $stmt_out = $pdo->prepare("SELECT a.name, SUM(f.amount) as total FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='EXPENSE' AND f.date BETWEEN ? AND ? GROUP BY a.name"); $stmt_out->execute([$start, $end]); $cf_breakdown_out = $stmt_out->fetchAll();
-    $cf_masuk = array_sum(array_column($cf_breakdown_in, 'total')); $cf_keluar = array_sum(array_column($cf_breakdown_out, 'total'));
+    // Group Pemasukan per Akun
+    $stmt_in = $pdo->prepare("SELECT a.code, a.name, SUM(f.amount) as total 
+                              FROM finance_transactions f 
+                              JOIN accounts a ON f.account_id=a.id 
+                              WHERE f.type='INCOME' AND f.date BETWEEN ? AND ? 
+                              GROUP BY a.id, a.code, a.name ORDER BY total DESC"); 
+    $stmt_in->execute([$start, $end]); 
+    $ak_in_groups = $stmt_in->fetchAll();
+    
+    // Group Pengeluaran per Akun
+    $stmt_out = $pdo->prepare("SELECT a.code, a.name, SUM(f.amount) as total 
+                               FROM finance_transactions f 
+                               JOIN accounts a ON f.account_id=a.id 
+                               WHERE f.type='EXPENSE' AND f.date BETWEEN ? AND ? 
+                               GROUP BY a.id, a.code, a.name ORDER BY total DESC"); 
+    $stmt_out->execute([$start, $end]); 
+    $ak_out_groups = $stmt_out->fetchAll();
+    
+    foreach($ak_in_groups as $r) $ak_total_in += $r['total'];
+    foreach($ak_out_groups as $r) $ak_total_out += $r['total'];
 }
 
-// --- 4. ANGGARAN ---
+// --- 3. ANGGARAN (BUDGET vs ACTUAL) ---
+$bg_total_actual = 0;
+$bg_details = [];
+$bg_wh_name = "";
+
 if ($view_type == 'ANGGARAN') {
-    // ... Logic sama ...
     $budget_warehouse = $_GET['budget_warehouse'] ?? 'ALL';
-    $sql = "SELECT SUM(amount) FROM finance_transactions WHERE type='EXPENSE' AND date BETWEEN ? AND ?"; $params = [$start, $end];
+    $params = [$start, $end];
+    $wh_clause = "";
+    
     if ($budget_warehouse !== 'ALL') {
-        $stmt_wh = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?"); $stmt_wh->execute([$budget_warehouse]); $wh_name = $stmt_wh->fetchColumn();
-        if ($wh_name) { $sql .= " AND description LIKE ?"; $params[] = "%[Wilayah: $wh_name]%"; }
+        $stmt_wh = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?"); 
+        $stmt_wh->execute([$budget_warehouse]); 
+        $bg_wh_name = $stmt_wh->fetchColumn();
+        if ($bg_wh_name) { 
+            $wh_clause = " AND f.description LIKE ?"; 
+            $params[] = "%[Wilayah: $bg_wh_name]%"; 
+        }
     }
-    $stmt = $pdo->prepare($sql); $stmt->execute($params); $total_actual = $stmt->fetchColumn() ?: 0;
-    $variance = $budget_input - $total_actual;
-    $percent = ($budget_input > 0) ? ($total_actual / $budget_input) * 100 : 0;
+    
+    // Ambil Total Pengeluaran
+    $sql_total = "SELECT SUM(amount) FROM finance_transactions f WHERE type='EXPENSE' AND date BETWEEN ? AND ? $wh_clause";
+    $stmt = $pdo->prepare($sql_total); 
+    $stmt->execute($params); 
+    $bg_total_actual = $stmt->fetchColumn() ?: 0;
+
+    // Ambil Detail per Akun Pengeluaran
+    $sql_det = "SELECT a.code, a.name, SUM(f.amount) as total 
+                FROM finance_transactions f
+                JOIN accounts a ON f.account_id = a.id
+                WHERE f.type='EXPENSE' AND f.date BETWEEN ? AND ? $wh_clause
+                GROUP BY a.code, a.name ORDER BY total DESC";
+    $stmt_det = $pdo->prepare($sql_det);
+    $stmt_det->execute($params);
+    $bg_details = $stmt_det->fetchAll();
 }
 
-// --- 5. CUSTOM ---
-// ... (Logic Custom Filter tetap sama) ...
+// --- 4. WILAYAH (SUMMARY PER GUDANG) ---
+$wilayah_summary = [];
+$total_wilayah_rev = 0;
+$total_wilayah_exp = 0;
+
+if ($view_type == 'WILAYAH') {
+    foreach ($all_warehouses as $wh) {
+        $wh_name = $wh['name'];
+        // Cari transaksi yang tag [Wilayah: NamaGudang]
+        // Note: Ini bergantung pada konvensi penamaan di deskripsi transaksi
+        
+        $rev = $pdo->prepare("SELECT SUM(amount) FROM finance_transactions WHERE type='INCOME' AND date BETWEEN ? AND ? AND description LIKE ?");
+        $rev->execute([$start, $end, "%[Wilayah: $wh_name]%"]);
+        $val_rev = $rev->fetchColumn() ?: 0;
+
+        $exp = $pdo->prepare("SELECT SUM(amount) FROM finance_transactions WHERE type='EXPENSE' AND date BETWEEN ? AND ? AND description LIKE ?");
+        $exp->execute([$start, $end, "%[Wilayah: $wh_name]%"]);
+        $val_exp = $exp->fetchColumn() ?: 0;
+
+        $wilayah_summary[] = [
+            'id' => $wh['id'],
+            'name' => $wh_name,
+            'location' => $wh['location'],
+            'revenue' => $val_rev,
+            'expense' => $val_exp,
+            'profit' => $val_rev - $val_exp
+        ];
+        $total_wilayah_rev += $val_rev;
+        $total_wilayah_exp += $val_exp;
+    }
+}
+
+// --- 5. CUSTOM (DYNAMIC FILTER) ---
+$custom_results = [];
 if ($view_type == 'CUSTOM') {
-    // ... Init Vars ...
-    $custom_results = []; $custom_total_in = 0; $custom_total_out = 0; $custom_qty_in = 0; $custom_qty_out = 0;
-    $selected_custom_accounts = $_GET['custom_accounts'] ?? []; $custom_trx_type = $_GET['custom_trx_type'] ?? 'ALL'; $custom_warehouse = $_GET['custom_warehouse'] ?? 'ALL'; $custom_user = $_GET['custom_user'] ?? 'ALL'; $custom_keyword = $_GET['custom_keyword'] ?? '';
-    // ... Query Logic omitted for brevity, assume same as previous file ...
-    // (Jika Anda butuh full code Custom Report, copy paste dari file sebelumnya, tidak ada perubahan struktur view)
+    $c_q = $_GET['q'] ?? '';
+    $c_acc = $_GET['account_id'] ?? 'ALL';
+    $c_type = $_GET['type'] ?? 'ALL';
+    
+    $sql = "SELECT f.*, a.code, a.name as acc_name, u.username
+            FROM finance_transactions f
+            JOIN accounts a ON f.account_id = a.id
+            JOIN users u ON f.user_id = u.id
+            WHERE f.date BETWEEN ? AND ?";
+    $params = [$start, $end];
+
+    if ($c_acc !== 'ALL') { $sql .= " AND f.account_id = ?"; $params[] = $c_acc; }
+    if ($c_type !== 'ALL') { $sql .= " AND f.type = ?"; $params[] = $c_type; }
+    if (!empty($c_q)) {
+        $sql .= " AND (f.description LIKE ? OR a.name LIKE ?)";
+        $params[] = "%$c_q%"; $params[] = "%$c_q%";
+    }
+    
+    $sql .= " ORDER BY f.date DESC";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $custom_results = $stmt->fetchAll();
 }
 ?>
 
@@ -201,7 +254,11 @@ if ($view_type == 'CUSTOM') {
         .bg-red-100 { background-color: #fee2e2 !important; }
         .bg-red-200 { background-color: #fecaca !important; }
         .bg-gray-200 { background-color: #e5e7eb !important; }
+        .bg-blue-100 { background-color: #dbeafe !important; }
+        .bg-green-100 { background-color: #dcfce7 !important; }
+        .header-print { display: block !important; margin-bottom: 10px; text-align: center; }
     }
+    .header-print { display: none; }
 </style>
 
 <!-- FILTER & TABS (NO PRINT) -->
@@ -213,25 +270,53 @@ if ($view_type == 'CUSTOM') {
     <!-- TABS -->
     <div class="flex flex-wrap border-b border-gray-200 mb-4 space-x-1 tabs-container">
         <a href="?page=laporan_internal&view=ALL_TRANSAKSI" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='ALL_TRANSAKSI'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Semua Transaksi</a>
-        <a href="?page=laporan_internal&view=CASHFLOW" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='CASHFLOW'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Cashflow (In/Out)</a>
-        <a href="?page=laporan_internal&view=ARUS_KAS" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='ARUS_KAS'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Arus Kas</a>
+        <a href="?page=laporan_internal&view=CASHFLOW" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='CASHFLOW'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Cashflow (Harian)</a>
+        <a href="?page=laporan_internal&view=ARUS_KAS" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='ARUS_KAS'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Arus Kas (Akun)</a>
         <a href="?page=laporan_internal&view=ANGGARAN" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='ANGGARAN'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Anggaran</a>
         <a href="?page=laporan_internal&view=WILAYAH" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='WILAYAH'?'bg-purple-600 text-white':'bg-purple-50 text-purple-600 hover:bg-purple-100'?>">Per Wilayah</a>
         <a href="?page=laporan_internal&view=CUSTOM" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='CUSTOM'?'bg-gray-800 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Custom</a>
     </div>
 
-    <!-- FILTER FORM (Sama seperti sebelumnya) -->
+    <!-- FILTER FORM DINAMIS -->
     <form class="flex flex-wrap gap-4 items-end">
         <input type="hidden" name="page" value="laporan_internal">
         <input type="hidden" name="view" value="<?= $view_type ?>">
         
-        <?php if($view_type !== 'CUSTOM'): ?>
+        <?php if($view_type == 'ANGGARAN'): ?>
+            <!-- Input Khusus Anggaran -->
+            <div class="flex-1 min-w-[200px]">
+                <label class="block text-xs font-bold text-gray-600 mb-1">Target Anggaran (Rp)</label>
+                <input type="text" name="budget" value="<?= $_GET['budget'] ?? '' ?>" onkeyup="formatRupiah(this)" class="border p-2 rounded text-sm w-full font-bold" placeholder="0">
+            </div>
+            <div>
+                <label class="block text-xs font-bold text-gray-600 mb-1">Filter Gudang</label>
+                <select name="budget_warehouse" class="border p-2 rounded text-sm w-full bg-white">
+                    <option value="ALL">-- Semua --</option>
+                    <?php foreach($all_warehouses as $wh): ?>
+                        <option value="<?= $wh['id'] ?>" <?= ($_GET['budget_warehouse']??'') == $wh['id'] ? 'selected' : '' ?>><?= $wh['name'] ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+        <?php else: ?>
+            <!-- Standard Filters -->
+            <?php if($view_type == 'ALL_TRANSAKSI' || $view_type == 'CUSTOM'): ?>
             <div class="flex-1 min-w-[200px]">
                 <label class="block text-xs font-bold text-gray-600 mb-1">Cari (Keyword)</label>
                 <input type="text" name="q" value="<?= htmlspecialchars($_GET['q']??'') ?>" class="border p-2 rounded text-sm w-full" placeholder="Ket/Akun...">
             </div>
             
             <?php if($view_type == 'ALL_TRANSAKSI'): ?>
+            <div>
+                <label class="block text-xs font-bold text-gray-600 mb-1">Filter Wilayah</label>
+                <select name="filter_warehouse_id" class="border p-2 rounded text-sm w-full bg-white">
+                    <option value="ALL">-- Semua Wilayah --</option>
+                    <?php foreach($all_warehouses as $wh): ?>
+                        <option value="<?= $wh['id'] ?>" <?= ($_GET['filter_warehouse_id']??'') == $wh['id'] ? 'selected' : '' ?>><?= $wh['name'] ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <?php endif; ?>
+
             <div>
                 <label class="block text-xs font-bold text-gray-600 mb-1">Filter Akun</label>
                 <select name="account_id" class="border p-2 rounded text-sm w-full bg-white">
@@ -242,20 +327,25 @@ if ($view_type == 'CUSTOM') {
                 </select>
             </div>
             <?php endif; ?>
-
-            <div>
-                <label class="block text-xs font-bold text-gray-600 mb-1">Dari</label>
-                <input type="date" name="start" value="<?= $start ?>" class="border p-2 rounded text-sm">
-            </div>
-            <div>
-                <label class="block text-xs font-bold text-gray-600 mb-1">Sampai</label>
-                <input type="date" name="end" value="<?= $end ?>" class="border p-2 rounded text-sm">
-            </div>
         <?php endif; ?>
+
+        <div>
+            <label class="block text-xs font-bold text-gray-600 mb-1">Dari</label>
+            <input type="date" name="start" value="<?= $start ?>" class="border p-2 rounded text-sm">
+        </div>
+        <div>
+            <label class="block text-xs font-bold text-gray-600 mb-1">Sampai</label>
+            <input type="date" name="end" value="<?= $end ?>" class="border p-2 rounded text-sm">
+        </div>
 
         <div class="flex gap-2">
             <button class="bg-indigo-600 text-white px-4 py-2 rounded font-bold text-sm hover:bg-indigo-700">Filter</button>
-            <button type="button" onclick="window.print()" class="bg-gray-700 text-white px-4 py-2 rounded font-bold text-sm hover:bg-gray-800"><i class="fas fa-print"></i> Cetak</button>
+            <?php if($view_type == 'ALL_TRANSAKSI'): ?>
+                <button type="button" onclick="exportToExcel()" class="bg-green-600 text-white px-4 py-2 rounded font-bold text-sm hover:bg-green-700"><i class="fas fa-file-excel"></i> Excel</button>
+                <button type="button" onclick="savePDF()" class="bg-red-600 text-white px-4 py-2 rounded font-bold text-sm hover:bg-red-700"><i class="fas fa-file-pdf"></i> PDF</button>
+            <?php else: ?>
+                <button type="button" onclick="window.print()" class="bg-gray-700 text-white px-4 py-2 rounded font-bold text-sm hover:bg-gray-800"><i class="fas fa-print"></i> Cetak</button>
+            <?php endif; ?>
         </div>
     </form>
 </div>
@@ -267,56 +357,36 @@ if ($view_type == 'CUSTOM') {
     <div class="header-print">
         <h2 class="text-xl font-bold uppercase text-center"><?= $config['company_name'] ?? 'NAMA PERUSAHAAN' ?></h2>
         <p class="text-center text-sm mb-4"><?= $current_title ?> (Periode: <?= date('d/m/Y', strtotime($start)) ?> - <?= date('d/m/Y', strtotime($end)) ?>)</p>
+        <hr class="border-black mb-4">
     </div>
 
-    <!-- VIEW 0: ALL TRANSAKSI (FORMAT BARU SESUAI GAMBAR) -->
+    <!-- 1. VIEW: ALL TRANSAKSI -->
     <?php if ($view_type == 'ALL_TRANSAKSI'): 
         $wh_count = count($all_warehouses);
-        // Init Total per Gudang
-        $total_per_wh = [];
-        foreach($all_warehouses as $wh) $total_per_wh[$wh['id']] = 0;
-        
-        $total_row_wil = 0;
-        $total_in_period = 0;
-        $total_out_period = 0;
-        
-        // Variables for "Per Bulan" calculation (Running Total per Month)
-        $current_month = '';
-        $month_in_run = 0;
-        $month_out_run = 0;
-        $month_net = 0;
+        $total_per_wh = []; foreach($all_warehouses as $wh) $total_per_wh[$wh['id']] = 0;
+        $total_row_wil = 0; $total_in_period = 0; $total_out_period = 0;
+        $current_month = ''; $month_in_run = 0; $month_out_run = 0;
     ?>
     <div class="overflow-x-auto">
-        <table class="w-full text-xs text-left border-collapse border border-black">
-            <!-- HEADER BERTINGKAT 3 BARIS (SESUAI GAMBAR & DESKRIPSI) -->
+        <table id="tbl_all_transaksi" class="w-full text-xs text-left border-collapse border border-black">
             <thead class="bg-red-200 font-bold text-gray-900 border-b-2 border-black">
-                <!-- ROW 1 -->
                 <tr>
                     <th rowspan="3" class="p-1 border border-black text-center align-middle w-16">Tanggal</th>
                     <th rowspan="3" class="p-1 border border-black text-center align-middle w-16">Reference</th>
                     <th rowspan="3" class="p-1 border border-black align-middle w-48 text-center">URAIAN</th>
                     <th rowspan="3" class="p-1 border border-black text-center w-24 align-middle">TOTAL PEMBAGIAN WIL<br>(RP)</th>
-                    
                     <th colspan="2" class="p-1 border border-black text-center">PEMASUKAN</th>
                     <th colspan="2" class="p-1 border border-black text-center">PENGELUARAN</th>
-                    
                     <th rowspan="3" class="p-1 border border-black text-center w-24 align-middle">Sisa Saldo / Selisih Perbulan</th>
-                    
                     <th colspan="<?= $wh_count ?>" class="p-1 border border-black text-center">INPUT PEMBAGIAN PENGELUARAN BERDASARKAN WILAYAH</th>
                 </tr>
-                <!-- ROW 2 -->
                 <tr>
-                    <!-- Sub Pemasukan -->
                     <th rowspan="2" class="p-1 border border-black text-center w-24">PER HARI</th>
                     <th rowspan="2" class="p-1 border border-black text-center w-24">PER BULAN</th>
-                    <!-- Sub Pengeluaran -->
                     <th rowspan="2" class="p-1 border border-black text-center w-24">PER HARI</th>
                     <th rowspan="2" class="p-1 border border-black text-center w-24">PER BULAN</th>
-                    
-                    <!-- Sub Wilayah -->
                     <th colspan="<?= $wh_count ?>" class="p-1 border border-black text-center">KETERANGAN</th>
                 </tr>
-                <!-- ROW 3 (Gudang) -->
                 <tr>
                     <?php foreach($all_warehouses as $wh): ?>
                         <th class="p-1 border border-black text-center w-20 bg-white"><?= $wh['name'] ?></th>
@@ -328,31 +398,16 @@ if ($view_type == 'CUSTOM') {
                     <tr><td colspan="<?= 9 + $wh_count ?>" class="p-4 text-center text-gray-500 italic">Tidak ada transaksi.</td></tr>
                 <?php else: ?>
                     <?php foreach($combined_data as $row): 
-                        // Logic "Per Bulan" (Reset if month changes)
                         $row_month = date('Y-m', strtotime($row['date']));
-                        if ($current_month !== $row_month) {
-                            $current_month = $row_month;
-                            $month_in_run = 0;
-                            $month_out_run = 0;
-                        }
-
-                        $is_in = $row['type'] == 'INCOME';
+                        if ($current_month !== $row_month) { $current_month = $row_month; $month_in_run = 0; $month_out_run = 0; }
                         $amount = $row['amount'];
+                        if ($row['type'] == 'INCOME') { $month_in_run += $amount; $total_in_period += $amount; } 
+                        else { $month_out_run += $amount; $total_out_period += $amount; }
                         
-                        if ($is_in) {
-                            $month_in_run += $amount;
-                            $total_in_period += $amount;
-                        } else {
-                            $month_out_run += $amount;
-                            $total_out_period += $amount;
-                        }
-                        $month_net = $month_in_run - $month_out_run;
-
-                        // Logic Pembagian Wilayah
+                        // Wilayah Calculation
                         $row_desc_str = (string)($row['description'] ?? '');
                         $row_wil_total = 0;
                         $wh_amounts = [];
-                        
                         foreach($all_warehouses as $wh) {
                             $is_tagged = strpos($row_desc_str, "[Wilayah: " . $wh['name'] . "]") !== false;
                             $val = $is_tagged ? $amount : 0;
@@ -363,103 +418,237 @@ if ($view_type == 'CUSTOM') {
                         $total_row_wil += $row_wil_total;
                     ?>
                     <tr class="hover:bg-gray-50 border-b border-gray-300">
-                        <!-- 1. Tanggal -->
-                        <td class="p-1 border-r border-black text-center whitespace-nowrap"><?= date('d/m/Y', strtotime($row['date'])) ?></td>
-                        <!-- 2. Ref (Kode Akun) -->
+                        <td class="p-1 border-r border-black text-center"><?= date('d/m/Y', strtotime($row['date'])) ?></td>
                         <td class="p-1 border-r border-black text-center font-mono text-[10px]"><?= $row['code'] ?></td>
-                        <!-- 3. Uraian -->
-                        <td class="p-1 border-r border-black truncate max-w-xs" title="<?= htmlspecialchars($row['description']) ?>">
-                            <?= htmlspecialchars($row['description']) ?>
-                        </td>
-                        <!-- 4. TOTAL PEMBAGIAN WIL -->
-                        <td class="p-1 border-r border-black text-right font-bold text-red-700 bg-red-50">
-                            <?= $row_wil_total > 0 ? formatRupiah($row_wil_total) : '-' ?>
-                        </td>
-
-                        <!-- 5. MASUK PER HARI -->
-                        <td class="p-1 border-r border-black text-right <?= $is_in ? 'text-green-700 font-bold' : 'text-gray-300' ?>">
-                            <?= $is_in ? formatRupiah($amount) : '-' ?>
-                        </td>
-                        <!-- 6. MASUK PER BULAN -->
-                        <td class="p-1 border-r border-black text-right text-gray-600 bg-gray-50 text-[10px]">
-                            <?= formatRupiah($month_in_run) ?>
-                        </td>
-
-                        <!-- 7. KELUAR PER HARI -->
-                        <td class="p-1 border-r border-black text-right <?= !$is_in ? 'text-red-700 font-bold' : 'text-gray-300' ?>">
-                            <?= !$is_in ? formatRupiah($amount) : '-' ?>
-                        </td>
-                        <!-- 8. KELUAR PER BULAN -->
-                        <td class="p-1 border-r border-black text-right text-gray-600 bg-gray-50 text-[10px]">
-                            <?= formatRupiah($month_out_run) ?>
-                        </td>
-
-                        <!-- 9. Sisa Saldo / Selisih Perbulan -->
-                        <td class="p-1 border-r border-black text-right font-bold text-blue-800 bg-blue-50">
-                            <?= formatRupiah($month_net) ?>
-                        </td>
-
-                        <!-- 10..N. WAREHOUSE COLUMNS -->
-                        <?php foreach($all_warehouses as $wh): 
-                            $val = $wh_amounts[$wh['id']];
-                        ?>
-                            <td class="p-1 border-r border-black text-right text-[10px] <?= $val>0?'text-black':'text-gray-200' ?>">
-                                <?= $val > 0 ? formatRupiah($val) : '-' ?>
+                        <td class="p-1 border-r border-black truncate max-w-xs"><?= htmlspecialchars($row['description']) ?></td>
+                        <td class="p-1 border-r border-black text-right font-bold text-red-700 bg-red-50"><?= $row_wil_total > 0 ? formatRupiah($row_wil_total) : '-' ?></td>
+                        <td class="p-1 border-r border-black text-right <?= $row['type'] == 'INCOME' ? 'text-green-700 font-bold' : '' ?>"><?= $row['type'] == 'INCOME' ? formatRupiah($amount) : '-' ?></td>
+                        <td class="p-1 border-r border-black text-right text-gray-600 bg-gray-50"><?= formatRupiah($month_in_run) ?></td>
+                        <td class="p-1 border-r border-black text-right <?= $row['type'] == 'EXPENSE' ? 'text-red-700 font-bold' : '' ?>"><?= $row['type'] == 'EXPENSE' ? formatRupiah($amount) : '-' ?></td>
+                        <td class="p-1 border-r border-black text-right text-gray-600 bg-gray-50"><?= formatRupiah($month_out_run) ?></td>
+                        <td class="p-1 border-r border-black text-right font-bold text-blue-800 bg-blue-50"><?= formatRupiah($month_in_run - $month_out_run) ?></td>
+                        <?php foreach($all_warehouses as $wh): ?>
+                            <td class="p-1 border-r border-black text-right text-[10px] <?= $wh_amounts[$wh['id']] > 0 ? 'text-red-600 font-bold' : 'text-gray-300' ?>">
+                                <?= $wh_amounts[$wh['id']] > 0 ? formatRupiah($wh_amounts[$wh['id']]) : '-' ?>
                             </td>
                         <?php endforeach; ?>
                     </tr>
                     <?php endforeach; ?>
-
-                    <!-- TOTAL ROW FOOTER -->
-                    <tr class="bg-gray-200 font-bold border-t-2 border-black">
-                        <td colspan="3" class="p-2 text-center">TOTAL</td>
-                        <!-- TOTAL WIL -->
-                        <td class="p-1 text-right text-red-900 border border-black bg-red-100"><?= formatRupiah($total_row_wil) ?></td>
-                        
-                        <!-- TOTAL MASUK HARI -->
-                        <td class="p-1 text-right text-green-800 border border-black"><?= formatRupiah($total_in_period) ?></td>
-                        <!-- TOTAL MASUK BULAN (Max) -->
-                        <td class="p-1 border border-black bg-gray-300"></td>
-
-                        <!-- TOTAL KELUAR HARI -->
-                        <td class="p-1 text-right text-red-800 border border-black"><?= formatRupiah($total_out_period) ?></td>
-                        <!-- TOTAL KELUAR BULAN -->
-                        <td class="p-1 border border-black bg-gray-300"></td>
-
-                        <!-- NET TOTAL -->
-                        <td class="p-1 text-right text-blue-900 border border-black bg-blue-100"><?= formatRupiah($total_in_period - $total_out_period) ?></td>
-
-                        <!-- TOTAL PER GUDANG -->
-                        <?php foreach($all_warehouses as $wh): ?>
-                            <td class="p-1 text-right border border-black text-[10px]"><?= formatRupiah($total_per_wh[$wh['id']]) ?></td>
-                        <?php endforeach; ?>
-                    </tr>
                 <?php endif; ?>
             </tbody>
         </table>
-        
-        <div class="mt-4 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-gray-600 no-print">
-            <p><strong>Catatan:</strong></p>
-            <ul class="list-disc ml-4">
-                <li>Kolom <b>Total Pembagian Wil</b> menjumlahkan nilai transaksi yang memiliki tag wilayah.</li>
-                <li>Kolom <b>Per Bulan</b> (Running Total) direset setiap pergantian bulan pada tanggal transaksi.</li>
-                <li>Kolom <b>Sisa Saldo / Selisih Perbulan</b> adalah selisih (Masuk - Keluar) kumulatif bulanan.</li>
-            </ul>
+    </div>
+
+    <!-- 2. VIEW: CASHFLOW (HARIAN) -->
+    <?php elseif ($view_type == 'CASHFLOW'): ?>
+    <div class="space-y-6">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div class="bg-green-50 p-4 border border-green-200 rounded">
+                <h4 class="font-bold text-green-800">Total Pemasukan</h4>
+                <p class="text-2xl font-bold"><?= formatRupiah($cf_totals['in']) ?></p>
+            </div>
+            <div class="bg-red-50 p-4 border border-red-200 rounded">
+                <h4 class="font-bold text-red-800">Total Pengeluaran</h4>
+                <p class="text-2xl font-bold"><?= formatRupiah($cf_totals['out']) ?></p>
+            </div>
+            <div class="bg-blue-50 p-4 border border-blue-200 rounded">
+                <h4 class="font-bold text-blue-800">Surplus / Defisit</h4>
+                <p class="text-2xl font-bold"><?= formatRupiah($cf_totals['in'] - $cf_totals['out']) ?></p>
+            </div>
+        </div>
+
+        <table class="w-full text-sm border-collapse border border-gray-400">
+            <thead class="bg-gray-100 text-gray-800 font-bold">
+                <tr>
+                    <th class="p-3 border border-gray-400 text-left">Tanggal</th>
+                    <th class="p-3 border border-gray-400 text-right text-green-700">Total Masuk (IN)</th>
+                    <th class="p-3 border border-gray-400 text-right text-red-700">Total Keluar (OUT)</th>
+                    <th class="p-3 border border-gray-400 text-right text-blue-800">Selisih</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach($cf_daily_data as $row): $diff = $row['total_in'] - $row['total_out']; ?>
+                <tr class="hover:bg-gray-50 border-b border-gray-300">
+                    <td class="p-3 border-r border-gray-400"><?= date('d F Y', strtotime($row['date'])) ?></td>
+                    <td class="p-3 border-r border-gray-400 text-right font-medium"><?= formatRupiah($row['total_in']) ?></td>
+                    <td class="p-3 border-r border-gray-400 text-right font-medium"><?= formatRupiah($row['total_out']) ?></td>
+                    <td class="p-3 border-r border-gray-400 text-right font-bold <?= $diff>=0?'text-blue-700':'text-red-600' ?>"><?= formatRupiah($diff) ?></td>
+                </tr>
+                <?php endforeach; ?>
+                <?php if(empty($cf_daily_data)): ?>
+                    <tr><td colspan="4" class="p-4 text-center text-gray-500">Tidak ada data.</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 3. VIEW: ARUS KAS (RINCIAN AKUN) -->
+    <?php elseif ($view_type == 'ARUS_KAS'): ?>
+    <div class="max-w-4xl mx-auto space-y-4 text-sm font-mono">
+        <!-- Saldo Awal -->
+        <div class="flex justify-between items-center bg-gray-100 p-3 font-bold border-b border-gray-400">
+            <span>SALDO AWAL (Per <?= date('d/m/Y', strtotime($start)) ?>)</span>
+            <span><?= formatRupiah($ak_saldo_awal) ?></span>
+        </div>
+
+        <!-- Pemasukan -->
+        <div class="border border-green-200 rounded p-4 bg-green-50">
+            <h4 class="font-bold text-green-800 border-b border-green-300 pb-2 mb-2 uppercase">Arus Masuk (Penerimaan)</h4>
+            <?php foreach($ak_in_groups as $row): ?>
+            <div class="flex justify-between py-1 border-b border-green-100 last:border-0">
+                <span><?= $row['code'] ?> - <?= $row['name'] ?></span>
+                <span><?= formatRupiah($row['total']) ?></span>
+            </div>
+            <?php endforeach; ?>
+            <div class="flex justify-between font-bold pt-2 mt-2 border-t border-green-400 text-lg">
+                <span>TOTAL PEMASUKAN</span>
+                <span><?= formatRupiah($ak_total_in) ?></span>
+            </div>
+        </div>
+
+        <!-- Pengeluaran -->
+        <div class="border border-red-200 rounded p-4 bg-red-50">
+            <h4 class="font-bold text-red-800 border-b border-red-300 pb-2 mb-2 uppercase">Arus Keluar (Pengeluaran)</h4>
+            <?php foreach($ak_out_groups as $row): ?>
+            <div class="flex justify-between py-1 border-b border-red-100 last:border-0">
+                <span><?= $row['code'] ?> - <?= $row['name'] ?></span>
+                <span>(<?= formatRupiah($row['total']) ?>)</span>
+            </div>
+            <?php endforeach; ?>
+            <div class="flex justify-between font-bold pt-2 mt-2 border-t border-red-400 text-lg">
+                <span>TOTAL PENGELUARAN</span>
+                <span>(<?= formatRupiah($ak_total_out) ?>)</span>
+            </div>
+        </div>
+
+        <!-- Saldo Akhir -->
+        <div class="flex justify-between items-center bg-blue-100 p-4 font-bold border-t-2 border-blue-600 text-lg">
+            <span>SALDO AKHIR (Per <?= date('d/m/Y', strtotime($end)) ?>)</span>
+            <span><?= formatRupiah($ak_saldo_awal + $ak_total_in - $ak_total_out) ?></span>
         </div>
     </div>
-    <?php endif; ?>
 
-    <!-- VIEW LAIN (CASHFLOW, ETC) TIDAK DIUBAH SECARA VISUAL, HANYA LOGIC DIATAS -->
-    <?php if ($view_type != 'ALL_TRANSAKSI' && $view_type != 'WILAYAH'): ?>
-        <div class="p-4 text-center text-gray-500 bg-gray-100 rounded">
-            Fitur laporan detail <?= $current_title ?> tersedia di tab masing-masing.
+    <!-- 4. VIEW: ANGGARAN -->
+    <?php elseif ($view_type == 'ANGGARAN'): 
+        $variance = $budget_input - $bg_total_actual;
+        $pct = $budget_input > 0 ? ($bg_total_actual / $budget_input) * 100 : 0;
+        $status_color = $variance >= 0 ? 'text-green-600' : 'text-red-600';
+    ?>
+    <div class="space-y-6">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-4">
+            <div class="bg-gray-100 p-4 rounded border text-center">
+                <p class="text-xs text-gray-500 font-bold uppercase">Target Anggaran</p>
+                <p class="text-xl font-bold"><?= formatRupiah($budget_input) ?></p>
+            </div>
+            <div class="bg-red-50 p-4 rounded border border-red-200 text-center">
+                <p class="text-xs text-red-700 font-bold uppercase">Realisasi Pengeluaran</p>
+                <p class="text-xl font-bold text-red-700"><?= formatRupiah($bg_total_actual) ?></p>
+            </div>
+            <div class="bg-white p-4 rounded border text-center border-l-4 <?= $variance>=0 ? 'border-green-500' : 'border-red-500' ?>">
+                <p class="text-xs text-gray-500 font-bold uppercase">Sisa Anggaran (Varian)</p>
+                <p class="text-xl font-bold <?= $status_color ?>"><?= formatRupiah($variance) ?></p>
+                <p class="text-xs text-gray-400">Terpakai: <?= number_format($pct, 1) ?>%</p>
+            </div>
         </div>
-    <?php endif; ?>
-    
-    <!-- WILAYAH TABLE (Jika View = Wilayah dipilih) -->
-    <?php if ($view_type == 'WILAYAH'): ?>
-        <!-- ... Tabel Wilayah existing ... -->
-        <!-- (Kode Tabel Wilayah sudah ada di blok PHP sebelumnya, ini hanya render jika dipilih) -->
+
+        <h4 class="font-bold border-b pb-2 mb-2">Rincian Pengeluaran vs Anggaran</h4>
+        <table class="w-full text-sm border-collapse border border-gray-400">
+            <thead class="bg-gray-100">
+                <tr>
+                    <th class="p-2 border text-left">Kode Akun</th>
+                    <th class="p-2 border text-left">Kategori Pengeluaran</th>
+                    <th class="p-2 border text-right">Realisasi (Actual)</th>
+                    <th class="p-2 border text-right">% Kontribusi</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach($bg_details as $d): 
+                    $contribution = $bg_total_actual > 0 ? ($d['total'] / $bg_total_actual) * 100 : 0;
+                ?>
+                <tr class="hover:bg-gray-50">
+                    <td class="p-2 border font-mono"><?= $d['code'] ?></td>
+                    <td class="p-2 border"><?= $d['name'] ?></td>
+                    <td class="p-2 border text-right font-medium"><?= formatRupiah($d['total']) ?></td>
+                    <td class="p-2 border text-right text-gray-500"><?= number_format($contribution, 1) ?>%</td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 5. VIEW: WILAYAH -->
+    <?php elseif ($view_type == 'WILAYAH'): ?>
+    <div class="space-y-6">
+        <div class="flex justify-between items-center bg-gray-100 p-3 rounded">
+            <h4 class="font-bold">Total Akumulasi Semua Wilayah</h4>
+            <div class="text-sm">
+                <span class="mr-4 text-green-700 font-bold">Total Masuk: <?= formatRupiah($total_wilayah_rev) ?></span>
+                <span class="mr-4 text-red-700 font-bold">Total Keluar: <?= formatRupiah($total_wilayah_exp) ?></span>
+                <span class="text-blue-700 font-bold">Net: <?= formatRupiah($total_wilayah_rev - $total_wilayah_exp) ?></span>
+            </div>
+        </div>
+
+        <table class="w-full text-sm border-collapse border border-gray-400">
+            <thead class="bg-purple-100 text-purple-900">
+                <tr>
+                    <th class="p-3 border border-gray-400 text-left">Nama Wilayah / Gudang</th>
+                    <th class="p-3 border border-gray-400 text-left">Lokasi</th>
+                    <th class="p-3 border border-gray-400 text-right">Tagged Income</th>
+                    <th class="p-3 border border-gray-400 text-right">Tagged Expense</th>
+                    <th class="p-3 border border-gray-400 text-right">Profitabilitas</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach($wilayah_summary as $w): ?>
+                <tr class="hover:bg-gray-50">
+                    <td class="p-3 border border-gray-400 font-bold"><?= $w['name'] ?></td>
+                    <td class="p-3 border border-gray-400 text-gray-600"><?= $w['location'] ?></td>
+                    <td class="p-3 border border-gray-400 text-right text-green-700"><?= formatRupiah($w['revenue']) ?></td>
+                    <td class="p-3 border border-gray-400 text-right text-red-700"><?= formatRupiah($w['expense']) ?></td>
+                    <td class="p-3 border border-gray-400 text-right font-bold <?= $w['profit']>=0?'text-blue-700':'text-red-700' ?>">
+                        <?= formatRupiah($w['profit']) ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+                <?php if(empty($wilayah_summary)): ?>
+                    <tr><td colspan="5" class="p-4 text-center italic">Tidak ada data wilayah yang ditemukan. Pastikan deskripsi transaksi menggunakan tag [Wilayah: Nama].</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+        <p class="text-xs text-gray-500 mt-2 italic">* Data diambil berdasarkan tag [Wilayah: NamaGudang] pada deskripsi transaksi.</p>
+    </div>
+
+    <!-- 6. VIEW: CUSTOM -->
+    <?php elseif ($view_type == 'CUSTOM'): ?>
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm border-collapse border border-gray-400">
+            <thead class="bg-gray-800 text-white">
+                <tr>
+                    <th class="p-3 border border-gray-600">Tanggal</th>
+                    <th class="p-3 border border-gray-600">Akun</th>
+                    <th class="p-3 border border-gray-600">Tipe</th>
+                    <th class="p-3 border border-gray-600 text-right">Jumlah</th>
+                    <th class="p-3 border border-gray-600">Deskripsi</th>
+                    <th class="p-3 border border-gray-600">User</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach($custom_results as $row): ?>
+                <tr class="hover:bg-gray-100 border-b border-gray-300">
+                    <td class="p-3 border-r"><?= date('d/m/Y', strtotime($row['date'])) ?></td>
+                    <td class="p-3 border-r font-bold text-gray-700"><?= $row['acc_name'] ?> <span class="text-xs font-normal text-gray-500">(<?= $row['code'] ?>)</span></td>
+                    <td class="p-3 border-r text-center"><span class="px-2 py-1 rounded text-xs <?= $row['type']=='INCOME'?'bg-green-100 text-green-800':'bg-red-100 text-red-800' ?>"><?= $row['type'] ?></span></td>
+                    <td class="p-3 border-r text-right font-mono"><?= formatRupiah($row['amount']) ?></td>
+                    <td class="p-3 border-r"><?= htmlspecialchars($row['description']) ?></td>
+                    <td class="p-3 text-center text-xs"><?= $row['username'] ?></td>
+                </tr>
+                <?php endforeach; ?>
+                <?php if(empty($custom_results)): ?>
+                    <tr><td colspan="6" class="p-6 text-center text-gray-500">Data tidak ditemukan sesuai filter.</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
     <?php endif; ?>
 
 </div>
@@ -469,5 +658,40 @@ function formatRupiah(input) {
     let value = input.value.replace(/\D/g, '');
     if(value === '') { input.value = ''; return; }
     input.value = new Intl.NumberFormat('id-ID').format(value);
+}
+
+function exportToExcel() {
+    var tbl = document.getElementById('tbl_all_transaksi');
+    if(!tbl) return alert('Data tabel Semua Transaksi tidak ditemukan. Pastikan Anda berada di view "Semua Transaksi".');
+    
+    // Gunakan SheetJS (xlsx)
+    var wb = XLSX.utils.table_to_book(tbl, {sheet: "Laporan Internal"});
+    XLSX.writeFile(wb, 'Laporan_Internal_<?= date("Ymd") ?>.xlsx');
+}
+
+function savePDF() {
+    const element = document.getElementById('report_content');
+    const header = document.querySelector('.header-print');
+    
+    if(header) header.style.display = 'block';
+
+    const opt = {
+        margin:       5,
+        filename:     'Laporan_Internal_<?= date("Ymd") ?>.pdf',
+        image:        { type: 'jpeg', quality: 0.98 },
+        html2canvas:  { scale: 2 },
+        jsPDF:        { unit: 'mm', format: 'a3', orientation: 'landscape' } // A3 agar muat banyak kolom
+    };
+
+    const btn = event.currentTarget;
+    const oldText = btn.innerHTML;
+    btn.innerHTML = '...';
+    btn.disabled = true;
+
+    html2pdf().set(opt).from(element).save().then(() => {
+        if(header) header.style.display = '';
+        btn.innerHTML = oldText;
+        btn.disabled = false;
+    });
 }
 </script>

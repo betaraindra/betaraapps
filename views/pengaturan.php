@@ -124,6 +124,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 ?>
 
+<div class="mb-6">
+    <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-cogs text-blue-600"></i> Pengaturan Perusahaan</h2>
+</div>
+
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
     <div class="bg-white p-6 rounded shadow">
         <h3 class="font-bold mb-4 border-b pb-2">Identitas Perusahaan & Aplikasi</h3>

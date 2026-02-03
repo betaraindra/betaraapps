@@ -35,34 +35,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $amount = cleanNumber($_POST['amount']); 
         
         $description = strip_tags($_POST['description']); 
+        $trx_type_input = $_POST['trx_type']; // INCOME atau EXPENSE
         
-        // Ambil info akun dari DB untuk validasi tipe
+        // Validasi Akun
         $accTypeStmt = $pdo->prepare("SELECT type, code, name FROM accounts WHERE id = ?");
         $accTypeStmt->execute([$account_id]);
         $accData = $accTypeStmt->fetch(); 
 
         if (!$accData) {
-            $_SESSION['flash'] = ['type' => 'error', 'message' => 'Akun tidak valid'];
+            $_SESSION['flash'] = ['type' => 'error', 'message' => 'Akun Kategori tidak valid'];
         } else {
-            // Tentukan Tipe Transaksi (INCOME/EXPENSE) berdasarkan input user, bukan tipe akun semata
-            // Karena EQUITY bisa INCOME (Modal Masuk) atau EXPENSE (Prive)
-            $trx_type_input = $_POST['trx_type']; // INCOME atau EXPENSE dari radio button
-
-            // Logic Wilayah & Material
-            // Jika user memilih Gudang, tambahkan tag ke deskripsi
-            if (!empty($_POST['warehouse_id'])) {
-                $wh_id = (int)$_POST['warehouse_id'];
-                
-                // Cek apakah akun ini mendukung fitur wilayah/gudang?
-                // Rule: 1004 (Pemasukan Wilayah), 2009 (Pengeluaran Wilayah), 2005 (Material/Stok), 3003 (Persediaan)
-                $special_codes = ['1004', '2009', '2005', '3003']; 
-                
-                if (in_array($accData['code'], $special_codes)) {
-                    $whNameStmt = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
-                    $whNameStmt->execute([$wh_id]);
-                    $whName = $whNameStmt->fetchColumn();
-                    if ($whName) $description .= " [Wilayah: $whName]";
+            // LOGIC BARU: PENANGANAN WILAYAH
+            // Jika tipe EXPENSE (Keluar), User WAJIB pilih gudang/wilayah.
+            // Tag [Wilayah: Nama] akan ditempel ke deskripsi agar masuk ke Laporan Internal
+            
+            if ($trx_type_input == 'EXPENSE') {
+                if (empty($_POST['warehouse_id'])) {
+                    $_SESSION['flash'] = ['type' => 'error', 'message' => 'Untuk Pengeluaran, Wilayah/Gudang WAJIB dipilih!'];
+                    echo "<script>window.location='?page=transaksi_keuangan';</script>";
+                    exit;
                 }
+                
+                $wh_id = (int)$_POST['warehouse_id'];
+                $whNameStmt = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
+                $whNameStmt->execute([$wh_id]);
+                $whName = $whNameStmt->fetchColumn();
+                
+                if ($whName) {
+                    $description .= " [Wilayah: $whName]";
+                }
+            } 
+            // Jika INCOME, Wilayah Opsional (Kecuali Pemasukan Wilayah)
+            elseif (!empty($_POST['warehouse_id'])) {
+                $wh_id = (int)$_POST['warehouse_id'];
+                $whNameStmt = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
+                $whNameStmt->execute([$wh_id]);
+                $whName = $whNameStmt->fetchColumn();
+                if ($whName) $description .= " [Wilayah: $whName]";
             }
 
             $stmt = $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, ?, ?, ?, ?, ?)");
@@ -95,44 +104,42 @@ $recent = $pdo->query("SELECT f.*, a.name as acc_name, a.code as acc_code, u.use
 
                 <!-- PILIHAN TIPE TRANSAKSI (RADIO) -->
                 <div class="mb-4">
-                    <label class="block text-sm font-bold text-gray-700 mb-2">Arus Kas (Cash Flow)</label>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Jenis Transaksi</label>
                     <div class="flex gap-4">
                         <label class="flex items-center cursor-pointer p-2 border rounded hover:bg-green-50 transition border-green-200 w-full justify-center">
                             <input type="radio" name="trx_type" value="INCOME" class="mr-2" checked onchange="filterAccounts()">
-                            <span class="text-green-700 font-bold text-xs md:text-sm"><i class="fas fa-arrow-down"></i> Masuk (In)</span>
+                            <span class="text-green-700 font-bold text-xs md:text-sm"><i class="fas fa-arrow-down"></i> Pemasukan (In)</span>
                         </label>
                         <label class="flex items-center cursor-pointer p-2 border rounded hover:bg-red-50 transition border-red-200 w-full justify-center">
                             <input type="radio" name="trx_type" value="EXPENSE" class="mr-2" onchange="filterAccounts()">
-                            <span class="text-red-700 font-bold text-xs md:text-sm"><i class="fas fa-arrow-up"></i> Keluar (Out)</span>
+                            <span class="text-red-700 font-bold text-xs md:text-sm"><i class="fas fa-arrow-up"></i> Pengeluaran (Out)</span>
                         </label>
                     </div>
-                    <p class="text-[10px] text-gray-500 mt-1 italic" id="type_hint">
-                        * Pemasukan Penjualan, Modal, atau Pinjaman.
-                    </p>
                 </div>
                 
                 <div class="mb-4">
-                    <label class="block text-sm font-bold text-gray-700 mb-1">Akun / Kategori</label>
-                    <select name="account_id" id="account_select" class="w-full border p-2 rounded bg-white focus:ring-2 focus:ring-blue-500" required onchange="checkSpecialAccount(this)">
-                        <option value="">-- Pilih Akun --</option>
+                    <label class="block text-sm font-bold text-gray-700 mb-1">Kategori (Akun)</label>
+                    <select name="account_id" id="account_select" class="w-full border p-2 rounded bg-white focus:ring-2 focus:ring-blue-500 font-bold text-gray-700" required>
+                        <option value="">-- Pilih Kategori --</option>
                         <?php foreach($accounts as $acc): ?>
                             <option value="<?= h($acc['id']) ?>" data-type="<?= h($acc['type']) ?>" data-code="<?= h($acc['code']) ?>">
-                                <?= h($acc['code']) ?> - <?= h($acc['name']) ?> (<?= h($acc['type']) ?>)
+                                <?= h($acc['name']) ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
                 </div>
 
-                <!-- WAREHOUSE INPUT (HIDDEN BY DEFAULT) -->
-                <div id="warehouse_container" class="mb-4 hidden bg-yellow-50 p-3 rounded border border-yellow-200 animate-fade-in">
-                    <label class="block text-xs font-bold text-gray-700 mb-1">Alokasi Gudang / Wilayah</label>
-                    <select name="warehouse_id" class="w-full border p-2 rounded bg-white text-sm focus:ring-2 focus:ring-yellow-500">
+                <!-- WAREHOUSE INPUT (OTOMATIS MUNCUL UNTUK SEMUA, WAJIB JIKA EXPENSE) -->
+                <div id="warehouse_container" class="mb-4 bg-gray-50 p-3 rounded border border-gray-200 animate-fade-in">
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Pilih Wilayah / Gudang <span id="lbl_wilayah_req" class="text-red-500">*</span></label>
+                    <select name="warehouse_id" class="w-full border p-2 rounded bg-white text-sm focus:ring-2 focus:ring-blue-500 font-bold text-gray-800">
+                        <option value="">-- Pilih Wilayah (Opsional untuk Pemasukan) --</option>
                         <?php foreach($warehouses as $w): ?>
                             <option value="<?= $w['id'] ?>"><?= $w['name'] ?></option>
                         <?php endforeach; ?>
                     </select>
                     <p class="text-[10px] text-gray-500 mt-1 italic">
-                        <i class="fas fa-info-circle"></i> Transaksi ini akan ditandai untuk gudang yang dipilih (Material/Wilayah).
+                        <i class="fas fa-info-circle"></i> Lokasi untuk mencatat arus kas cabang/proyek.
                     </p>
                 </div>
 
@@ -143,8 +150,8 @@ $recent = $pdo->query("SELECT f.*, a.name as acc_name, a.code as acc_code, u.use
                 </div>
 
                 <div class="mb-6">
-                    <label class="block text-sm font-bold text-gray-700 mb-1">Keterangan</label>
-                    <textarea name="description" class="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500" rows="3" placeholder="Contoh: Setoran Modal Rekan A..."></textarea>
+                    <label class="block text-sm font-bold text-gray-700 mb-1">Keterangan Detail</label>
+                    <textarea name="description" class="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500" rows="3" placeholder="Contoh: Beli Token Listrik / Gaji Staff A"></textarea>
                 </div>
 
                 <button type="submit" class="w-full bg-blue-600 text-white py-3 rounded font-bold shadow hover:bg-blue-700 transition transform active:scale-95">
@@ -163,7 +170,7 @@ $recent = $pdo->query("SELECT f.*, a.name as acc_name, a.code as acc_code, u.use
                     <thead class="bg-gray-100 text-gray-700">
                         <tr>
                             <th class="p-3 border-b">Tanggal</th>
-                            <th class="p-3 border-b">Akun</th>
+                            <th class="p-3 border-b">Kategori</th>
                             <th class="p-3 border-b">Ket</th>
                             <th class="p-3 border-b text-right">Jumlah</th>
                             <th class="p-3 border-b text-center">Aksi</th>
@@ -214,17 +221,32 @@ function filterAccounts() {
     const type = document.querySelector('input[name="trx_type"]:checked').value;
     const select = document.getElementById('account_select');
     const options = select.options;
-    const hint = document.getElementById('type_hint');
+    const whContainer = document.getElementById('warehouse_container');
+    const whSelect = document.querySelector('select[name="warehouse_id"]');
+    const reqLabel = document.getElementById('lbl_wilayah_req');
     
     // Reset selection
     select.value = "";
-    document.getElementById('warehouse_container').classList.add('hidden');
 
-    // Update Hint
-    if (type === 'INCOME') {
-        hint.innerHTML = "* Pemasukan Penjualan (INCOME), Modal Rekan (EQUITY), atau Pinjaman (LIABILITY).";
+    // LOGIKA WILAYAH: 
+    // Tampil untuk SEMUA. 
+    // WAJIB (Required) jika PENGELUARAN (Expense).
+    // OPSIONAL jika PEMASUKAN (Income).
+    
+    whContainer.classList.remove('hidden'); 
+
+    if (type === 'EXPENSE') {
+        whSelect.setAttribute('required', 'required');
+        reqLabel.classList.remove('hidden');
+        whContainer.classList.replace('bg-green-50', 'bg-red-50'); // Optional: visual cue
+        whContainer.classList.replace('bg-gray-50', 'bg-red-50');
+        whContainer.classList.add('bg-red-50');
     } else {
-        hint.innerHTML = "* Biaya Operasional (EXPENSE), Beli Aset, Bayar Utang (LIABILITY), atau Prive (EQUITY).";
+        whSelect.removeAttribute('required');
+        reqLabel.classList.add('hidden');
+        whContainer.classList.replace('bg-red-50', 'bg-green-50');
+        whContainer.classList.remove('bg-red-50');
+        whContainer.classList.add('bg-green-50');
     }
 
     for (let i = 0; i < options.length; i++) {
@@ -236,7 +258,7 @@ function filterAccounts() {
             continue; 
         }
 
-        // LOGIKA FILTER PENTING:
+        // LOGIKA FILTER KATEGORI:
         // Jika INCOME (Uang Masuk): Tampilkan Akun INCOME, EQUITY (Modal), LIABILITY (Hutang)
         // Jika EXPENSE (Uang Keluar): Tampilkan Akun EXPENSE, EQUITY (Prive), LIABILITY (Bayar Hutang), ASSET (Beli Aset)
         
@@ -248,23 +270,6 @@ function filterAccounts() {
         }
 
         opt.style.display = show ? 'block' : 'none';
-    }
-}
-
-function checkSpecialAccount(select) {
-    const opt = select.options[select.selectedIndex];
-    if(!opt || !opt.getAttribute('data-code')) return;
-
-    const code = opt.getAttribute('data-code');
-    const container = document.getElementById('warehouse_container');
-    
-    // Rule: Show warehouse for specific logic
-    const specialCodes = ['1004', '2009', '2005', '3003'];
-    
-    if (specialCodes.includes(code)) {
-        container.classList.remove('hidden');
-    } else {
-        container.classList.add('hidden');
     }
 }
 

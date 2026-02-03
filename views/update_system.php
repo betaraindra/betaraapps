@@ -2,7 +2,7 @@
 checkRole(['SUPER_ADMIN']);
 
 // Config Update
-$github_zip_url = "https://github.com/betaraindra/aplikasiumkm/archive/refs/heads/main.zip";
+$github_zip_url = "https://github.com/betaraindra/betaraapps/archive/refs/heads/main.zip";
 $temp_zip = "update_temp.zip";
 $temp_extract_dir = "temp_update_extract/";
 
@@ -11,33 +11,35 @@ $logs = [];
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['start_update'])) {
     
     // 1. EXTEND TIME LIMIT
-    set_time_limit(300); // 5 Menit
+    set_time_limit(600); // 10 Menit
     
     try {
-        $logs[] = "Memulai proses update...";
+        $logs[] = "Memulai proses update ke v0.0.2...";
         
-        // 2. DOWNLOAD ZIP
+        // 2. DOWNLOAD ZIP MENGGUNAKAN CURL (Lebih Stabil)
         $logs[] = "Mendownload source code dari GitHub...";
-        $arrContextOptions=array(
-            "ssl"=>array(
-                "verify_peer"=>false,
-                "verify_peer_name"=>false,
-            ),
-            "http"=>array(
-                "header"=>"User-Agent: MyApp/1.0\r\n" // GitHub butuh User Agent
-            )
-        );  
         
-        $file_content = @file_get_contents($github_zip_url, false, stream_context_create($arrContextOptions));
+        $fp = fopen($temp_zip, 'w+');
+        if($fp === false) throw new Exception("Tidak bisa membuat file temporary ($temp_zip). Cek permission folder.");
         
-        if ($file_content === false) {
-            throw new Exception("Gagal mendownload file dari GitHub. Pastikan server terhubung ke internet.");
+        $ch = curl_init($github_zip_url);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 300);
+        curl_setopt($ch, CURLOPT_FILE, $fp); 
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // Bypass SSL verification untuk kompatibilitas
+        curl_setopt($ch, CURLOPT_USERAGENT, 'SIKI-APP-UPDATER');
+        
+        $exec = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curl_error = curl_error($ch);
+        
+        curl_close($ch);
+        fclose($fp);
+
+        if (!$exec || $http_code !== 200) {
+             throw new Exception("Gagal download via cURL. HTTP Code: $http_code. Error: $curl_error");
         }
-        
-        if (file_put_contents($temp_zip, $file_content) === false) {
-            throw new Exception("Gagal menyimpan file update sementara.");
-        }
-        $logs[] = "Download berhasil.";
+        $logs[] = "Download berhasil. Ukuran: " . round(filesize($temp_zip) / 1024, 2) . " KB";
 
         // 3. EXTRACT ZIP
         $zip = new ZipArchive;
@@ -92,6 +94,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['start_update'])) {
                     if ( is_dir($src . '/' . $file) ) {
                         recursiveCopy($src . '/' . $file, $dst . '/' . $file, $logs);
                     } else {
+                        // Cek jika file index.php atau lainnya
                         copy($src . '/' . $file, $dst . '/' . $file);
                     }
                 }
@@ -119,7 +122,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['start_update'])) {
         deleteDir($temp_extract_dir);
         unlink($temp_zip);
         
-        $logs[] = "Update Selesai! Sistem telah diperbarui.";
+        $logs[] = "Update Selesai! Sistem telah diperbarui ke versi terbaru.";
         logActivity($pdo, 'UPDATE_SYSTEM', "Melakukan update sistem via GitHub");
         
         $_SESSION['flash'] = ['type'=>'success', 'message'=>'Sistem berhasil diupdate ke versi terbaru!'];
@@ -144,7 +147,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['start_update'])) {
         <div class="bg-blue-50 border border-blue-200 text-blue-800 p-4 rounded-lg mb-6">
             <h4 class="font-bold mb-2"><i class="fas fa-info-circle"></i> Informasi Penting</h4>
             <ul class="list-disc ml-5 text-sm space-y-1">
-                <li>Fitur ini akan mengambil kode program terbaru dari repository GitHub: <a href="https://github.com/betaraindra/aplikasiumkm" target="_blank" class="underline font-bold">aplikasiumkm</a>.</li>
+                <li>Fitur ini akan mengambil kode program terbaru dari repository GitHub: <a href="https://github.com/betaraindra/betaraapps" target="_blank" class="underline font-bold">betaraapps</a>.</li>
                 <li>Proses ini <b>AMAN</b> untuk data Anda.</li>
                 <li>File <b>config.php</b> (Koneksi Database) tidak akan ditimpa.</li>
                 <li>Folder <b>uploads/</b> (Gambar & Logo) tidak akan dihapus.</li>
@@ -155,10 +158,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['start_update'])) {
 
         <?php if (empty($logs)): ?>
             <div class="text-center py-8">
-                <p class="text-gray-600 mb-6">Klik tombol di bawah untuk memulai proses update. Proses mungkin memakan waktu beberapa detik hingga 1 menit tergantung koneksi internet.</p>
+                <p class="text-gray-600 mb-6">Klik tombol di bawah untuk memulai proses update. Proses mungkin memakan waktu 1-5 menit.</p>
                 <form method="POST" onsubmit="return confirm('Yakin ingin melakukan update sistem sekarang?');">
                     <button type="submit" name="start_update" value="1" class="bg-blue-600 text-white px-8 py-3 rounded-full font-bold shadow-lg hover:bg-blue-700 transition transform hover:scale-105 flex items-center gap-2 mx-auto">
-                        <i class="fas fa-cloud-download-alt"></i> Mulai Update Sekarang
+                        <i class="fas fa-cloud-download-alt"></i> Mulai Update (v0.0.2)
                     </button>
                 </form>
             </div>

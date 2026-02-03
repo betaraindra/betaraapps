@@ -78,6 +78,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stock = (int)$_POST['stock'];
         $id = $_POST['id'] ?? '';
         $image_url = $_POST['old_image'] ?? '';
+        $wh_id = $_POST['warehouse_id'] ?? ''; // Ambil Gudang ID
 
         // SECURE FILE UPLOAD
         if (isset($_FILES['image']) && $_FILES['image']['error'] === 0) {
@@ -114,17 +115,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         try {
             if ($id) {
-                $stmt = $pdo->prepare("UPDATE products SET sku=?, name=?, category=?, unit=?, buy_price=?, sell_price=?, image_url=? WHERE id=?");
-                $stmt->execute([$sku, $name, $cat, $unit, $buy, $sell, $image_url, $id]);
+                // --- UPDATE PRODUCT ---
+                // Cek Stok Lama untuk menghitung selisih
+                $stmtOld = $pdo->prepare("SELECT stock FROM products WHERE id=?");
+                $stmtOld->execute([$id]);
+                $old_stock = (int)$stmtOld->fetchColumn();
+                $stock_diff = $stock - $old_stock;
+
+                // VALIDASI: Jika stok berubah, Gudang WAJIB dipilih
+                if ($stock_diff != 0 && empty($wh_id)) {
+                    throw new Exception("Stok berubah (Selisih: $stock_diff). Harap pilih Gudang/Wilayah untuk mencatat perubahan ini.");
+                }
+
+                $stmt = $pdo->prepare("UPDATE products SET sku=?, name=?, category=?, unit=?, buy_price=?, sell_price=?, stock=?, image_url=? WHERE id=?");
+                $stmt->execute([$sku, $name, $cat, $unit, $buy, $sell, $stock, $image_url, $id]);
+                
+                // LOGIC TRANSAKSI KOREKSI (JIKA ADA PERUBAHAN STOK)
+                if ($stock_diff != 0) {
+                    $type = ($stock_diff > 0) ? 'IN' : 'OUT';
+                    $qty_trx = abs($stock_diff);
+                    $ref = 'ADJ-' . date('ymdHi');
+                    $note = 'Koreksi Stok (Edit Data Barang)';
+                    
+                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), ?, ?, ?, ?, ?, ?, ?)")
+                        ->execute([$type, $id, $wh_id, $qty_trx, $ref, $note, $_SESSION['user_id']]);
+                }
+
                 logActivity($pdo, 'UPDATE_BARANG', "Update barang: $name ($sku)");
                 $_SESSION['flash'] = ['type'=>'success', 'message'=>'Data Barang Diperbarui'];
             } else {
+                // --- ADD NEW PRODUCT ---
                 $check = $pdo->prepare("SELECT id FROM products WHERE sku = ?");
                 $check->execute([$sku]);
                 if($check->rowCount() > 0) throw new Exception("SKU $sku sudah ada!");
 
+                // VALIDASI: Jika stok awal > 0, Gudang WAJIB dipilih
+                if ($stock > 0 && empty($wh_id)) {
+                    throw new Exception("Stok awal diisi ($stock). Harap pilih Gudang/Wilayah penyimpanan.");
+                }
+
                 $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmt->execute([$sku, $name, $cat, $unit, $buy, $sell, $stock, $image_url]);
+                $new_id = $pdo->lastInsertId();
+
+                // LOGIC TRANSAKSI STOK AWAL
+                if ($stock > 0) {
+                    $ref = 'INIT-' . date('ymdHi'); // Ref Otomatis
+                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'IN', ?, ?, ?, ?, 'Stok Awal Barang Baru', ?)")
+                        ->execute([$new_id, $wh_id, $stock, $ref, $_SESSION['user_id']]);
+                }
+
                 logActivity($pdo, 'ADD_BARANG', "Tambah barang baru: $name ($sku)");
                 $_SESSION['flash'] = ['type'=>'success', 'message'=>'Barang Baru Ditambahkan'];
             }
@@ -152,8 +192,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // --- GET MASTER DATA ---
-$category_accounts = $pdo->query("SELECT * FROM accounts WHERE code IN ('3003', '2005') ORDER BY code ASC")->fetchAll();
-$existing_categories = $pdo->query("SELECT DISTINCT category FROM products ORDER BY category")->fetchAll(PDO::FETCH_COLUMN);
+// Data Gudang untuk Dropdown
+$warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
+
+// Tambahkan 2105 ke dalam list kategori untuk form add/edit
+$category_accounts = $pdo->query("SELECT * FROM accounts WHERE code IN ('3003', '2005', '2105') ORDER BY code ASC")->fetchAll();
+
+// QUERY UNTUK FILTER KATEGORI: Join ke Accounts untuk dapat Nama
+$existing_categories = $pdo->query("
+    SELECT DISTINCT p.category, a.name 
+    FROM products p 
+    LEFT JOIN accounts a ON p.category = a.code 
+    ORDER BY p.category ASC
+")->fetchAll();
 
 // --- FILTER PARAMETERS ---
 $search = $_GET['q'] ?? '';
@@ -170,6 +221,7 @@ $sql = "SELECT p.*,
         COALESCE(it.reference, '-') as reference, 
         COALESCE(it.date, DATE(p.created_at)) as trx_date, 
         COALESCE(it.notes, '') as trx_notes, 
+        it.warehouse_id as current_wh_id, 
         w.name as warehouse_name 
         FROM products p 
         LEFT JOIN (
@@ -296,7 +348,16 @@ foreach($products as $p) {
             <select name="category" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-indigo-500">
                 <option value="ALL">-- Semua --</option>
                 <?php foreach($existing_categories as $ec): ?>
-                    <option value="<?= $ec ?>" <?= $cat_filter==$ec ? 'selected' : '' ?>><?= $ec ?></option>
+                    <?php 
+                        // Format Label: Kode - Nama Akun
+                        $label = $ec['category'];
+                        if(!empty($ec['name'])) {
+                            $label .= " - " . $ec['name'];
+                        }
+                    ?>
+                    <option value="<?= $ec['category'] ?>" <?= $cat_filter==$ec['category'] ? 'selected' : '' ?>>
+                        <?= htmlspecialchars($label) ?>
+                    </option>
                 <?php endforeach; ?>
             </select>
         </div>
@@ -416,8 +477,17 @@ foreach($products as $p) {
                      </div>
 
                     <div class="mb-3">
-                        <label class="block text-xs font-bold text-gray-700 mb-1">Stok Awal</label>
-                        <input type="number" name="stock" id="inp_stock" class="w-full border p-2 rounded text-sm font-bold" placeholder="0">
+                        <label class="block text-xs font-bold text-gray-700 mb-1">Stok & Gudang</label>
+                        <div class="flex gap-2">
+                            <input type="number" name="stock" id="inp_stock" class="w-1/2 border p-2 rounded text-sm font-bold" placeholder="0">
+                            <select name="warehouse_id" id="inp_warehouse" class="w-1/2 border p-2 rounded text-sm bg-white text-gray-700">
+                                <option value="">-- Pilih Gudang --</option>
+                                <?php foreach($warehouses as $w): ?>
+                                    <option value="<?= $w['id'] ?>"><?= $w['name'] ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <p class="text-[10px] text-red-500 mt-1 font-bold">* WAJIB Pilih Gudang jika mengisi stok.</p>
                     </div>
 
                     <div class="mb-3">
@@ -481,18 +551,23 @@ foreach($products as $p) {
                         <td class="p-2 border text-center"><?= date('d/m/Y', strtotime($p['trx_date'])) ?></td>
                         <td class="p-2 border font-bold"><?= h($p['name']) ?></td>
                         <td class="p-2 border text-right"><?= formatRupiah($p['buy_price']) ?></td>
-                        <td class="p-2 border text-center"><?= h($p['warehouse_name'] ?? '-') ?></td>
+                        <td class="p-2 border text-center font-bold text-blue-700"><?= h($p['warehouse_name'] ?? '-') ?></td>
                         <td class="p-2 border text-right"><?= formatRupiah($p['sell_price']) ?></td>
                         <td class="p-2 border text-center font-bold"><?= h($p['stock']) ?></td>
                         <td class="p-2 border text-center"><?= h($p['unit']) ?></td>
                         <td class="p-2 border"><?= h($p['trx_notes']) ?></td>
                         <td class="p-2 border text-center">
                             <div class="font-mono text-xs font-bold text-blue-600 mb-1"><?= h($p['reference']) ?></div>
-                            <?php if($p['trx_id']): ?>
-                                <a href="?page=cetak_surat_jalan&id=<?= $p['trx_id'] ?>" target="_blank" class="bg-gray-100 px-2 py-1 rounded border hover:bg-gray-200 text-gray-700 text-[10px] inline-flex items-center gap-1">
-                                    <i class="fas fa-print"></i> Print
-                                </a>
-                            <?php endif; ?>
+                            <div class="flex gap-1 justify-center">
+                                <?php if($p['trx_id']): ?>
+                                    <a href="?page=cetak_surat_jalan&id=<?= $p['trx_id'] ?>" target="_blank" class="bg-gray-100 px-2 py-1 rounded border hover:bg-gray-200 text-gray-700 text-[10px] inline-flex items-center gap-1" title="Cetak Surat Jalan">
+                                        <i class="fas fa-print"></i> SJ
+                                    </a>
+                                <?php endif; ?>
+                                <button onclick="printLabelDirect('<?= h($p['sku']) ?>', '<?= h($p['name']) ?>')" class="bg-yellow-100 px-2 py-1 rounded border border-yellow-300 hover:bg-yellow-200 text-yellow-800 text-[10px] inline-flex items-center gap-1" title="Cetak Label Barcode">
+                                    <i class="fas fa-barcode"></i> Lbl
+                                </button>
+                            </div>
                         </td>
                         <td class="p-2 border text-center no-print flex justify-center gap-1">
                             <button onclick='editProduct(<?= json_encode($p) ?>)' class="text-blue-600"><i class="fas fa-edit"></i></button>
@@ -722,6 +797,21 @@ function printSingleLabel() {
     } catch(e) { alert("Gagal render label."); }
 }
 
+function printLabelDirect(sku, name) {
+    document.getElementById('lbl_name').innerText = name;
+    try {
+        bwipjs.toCanvas('lbl_barcode_canvas', {
+            bcid:        'code128',
+            text:        sku,
+            scale:       2,
+            height:      10,
+            includetext: true,
+            textxalign:  'center',
+        });
+        window.print();
+    } catch(e) { alert("Gagal render label."); }
+}
+
 function editProduct(p) {
     document.getElementById('inp_id').value = p.id;
     document.getElementById('inp_sku').value = p.sku;
@@ -732,6 +822,11 @@ function editProduct(p) {
     document.getElementById('inp_unit').value = p.unit;
     document.getElementById('inp_stock').value = p.stock;
     document.getElementById('inp_old_image').value = p.image_url;
+    
+    // Auto Select Warehouse from previous transaction if available
+    // Agar kolom Wilayah tidak kosong saat disimpan
+    document.getElementById('inp_warehouse').value = p.current_wh_id || "";
+    
     previewBarcode();
     const content = document.getElementById('form_content');
     if(content.classList.contains('hidden')) toggleFormMobile();
@@ -742,6 +837,7 @@ function resetForm() {
     document.getElementById('productForm').reset();
     document.getElementById('inp_id').value = '';
     document.getElementById('inp_old_image').value = '';
+    document.getElementById('inp_warehouse').value = ''; // Reset Warehouse
     document.getElementById('barcode_container').classList.add('hidden');
     document.getElementById('scanner_area').classList.add('hidden');
     if(html5QrCode) { try { html5QrCode.stop(); html5QrCode.clear(); } catch(e) {} }

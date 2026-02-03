@@ -4,7 +4,8 @@ checkRole(['SUPER_ADMIN', 'ADMIN_KEUANGAN', 'MANAGER', 'SVP']);
 // Define Locked Accounts (System Accounts)
 // 3003: Persediaan, 2005: Pembelian Stok
 // 1004: Pemasukan Wilayah, 2009: Pengeluaran Wilayah
-$locked_codes = ['3003', '2005', '1004', '2009'];
+// 2105: Pengeluaran Material Habis Pakai
+$locked_codes = ['3003', '2005', '1004', '2009', '2105'];
 
 // Handle Delete
 if (isset($_GET['delete'])) {
@@ -16,7 +17,7 @@ if (isset($_GET['delete'])) {
     $code = $stmt->fetchColumn();
 
     if (in_array($code, $locked_codes)) {
-        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: Akun Sistem (3003/2005/1004/2009) terkunci dan tidak dapat dihapus.'];
+        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: Akun Sistem (Locked) tidak dapat dihapus.'];
     } else {
         $check = $pdo->query("SELECT COUNT(*) FROM finance_transactions WHERE account_id=$id")->fetchColumn();
         if ($check > 0) {

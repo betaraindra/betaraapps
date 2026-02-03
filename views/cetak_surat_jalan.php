@@ -17,9 +17,9 @@ $header = $stmt->fetch();
 if (!$header) die("Data transaksi tidak ditemukan (ID: $id).");
 
 // Items Transaksi
-// UPDATE: Menambahkan p.category untuk detail material yang lebih lengkap
+// UPDATE: Menambahkan p.image_url dan category
 if (empty($header['reference']) || $header['reference'] == '-') {
-    $sql_items = "SELECT i.*, p.sku, p.name as prod_name, p.category, p.unit, w.name as origin_warehouse 
+    $sql_items = "SELECT i.*, p.sku, p.name as prod_name, p.category, p.unit, p.image_url, w.name as origin_warehouse 
                   FROM inventory_transactions i 
                   JOIN products p ON i.product_id = p.id 
                   LEFT JOIN warehouses w ON i.warehouse_id = w.id
@@ -27,7 +27,7 @@ if (empty($header['reference']) || $header['reference'] == '-') {
     $stmt_items = $pdo->prepare($sql_items);
     $stmt_items->execute([$id]);
 } else {
-    $sql_items = "SELECT i.*, p.sku, p.name as prod_name, p.category, p.unit, w.name as origin_warehouse 
+    $sql_items = "SELECT i.*, p.sku, p.name as prod_name, p.category, p.unit, p.image_url, w.name as origin_warehouse 
                   FROM inventory_transactions i 
                   JOIN products p ON i.product_id = p.id 
                   LEFT JOIN warehouses w ON i.warehouse_id = w.id
@@ -94,6 +94,7 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
         canvas.barcode-canvas { max-width: 100%; height: auto; }
         .item-category { font-size: 10px; font-style: italic; color: #555; }
         .item-notes { font-size: 10px; margin-top: 2px; }
+        .prod-img { width: 50px; height: 50px; object-fit: cover; border: 1px solid #ddd; }
     </style>
 </head>
 <body>
@@ -154,9 +155,10 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
             <thead>
                 <tr>
                     <th style="width: 30px;">No</th>
-                    <th style="width: 120px;">SKU / Barcode</th>
+                    <th style="width: 60px;">Foto</th>
+                    <th style="width: 110px;">SKU / Barcode</th>
                     <th>Detail Material / Barang</th>
-                    <th style="width: 100px;">Gudang</th>
+                    <th style="width: 90px;">Gudang</th>
                     <th>Catatan Item</th>
                     <th style="width: 50px;">Jml</th>
                     <th style="width: 50px;">Unit</th>
@@ -171,6 +173,13 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                 ?>
                 <tr>
                     <td class="text-center"><?= $no++ ?></td>
+                    <td class="text-center" style="padding: 2px;">
+                        <?php if(!empty($item['image_url']) && file_exists($item['image_url'])): ?>
+                            <img src="<?= $item['image_url'] ?>" class="prod-img">
+                        <?php else: ?>
+                            <span style="font-size:9px; color:#aaa;">-No IMG-</span>
+                        <?php endif; ?>
+                    </td>
                     <td class="text-center" style="padding: 4px;">
                         <canvas id="<?= $row_id ?>" class="barcode-canvas"></canvas>
                         <div style="font-size: 9px; margin-top:2px; font-family: monospace;"><?= $item['sku'] ?></div>

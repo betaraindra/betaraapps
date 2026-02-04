@@ -90,6 +90,27 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $products = $stmt->fetchAll();
 
+// --- FETCH SN FOR ALL PRODUCTS (NEW LOGIC FOR REPORT) ---
+foreach($products as &$prod_row) {
+    // Ambil SN yang AVAILABLE sesuai filter gudang jika ada
+    $sn_sql = "SELECT serial_number FROM product_serials WHERE product_id = ? AND status = 'AVAILABLE'";
+    $sn_params = [$prod_row['id']];
+
+    if ($warehouse_filter !== 'ALL') {
+        $sn_sql .= " AND warehouse_id = ?";
+        $sn_params[] = $warehouse_filter;
+    }
+    
+    $sn_sql .= " ORDER BY serial_number ASC";
+
+    $stmt_sn_list = $pdo->prepare($sn_sql);
+    $stmt_sn_list->execute($sn_params);
+    $sn_arr = $stmt_sn_list->fetchAll(PDO::FETCH_COLUMN);
+    
+    $prod_row['sn_string'] = !empty($sn_arr) ? implode(', ', $sn_arr) : '-';
+}
+unset($prod_row); // break reference
+
 // --- SUMMARY CALCULATION ---
 $total_asset_value = 0;
 $total_qty = 0;
@@ -139,11 +160,12 @@ foreach($products as $p) {
 
         /* TABLE STYLES */
         table { border-collapse: collapse; width: 100%; margin-top: 10px; }
-        th, td { border: 1px solid #000 !important; padding: 6px; font-size: 10pt; }
+        th, td { border: 1px solid #000 !important; padding: 6px; font-size: 9pt; }
         th { background-color: #f3f4f6 !important; text-align: center; }
         .bg-blue-50, .bg-blue-100 { background-color: transparent !important; }
         .text-right { text-align: right; }
         .text-center { text-align: center; }
+        .break-sn { word-break: break-all; font-size: 8pt; }
     }
     .header-print { display: none; }
 </style>
@@ -257,14 +279,17 @@ foreach($products as $p) {
         <thead class="bg-gray-100 text-gray-700">
             <tr>
                 <th class="p-2 border border-gray-300 text-center w-10">No</th>
+                <th class="p-2 border border-gray-300 text-center w-14">Gbr</th>
                 <th class="p-2 border border-gray-300">Wilayah / Gudang</th>
                 <th class="p-2 border border-gray-300">Kode Barang (SKU)</th>
                 <th class="p-2 border border-gray-300">Nama Barang</th>
                 <th class="p-2 border border-gray-300">Kategori (Akun)</th>
+                <th class="p-2 border border-gray-300 w-48">SN Barang</th>
                 <th class="p-2 border border-gray-300 text-right">Stok</th>
                 <th class="p-2 border border-gray-300 text-center">Satuan</th>
-                <th class="p-2 border border-gray-300 text-right">Harga Beli (HPP)</th>
-                <th class="p-2 border border-gray-300 text-right font-bold bg-blue-50">Total Nilai Aset</th>
+                <th class="p-2 border border-gray-300 text-right">Harga Beli</th>
+                <th class="p-2 border border-gray-300 text-right">Harga Jual</th>
+                <th class="p-2 border border-gray-300 text-right font-bold bg-blue-50">Total Aset</th>
             </tr>
         </thead>
         <tbody>
@@ -277,27 +302,38 @@ foreach($products as $p) {
             ?>
             <tr class="hover:bg-gray-50">
                 <td class="p-2 border border-gray-300 text-center"><?= $no++ ?></td>
+                <td class="p-2 border border-gray-300 text-center">
+                    <?php if($p['image_url']): ?>
+                        <img src="<?= h($p['image_url']) ?>" class="w-8 h-8 object-cover mx-auto border border-gray-200">
+                    <?php endif; ?>
+                </td>
                 <td class="p-2 border border-gray-300 font-bold text-blue-800"><?= htmlspecialchars($current_warehouse_name) ?></td>
                 <td class="p-2 border border-gray-300 font-mono"><?= $p['sku'] ?></td>
                 <td class="p-2 border border-gray-300 font-medium"><?= $p['name'] ?></td>
                 <td class="p-2 border border-gray-300 text-gray-600"><?= $cat_label ?></td>
+                
+                <td class="p-2 border border-gray-300 text-xs font-mono break-all bg-gray-50">
+                    <div class="max-h-16 overflow-y-auto break-sn"><?= h($p['sn_string']) ?></div>
+                </td>
+
                 <td class="p-2 border border-gray-300 text-right font-bold"><?= number_format($p['stock']) ?></td>
                 <td class="p-2 border border-gray-300 text-center text-xs"><?= $p['unit'] ?></td>
                 <td class="p-2 border border-gray-300 text-right"><?= formatRupiah($p['buy_price']) ?></td>
+                <td class="p-2 border border-gray-300 text-right"><?= formatRupiah($p['sell_price']) ?></td>
                 <td class="p-2 border border-gray-300 text-right font-bold bg-blue-50 text-blue-800">
                     <?= formatRupiah($subtotal) ?>
                 </td>
             </tr>
             <?php endforeach; ?>
             <?php if(empty($products)): ?>
-                <tr><td colspan="9" class="p-4 text-center text-gray-500">Tidak ada stok barang di lokasi ini.</td></tr>
+                <tr><td colspan="12" class="p-4 text-center text-gray-500">Tidak ada stok barang di lokasi ini.</td></tr>
             <?php endif; ?>
         </tbody>
         <tfoot class="bg-gray-100 font-bold border-t-2 border-gray-400">
             <tr>
-                <td colspan="5" class="p-3 text-right border border-gray-300">TOTAL KESELURUHAN</td>
+                <td colspan="7" class="p-3 text-right border border-gray-300">TOTAL KESELURUHAN</td>
                 <td class="p-3 text-right text-blue-700 border border-gray-300"><?= number_format($total_qty) ?></td>
-                <td colspan="2" class="border border-gray-300"></td>
+                <td colspan="3" class="border border-gray-300"></td>
                 <td class="p-3 text-right text-lg text-blue-800 bg-blue-100 border border-gray-300">
                     <?= formatRupiah($total_asset_value) ?>
                 </td>

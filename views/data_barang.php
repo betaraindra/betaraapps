@@ -18,7 +18,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $img = $pdo->query("SELECT image_url FROM products WHERE id=$id")->fetchColumn();
             if ($img && file_exists($img)) unlink($img);
             
-            // Hapus SN jika ada
+            // Hapus SN
             $pdo->prepare("DELETE FROM product_serials WHERE product_id=?")->execute([$id]);
             $pdo->prepare("DELETE FROM products WHERE id=?")->execute([$id]);
             $_SESSION['flash'] = ['type'=>'success', 'message'=>'Barang berhasil dihapus.'];
@@ -36,7 +36,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $unit = trim($_POST['unit']);
             $buy_price = cleanNumber($_POST['buy_price']);
             $sell_price = cleanNumber($_POST['sell_price']);
-            $stock = (int)$_POST['stock']; 
             
             // Upload Image
             $image_path = null;
@@ -51,40 +50,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             if (!empty($_POST['edit_id'])) {
-                // UPDATE
+                // UPDATE (Tanpa ubah stok manual di sini, stok lewat transaksi)
                 $id = $_POST['edit_id'];
                 
                 $sql_img = "";
-                $params = [$sku, $name, $category, $unit, $buy_price, $sell_price, $stock];
+                $params = [$sku, $name, $category, $unit, $buy_price, $sell_price];
                 
                 if ($image_path) {
                     $sql_img = ", image_url = ?";
                     $params[] = $image_path;
-                    
                     // Hapus gambar lama
                     $old_img = $pdo->query("SELECT image_url FROM products WHERE id=$id")->fetchColumn();
                     if ($old_img && file_exists($old_img)) unlink($old_img);
                 }
                 
-                $params[] = $id; // ID untuk WHERE
+                $params[] = $id; // ID
                 
-                $stmt = $pdo->prepare("UPDATE products SET sku=?, name=?, category=?, unit=?, buy_price=?, sell_price=?, stock=? $sql_img WHERE id=?");
+                $stmt = $pdo->prepare("UPDATE products SET sku=?, name=?, category=?, unit=?, buy_price=?, sell_price=? $sql_img WHERE id=?");
                 $stmt->execute($params);
                 $_SESSION['flash'] = ['type'=>'success', 'message'=>'Data barang diperbarui.'];
 
             } else {
-                // INSERT
-                // Cek SKU Unik
+                // INSERT NEW
+                // Cek SKU
                 $check = $pdo->prepare("SELECT id FROM products WHERE sku=?");
                 $check->execute([$sku]);
                 if ($check->rowCount() > 0) throw new Exception("SKU $sku sudah ada!");
 
+                $initial_stock = (int)($_POST['initial_stock'] ?? 0);
+                $sn_string = $_POST['sn_list_text'] ?? ''; // SN dipisah koma
+
+                $pdo->beginTransaction();
+
                 $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, image_url, has_serial_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)");
-                $stmt->execute([$sku, $name, $category, $unit, $buy_price, $sell_price, $stock, $image_path]);
+                $stmt->execute([$sku, $name, $category, $unit, $buy_price, $sell_price, $initial_stock, $image_path]);
+                $new_id = $pdo->lastInsertId();
+
+                // Handle Initial Stock & SN
+                if ($initial_stock > 0) {
+                    $wh_id = $pdo->query("SELECT id FROM warehouses LIMIT 1")->fetchColumn(); // Default Gudang Pertama
+                    
+                    // Create Transaction
+                    $ref = "INIT/" . date('ymd') . "/" . rand(100,999);
+                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'IN', ?, ?, ?, ?, 'Saldo Awal', ?)")
+                        ->execute([$new_id, $wh_id, $initial_stock, $ref, $_SESSION['user_id']]);
+                    $trx_id = $pdo->lastInsertId();
+
+                    // Parse SNs
+                    $sns = array_filter(array_map('trim', explode(',', $sn_string)));
+                    // Auto generate sisanya jika kurang
+                    $needed = $initial_stock - count($sns);
+                    for($i=0; $i<$needed; $i++) {
+                        $sns[] = "SN" . time() . rand(1000,9999);
+                    }
+                    // Cut if too many
+                    $sns = array_slice($sns, 0, $initial_stock);
+
+                    $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+                    foreach($sns as $sn) {
+                        $stmtSn->execute([$new_id, $sn, $wh_id, $trx_id]);
+                    }
+                }
+                
+                $pdo->commit();
                 $_SESSION['flash'] = ['type'=>'success', 'message'=>'Barang baru ditambahkan.'];
             }
 
         } catch (Exception $e) {
+            if($pdo->inTransaction()) $pdo->rollBack();
             $_SESSION['flash'] = ['type'=>'error', 'message'=>'Error: '.$e->getMessage()];
         }
         echo "<script>window.location='?page=data_barang';</script>";
@@ -93,44 +126,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // --- FILTER & QUERY DATA ---
-$start_date = $_GET['start'] ?? date('Y-m-01', strtotime('-1 year'));
-$end_date = $_GET['end'] ?? date('Y-m-d');
+$start_date = $_GET['start'] ?? date('Y-01-01');
+$end_date = $_GET['end'] ?? date('Y-12-31'); // Future date default
 $search = $_GET['q'] ?? '';
 $cat_filter = $_GET['category'] ?? 'ALL';
-$stock_status = $_GET['stock_status'] ?? 'ALL';
 $sort_by = $_GET['sort'] ?? 'newest';
 
-// Ambil list kategori untuk filter
-$existing_categories = $pdo->query("SELECT DISTINCT category, '' as name FROM products ORDER BY category")->fetchAll(); 
+// Master Data
+$accounts_cat = $pdo->query("SELECT DISTINCT category FROM products ORDER BY category")->fetchAll(PDO::FETCH_COLUMN);
 
-// Query Dasar
-$sql = "SELECT p.*, 
-        (SELECT date FROM inventory_transactions WHERE product_id = p.id ORDER BY date DESC LIMIT 1) as last_trx_date
+// Query Utama
+$sql = "SELECT p.*,
+        (SELECT date FROM inventory_transactions WHERE product_id = p.id ORDER BY date DESC LIMIT 1) as last_update,
+        (SELECT reference FROM inventory_transactions WHERE product_id = p.id ORDER BY date DESC LIMIT 1) as last_ref
         FROM products p 
         WHERE (p.name LIKE ? OR p.sku LIKE ?)";
 $params = ["%$search%", "%$search%"];
 
-// Filter Kategori
 if ($cat_filter !== 'ALL') {
     $sql .= " AND p.category = ?";
     $params[] = $cat_filter;
 }
 
-// Filter Status Stok
-if ($stock_status === 'LOW') $sql .= " AND p.stock < 10 AND p.stock > 0";
-elseif ($stock_status === 'EMPTY') $sql .= " AND p.stock <= 0";
-elseif ($stock_status === 'AVAILABLE') $sql .= " AND p.stock > 0";
-
-// Sorting
 if ($sort_by === 'name_asc') $sql .= " ORDER BY p.name ASC";
 elseif ($sort_by === 'stock_high') $sql .= " ORDER BY p.stock DESC";
-else $sql .= " ORDER BY p.created_at DESC"; // newest
+else $sql .= " ORDER BY p.created_at DESC";
 
 $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $products = $stmt->fetchAll();
 
-// Jika sedang mode edit, ambil data
+// Add SN Data & Calculate Total Asset
+$total_asset_group = 0;
+foreach($products as &$p) {
+    // Ambil sampel SN
+    $sn_stmt = $pdo->prepare("SELECT serial_number FROM product_serials WHERE product_id=? AND status='AVAILABLE' LIMIT 3");
+    $sn_stmt->execute([$p['id']]);
+    $sns = $sn_stmt->fetchAll(PDO::FETCH_COLUMN);
+    $p['sn_text'] = implode(', ', $sns);
+    
+    $cnt = $pdo->query("SELECT COUNT(*) FROM product_serials WHERE product_id={$p['id']} AND status='AVAILABLE'")->fetchColumn();
+    if($cnt > 3) $p['sn_text'] .= " ... (+$cnt)";
+    if(empty($p['sn_text'])) $p['sn_text'] = '-';
+
+    // Cari gudang
+    $wh_stmt = $pdo->prepare("SELECT w.name FROM inventory_transactions i JOIN warehouses w ON i.warehouse_id=w.id WHERE i.product_id=? ORDER BY i.date DESC LIMIT 1");
+    $wh_stmt->execute([$p['id']]);
+    $p['last_wh'] = $wh_stmt->fetchColumn() ?: '-';
+
+    // Hitung aset
+    $total_asset_group += ($p['stock'] * $p['buy_price']);
+}
+unset($p);
+
+// Data Edit
 $edit_item = null;
 if (isset($_GET['edit_id'])) {
     $stmt = $pdo->prepare("SELECT * FROM products WHERE id=?");
@@ -139,60 +188,63 @@ if (isset($_GET['edit_id'])) {
 }
 ?>
 
+<!-- HEADER & FILTER -->
+<div class="mb-6 flex flex-col md:flex-row justify-between items-center gap-4 no-print">
+    <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-box text-blue-600"></i> Data Barang</h2>
+    <div class="flex gap-2">
+        <button onclick="document.getElementById('importModal').classList.remove('hidden')" class="bg-indigo-600 text-white px-3 py-2 rounded text-sm font-bold shadow hover:bg-indigo-700"><i class="fas fa-file-import"></i> Import Excel</button>
+        <button onclick="exportToExcel()" class="bg-green-600 text-white px-3 py-2 rounded text-sm font-bold shadow hover:bg-green-700"><i class="fas fa-file-export"></i> Export Excel</button>
+    </div>
+</div>
+
 <!-- FILTER BAR -->
 <div class="bg-white p-4 rounded-lg shadow mb-6 border-l-4 border-indigo-600 no-print">
-    <form method="GET" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 items-end">
+    <form method="GET" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
         <input type="hidden" name="page" value="data_barang">
         <div class="lg:col-span-1">
             <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang</label>
-            <input type="text" name="q" value="<?= htmlspecialchars($search) ?>" class="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-indigo-500" placeholder="Nama / SKU...">
+            <input type="text" name="q" value="<?= htmlspecialchars($search) ?>" class="w-full border p-2 rounded text-sm" placeholder="Nama / SKU / Ref...">
         </div>
         <div>
             <label class="block text-xs font-bold text-gray-600 mb-1">Kategori</label>
-            <select name="category" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-indigo-500">
+            <select name="category" class="w-full border p-2 rounded text-sm bg-white">
                 <option value="ALL">-- Semua --</option>
-                <?php foreach($existing_categories as $ec): ?>
-                    <option value="<?= $ec['category'] ?>" <?= $cat_filter==$ec['category'] ? 'selected' : '' ?>><?= htmlspecialchars($ec['category']) ?></option>
+                <?php foreach($accounts_cat as $c): ?>
+                    <option value="<?= $c ?>" <?= $cat_filter==$c?'selected':'' ?>><?= $c ?></option>
                 <?php endforeach; ?>
             </select>
         </div>
         <div>
-            <label class="block text-xs font-bold text-gray-600 mb-1">Status Stok</label>
-            <select name="stock_status" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-indigo-500">
-                <option value="ALL">-- Semua --</option>
-                <option value="AVAILABLE" <?= $stock_status=='AVAILABLE' ? 'selected' : '' ?>>Tersedia (> 0)</option>
-                <option value="LOW" <?= $stock_status=='LOW' ? 'selected' : '' ?>>Menipis (< 10)</option>
-                <option value="EMPTY" <?= $stock_status=='EMPTY' ? 'selected' : '' ?>>Habis (0)</option>
-            </select>
-        </div>
-        <div>
-            <label class="block text-xs font-bold text-gray-600 mb-1">Urutkan</label>
-            <select name="sort" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-indigo-500">
+            <label class="block text-xs font-bold text-gray-600 mb-1">Urutkan (Sort)</label>
+            <select name="sort" class="w-full border p-2 rounded text-sm bg-white">
                 <option value="newest" <?= $sort_by=='newest'?'selected':'' ?>>Update Terbaru</option>
                 <option value="name_asc" <?= $sort_by=='name_asc'?'selected':'' ?>>Nama (A-Z)</option>
                 <option value="stock_high" <?= $sort_by=='stock_high'?'selected':'' ?>>Stok Terbanyak</option>
             </select>
         </div>
         <div>
+            <label class="block text-xs font-bold text-gray-600 mb-1">Update Terakhir</label>
+            <div class="flex gap-1">
+                <input type="date" name="start" value="<?= $start_date ?>" class="border p-2 rounded text-xs w-full">
+                <input type="date" name="end" value="<?= $end_date ?>" class="border p-2 rounded text-xs w-full">
+            </div>
+        </div>
+        <div>
             <button type="submit" class="bg-indigo-600 text-white px-4 py-2 rounded font-bold hover:bg-indigo-700 w-full shadow text-sm h-[38px]">
                 <i class="fas fa-filter"></i> Filter
             </button>
         </div>
-        <div>
-            <a href="?page=data_barang" class="bg-gray-500 text-white px-4 py-2 rounded font-bold hover:bg-gray-600 w-full shadow text-sm h-[38px] flex items-center justify-center">
-                <i class="fas fa-sync-alt"></i> Reset
-            </a>
-        </div>
     </form>
 </div>
 
-<div class="grid grid-cols-1 lg:grid-cols-4 gap-6 page-content-wrapper">
+<!-- SPLIT LAYOUT -->
+<div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
     
-    <!-- LEFT: FORM INPUT -->
+    <!-- LEFT: FORM (1 COL) -->
     <div class="lg:col-span-1 no-print">
         <div class="bg-white p-6 rounded-lg shadow sticky top-6">
             <h3 class="font-bold text-lg mb-4 text-blue-800 border-b pb-2">
-                <i class="fas fa-box"></i> <?= $edit_item ? 'Edit Barang' : 'Tambah Barang' ?>
+                <i class="fas fa-plus"></i> <?= $edit_item ? 'Edit Barang' : 'Tambah Barang' ?>
             </h3>
             
             <form method="POST" enctype="multipart/form-data">
@@ -203,32 +255,16 @@ if (isset($_GET['edit_id'])) {
                 <?php endif; ?>
 
                 <div class="mb-3">
-                    <label class="block text-xs font-bold text-gray-700 mb-1">SKU / Kode Barcode</label>
+                    <label class="block text-xs font-bold text-gray-700 mb-1">SKU (Barcode)</label>
                     <div class="flex gap-1">
-                        <input type="text" name="sku" id="form_sku" value="<?= $edit_item['sku']??'' ?>" class="w-full border p-2 rounded text-sm uppercase font-mono" placeholder="Scan/Ketik..." required>
-                        <button type="button" onclick="generateSku()" class="bg-yellow-500 text-white px-2 rounded text-xs"><i class="fas fa-bolt"></i></button>
+                        <input type="text" name="sku" id="form_sku" value="<?= $edit_item['sku']??'' ?>" class="w-full border p-2 rounded text-sm uppercase font-mono font-bold text-blue-700" placeholder="SCAN/GENERATE..." required>
+                        <button type="button" onclick="generateSku()" class="bg-yellow-500 text-white px-2 rounded hover:bg-yellow-600"><i class="fas fa-pencil-alt"></i></button>
                     </div>
                 </div>
 
                 <div class="mb-3">
                     <label class="block text-xs font-bold text-gray-700 mb-1">Nama Barang</label>
-                    <input type="text" name="name" value="<?= $edit_item['name']??'' ?>" class="w-full border p-2 rounded text-sm" placeholder="Contoh: Kabel LAN 5m" required>
-                </div>
-
-                <div class="grid grid-cols-2 gap-2 mb-3">
-                    <div>
-                        <label class="block text-xs font-bold text-gray-700 mb-1">Kategori</label>
-                        <input type="text" name="category" list="cat_list" value="<?= $edit_item['category']??'Umum' ?>" class="w-full border p-2 rounded text-sm" placeholder="Pilih/Ketik">
-                        <datalist id="cat_list">
-                            <?php foreach($existing_categories as $ec): ?>
-                                <option value="<?= htmlspecialchars($ec['category']) ?>">
-                            <?php endforeach; ?>
-                        </datalist>
-                    </div>
-                    <div>
-                        <label class="block text-xs font-bold text-gray-700 mb-1">Satuan</label>
-                        <input type="text" name="unit" value="<?= $edit_item['unit']??'Pcs' ?>" class="w-full border p-2 rounded text-sm" placeholder="Pcs/Kg/Pack">
-                    </div>
+                    <input type="text" name="name" value="<?= $edit_item['name']??'' ?>" class="w-full border p-2 rounded text-sm" required>
                 </div>
 
                 <div class="grid grid-cols-2 gap-2 mb-3">
@@ -242,113 +278,169 @@ if (isset($_GET['edit_id'])) {
                     </div>
                 </div>
 
+                <div class="grid grid-cols-2 gap-2 mb-3">
+                    <div>
+                        <label class="block text-xs font-bold text-gray-700 mb-1">Kategori (Akun)</label>
+                        <input type="text" name="category" list="cat_list" value="<?= $edit_item['category']??'3003' ?>" class="w-full border p-2 rounded text-sm">
+                        <datalist id="cat_list">
+                            <?php foreach($accounts_cat as $c): ?>
+                                <option value="<?= $c ?>">
+                            <?php endforeach; ?>
+                        </datalist>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-700 mb-1">Satuan</label>
+                        <input type="text" name="unit" value="<?= $edit_item['unit']??'Pcs' ?>" class="w-full border p-2 rounded text-sm">
+                    </div>
+                </div>
+
                 <div class="mb-3">
-                    <label class="block text-xs font-bold text-gray-700 mb-1">Stok Awal / Koreksi</label>
-                    <input type="number" name="stock" value="<?= $edit_item['stock']??0 ?>" class="w-full border p-2 rounded text-sm font-bold text-center bg-gray-50">
-                    <p class="text-[10px] text-gray-400 mt-1">*Ubah hanya jika inisialisasi atau koreksi stock opname.</p>
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Stok Awal (Item Baru)</label>
+                    <input type="number" name="initial_stock" id="init_qty" value="<?= $edit_item['stock']??0 ?>" class="w-full border p-2 rounded text-sm text-center font-bold" <?= $edit_item ? 'disabled bg-gray-100' : '' ?> onkeyup="toggleSnInput()">
+                    <?php if($edit_item): ?>
+                        <p class="text-[9px] text-red-500 mt-1">*Stok diedit via Barang Masuk/Keluar</p>
+                    <?php endif; ?>
+                </div>
+
+                <div id="sn_area" class="mb-3 <?= $edit_item ? 'hidden' : '' ?>">
+                    <label class="block text-xs font-bold text-purple-700 mb-1">Serial Number (Pisahkan Koma)</label>
+                    <textarea name="sn_list_text" class="w-full border p-2 rounded text-xs font-mono uppercase h-20" placeholder="SN1, SN2, SN3..."></textarea>
                 </div>
 
                 <div class="mb-4">
-                    <label class="block text-xs font-bold text-gray-700 mb-1">Gambar Produk</label>
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Gambar</label>
                     <?php if(!empty($edit_item['image_url'])): ?>
-                        <div class="mb-2">
-                            <img src="<?= $edit_item['image_url'] ?>" class="h-20 w-auto rounded border">
-                        </div>
+                        <img src="<?= $edit_item['image_url'] ?>" class="h-16 w-auto border mb-2">
                     <?php endif; ?>
                     <input type="file" name="image" class="w-full border p-1 rounded text-xs">
                 </div>
 
                 <div class="flex gap-2">
-                    <button type="submit" class="flex-1 bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 text-sm shadow">
-                        <i class="fas fa-save"></i> Simpan
-                    </button>
-                    <?php if($edit_item): ?>
-                        <a href="?page=data_barang" class="flex-1 bg-gray-500 text-white py-2 rounded font-bold hover:bg-gray-600 text-center text-sm shadow">Batal</a>
-                    <?php endif; ?>
+                    <button type="submit" class="flex-1 bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 text-sm shadow">Simpan</button>
+                    <a href="?page=data_barang" class="flex-1 bg-gray-200 text-gray-700 py-2 rounded font-bold hover:bg-gray-300 text-sm text-center">Reset</a>
                 </div>
             </form>
         </div>
     </div>
 
-    <!-- RIGHT: DATA TABLE -->
+    <!-- RIGHT: TABLE (3 COLS) -->
     <div class="lg:col-span-3">
-        <div class="bg-white p-6 rounded-lg shadow">
-            <h3 class="font-bold text-lg mb-4 text-gray-800 border-b pb-2 flex justify-between">
-                <span>Daftar Barang (<?= count($products) ?> Item)</span>
-                <a href="?page=cetak_barcode" class="text-sm bg-gray-800 text-white px-3 py-1 rounded hover:bg-black no-print">
-                    <i class="fas fa-barcode"></i> Cetak Label
-                </a>
-            </h3>
-            
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+            <!-- Header Merah -->
+            <div class="bg-red-300 px-4 py-3 border-b border-red-400">
+                <h3 class="font-bold text-red-900 text-sm">
+                    Periode <?= date('F Y') ?> (Total Aset Group: <?= formatRupiah($total_asset_group) ?>)
+                </h3>
+            </div>
+
             <div class="overflow-x-auto">
-                <table class="w-full text-sm text-left border-collapse">
-                    <thead class="bg-gray-100 text-gray-700">
+                <table class="w-full text-xs text-left border-collapse border border-gray-200">
+                    <!-- Header Kuning -->
+                    <thead class="bg-yellow-400 text-gray-900 font-bold uppercase text-center">
                         <tr>
-                            <th class="p-3 border-b w-16">Img</th>
-                            <th class="p-3 border-b">Detail Barang</th>
-                            <th class="p-3 border-b text-center">Stok</th>
-                            <th class="p-3 border-b text-right">Harga</th>
-                            <th class="p-3 border-b text-center w-24 no-print">Aksi</th>
+                            <th class="p-2 border border-gray-300 w-10">Gbr</th>
+                            <th class="p-2 border border-gray-300">Nama</th>
+                            <th class="p-2 border border-gray-300">SKU</th>
+                            <th class="p-2 border border-gray-300 w-32">SN</th>
+                            <th class="p-2 border border-gray-300 text-right">Beli (HPP)</th>
+                            <th class="p-2 border border-gray-300 w-24">Gudang</th>
+                            <th class="p-2 border border-gray-300 text-right">Jual</th>
+                            <th class="p-2 border border-gray-300 w-16">Stok</th>
+                            <th class="p-2 border border-gray-300 w-10">Sat</th>
+                            <th class="p-2 border border-gray-300 w-20">Update</th>
+                            <th class="p-2 border border-gray-300">Ket</th>
+                            <th class="p-2 border border-gray-300 text-center w-20">Ref / Cetak</th>
+                            <th class="p-2 border border-gray-300 text-center w-20">Aksi</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y">
                         <?php foreach($products as $p): ?>
                         <tr class="hover:bg-gray-50 group">
-                            <td class="p-3">
+                            <!-- Gbr -->
+                            <td class="p-2 border text-center">
                                 <?php if(!empty($p['image_url'])): ?>
-                                    <img src="<?= $p['image_url'] ?>" class="w-10 h-10 object-cover rounded border bg-white">
+                                    <img src="<?= $p['image_url'] ?>" class="w-8 h-8 object-cover rounded border bg-white mx-auto cursor-pointer" onclick="window.open(this.src)">
                                 <?php else: ?>
-                                    <div class="w-10 h-10 bg-gray-200 rounded flex items-center justify-center text-gray-400">
-                                        <i class="fas fa-image"></i>
-                                    </div>
+                                    <div class="w-8 h-8 bg-gray-100 rounded flex items-center justify-center text-gray-300 mx-auto"><i class="fas fa-image"></i></div>
                                 <?php endif; ?>
                             </td>
-                            <td class="p-3">
-                                <div class="font-bold text-gray-800 text-base"><?= htmlspecialchars($p['name']) ?></div>
-                                <div class="flex gap-2 text-xs mt-1">
-                                    <span class="bg-gray-100 px-2 py-0.5 rounded font-mono text-gray-600"><?= htmlspecialchars($p['sku']) ?></span>
-                                    <span class="bg-blue-50 px-2 py-0.5 rounded text-blue-600"><?= htmlspecialchars($p['category']) ?></span>
-                                </div>
+                            
+                            <!-- Nama -->
+                            <td class="p-2 border font-bold text-gray-700"><?= htmlspecialchars($p['name']) ?></td>
+
+                            <!-- SKU -->
+                            <td class="p-2 border font-mono text-blue-600 whitespace-nowrap"><?= htmlspecialchars($p['sku']) ?></td>
+                            
+                            <!-- SN -->
+                            <td class="p-2 border text-[9px] font-mono break-all text-gray-600 bg-gray-50">
+                                <?= $p['sn_text'] ?>
                             </td>
-                            <td class="p-3 text-center">
-                                <?php 
-                                    $stock_class = 'bg-green-100 text-green-800';
-                                    if($p['stock'] <= 0) $stock_class = 'bg-red-100 text-red-800';
-                                    elseif($p['stock'] < 10) $stock_class = 'bg-orange-100 text-orange-800';
-                                ?>
-                                <span class="px-3 py-1 rounded-full text-sm font-bold <?= $stock_class ?>">
-                                    <?= number_format($p['stock']) ?>
-                                </span>
-                                <div class="text-[10px] text-gray-400 mt-1"><?= htmlspecialchars($p['unit']) ?></div>
+                            
+                            <!-- Beli -->
+                            <td class="p-2 border text-right text-red-600 font-medium"><?= formatRupiah($p['buy_price']) ?></td>
+                            
+                            <!-- Gudang -->
+                            <td class="p-2 border text-center text-[10px]"><?= $p['last_wh'] ?></td>
+                            
+                            <!-- Jual -->
+                            <td class="p-2 border text-right text-green-600 font-bold"><?= formatRupiah($p['sell_price']) ?></td>
+                            
+                            <!-- Stok -->
+                            <td class="p-2 border text-center font-bold text-lg <?= $p['stock'] < 10 ? 'text-red-600 bg-red-50' : 'text-blue-800 bg-blue-50' ?>">
+                                <?= number_format($p['stock']) ?>
                             </td>
-                            <td class="p-3 text-right">
-                                <div class="font-bold text-gray-800"><?= formatRupiah($p['sell_price']) ?></div>
-                                <div class="text-xs text-gray-400" title="Harga Beli">B: <?= formatRupiah($p['buy_price']) ?></div>
+                            
+                            <!-- Sat -->
+                            <td class="p-2 border text-center"><?= htmlspecialchars($p['unit']) ?></td>
+                            
+                            <!-- Update -->
+                            <td class="p-2 border text-center text-[9px] text-gray-500">
+                                <?= $p['last_update'] ? date('d/m/y', strtotime($p['last_update'])) : '-' ?>
                             </td>
-                            <td class="p-3 text-center no-print">
-                                <div class="flex justify-center gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <a href="?page=data_barang&edit_id=<?= $p['id'] ?>" class="bg-blue-100 text-blue-600 p-2 rounded hover:bg-blue-200" title="Edit">
+                            
+                            <!-- Ket -->
+                            <td class="p-2 border text-[10px] text-gray-500 text-center"><?= htmlspecialchars($p['category']) ?></td>
+                            
+                            <!-- Ref / Cetak -->
+                            <td class="p-2 border text-center">
+                                <div class="text-[9px] text-blue-500 font-mono mb-1"><?= $p['last_ref'] ?? '-' ?></div>
+                                <button onclick="window.open('?page=cetak_barcode', '_blank')" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-2 py-0.5 rounded text-[9px] border">
+                                    <i class="fas fa-print"></i> Label
+                                </button>
+                            </td>
+                            
+                            <!-- Aksi -->
+                            <td class="p-2 border text-center">
+                                <div class="flex justify-center gap-1">
+                                    <a href="?page=data_barang&edit_id=<?= $p['id'] ?>" class="bg-yellow-100 text-yellow-700 p-1 rounded hover:bg-yellow-200" title="Edit">
                                         <i class="fas fa-pencil-alt"></i>
                                     </a>
-                                    <form method="POST" onsubmit="return confirm('Hapus barang <?= $p['name'] ?>?')" class="inline">
+                                    <form method="POST" onsubmit="return confirm('Hapus barang <?= $p['name'] ?>? Data transaksi terkait akan error jika tidak dibersihkan manual.')" class="inline">
                                         <?= csrf_field() ?>
                                         <input type="hidden" name="delete_id" value="<?= $p['id'] ?>">
-                                        <button class="bg-red-100 text-red-600 p-2 rounded hover:bg-red-200" title="Hapus">
-                                            <i class="fas fa-trash"></i>
-                                        </button>
+                                        <button class="bg-red-100 text-red-700 p-1 rounded hover:bg-red-200" title="Hapus"><i class="fas fa-trash"></i></button>
                                     </form>
                                 </div>
                             </td>
                         </tr>
                         <?php endforeach; ?>
-                        
                         <?php if(empty($products)): ?>
-                            <tr><td colspan="5" class="p-8 text-center text-gray-400">Tidak ada data barang.</td></tr>
+                            <tr><td colspan="13" class="p-8 text-center text-gray-400">Tidak ada data barang.</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
             </div>
         </div>
+    </div>
+</div>
+
+<!-- IMPORT MODAL -->
+<div id="importModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
+        <button onclick="document.getElementById('importModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+        <h3 class="text-xl font-bold mb-4 border-b pb-2 text-green-700">Import Data Barang</h3>
+        <!-- Implementasi Import Form Disini Jika Diperlukan -->
+        <p class="text-center text-gray-500 py-4">Fitur Import tersedia di menu pengaturan.</p>
     </div>
 </div>
 
@@ -358,14 +450,29 @@ async function generateSku() {
         const res = await fetch('api.php?action=generate_sku');
         const data = await res.json();
         if(data.sku) document.getElementById('form_sku').value = data.sku;
-    } catch(e) {
-        alert('Gagal generate SKU');
-    }
+    } catch(e) { alert('Gagal Auto SKU'); }
 }
 
 function formatRupiah(input) {
     let value = input.value.replace(/\D/g, '');
     if(value === '') { input.value = ''; return; }
     input.value = new Intl.NumberFormat('id-ID').format(value);
+}
+
+function toggleSnInput() {
+    const qty = document.getElementById('init_qty').value;
+    const snArea = document.getElementById('sn_area');
+    if(qty > 0) snArea.classList.remove('hidden');
+    else snArea.classList.add('hidden');
+}
+
+// EXPORT FUNCTION (Simple Client Side)
+const productsData = <?= json_encode($products) ?>;
+function exportToExcel() {
+    if(productsData.length === 0) return alert("Tidak ada data.");
+    const ws = XLSX.utils.json_to_sheet(productsData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Data Barang");
+    XLSX.writeFile(wb, "Data_Barang_Export_" + new Date().toISOString().slice(0,10) + ".xlsx");
 }
 </script>

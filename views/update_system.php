@@ -220,7 +220,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['start_update'])) {
                             <p class="text-sm font-bold text-green-800">Sistem Terbaru</p>
                             <p class="text-xs text-green-600 mt-1">Anda menggunakan versi v<?= $current_version ?></p>
                         </div>
-                        <form method="POST" class="mt-4">
+                        
+                        <!-- ADDED: FORCE UPDATE BUTTON -->
+                        <div class="mt-4 border-t pt-4">
+                            <p class="text-[10px] text-gray-500 mb-2 text-center">Jika Anda yakin ada update di GitHub yang belum terdeteksi (misal versi metadata belum naik):</p>
+                            <form method="POST" onsubmit="return confirm('PERINGATAN: Paksa update akan menimpa file sistem dengan versi terbaru dari Branch Main. Config & Database aman. Lanjutkan?');">
+                                <button type="submit" name="start_update" value="1" class="w-full bg-yellow-100 text-yellow-700 border border-yellow-300 px-4 py-2 rounded hover:bg-yellow-200 text-sm font-bold flex items-center justify-center gap-2">
+                                    <i class="fas fa-sync-alt"></i> Paksa Update / Re-Install
+                                </button>
+                            </form>
+                        </div>
+
+                        <form method="POST" class="mt-2">
                             <button type="submit" name="check_update" value="1" class="w-full bg-gray-100 text-gray-600 px-4 py-2 rounded hover:bg-gray-200 text-sm">
                                 Cek Lagi
                             </button>

@@ -99,11 +99,6 @@ $is_menu_admin_open = in_array($page, $menu_admin_pages);
                 <a href="?page=dashboard" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'dashboard' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
                     <i class="fas fa-home mr-3 w-6 text-center"></i> Dashboard Utama
                 </a>
-                <?php if ($access_inventory): ?>
-                <a href="?page=dashboard_gudang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'dashboard_gudang' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
-                    <i class="fas fa-warehouse mr-3 w-6 text-center"></i> Dashboard Gudang
-                </a>
-                <?php endif; ?>
 
                 <!-- INPUT TRANSAKSI -->
                 <div class="mt-4 px-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">Input Transaksi</div>

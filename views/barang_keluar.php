@@ -220,6 +220,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
 }
 
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
+// Fetch Product List for Dropdown
+$products_list = $pdo->query("SELECT sku, name, stock FROM products ORDER BY name ASC")->fetchAll();
+
 $recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_name FROM inventory_transactions i JOIN products p ON i.product_id = p.id JOIN warehouses w ON i.warehouse_id = w.id WHERE i.type = 'OUT' ORDER BY i.created_at DESC LIMIT 10")->fetchAll();
 $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
 ?>
@@ -318,6 +321,20 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
             <div class="bg-blue-50 p-4 rounded-lg border border-blue-200 mb-6">
                 <h4 class="font-bold text-blue-800 mb-3 text-sm border-b border-blue-200 pb-1">Input Barang</h4>
                 <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+                    
+                    <!-- NEW DROPDOWN SELECT -->
+                    <div class="md:col-span-12">
+                        <label class="block text-xs font-bold text-gray-600 mb-1">Pilih Barang dari Data (Manual)</label>
+                        <select id="manual_select" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-blue-500" onchange="handleManualSelect(this)">
+                            <option value="">-- Cari Nama Barang / SKU --</option>
+                            <?php foreach($products_list as $prod): ?>
+                                <option value="<?= $prod['sku'] ?>">
+                                    <?= $prod['name'] ?> (Stok: <?= $prod['stock'] ?>) - SKU: <?= $prod['sku'] ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
                     <div class="md:col-span-4">
                         <label class="block text-xs font-bold text-gray-600 mb-1">SKU Barcode / SN</label>
                         <div class="flex gap-1">
@@ -420,6 +437,15 @@ let audioCtx = null;
 let isFlashOn = false;
 let cart = [];
 const APP_NAME_PREFIX = "<?= $app_ref_prefix ?>";
+
+function handleManualSelect(select) {
+    const sku = select.value;
+    if (sku) {
+        document.getElementById('sku_input').value = sku;
+        checkSku();
+        select.value = ""; // Reset dropdown agar bisa pilih barang yang sama lagi
+    }
+}
 
 function toggleDestWarehouse() {
     const type = document.getElementById('out_type').value;

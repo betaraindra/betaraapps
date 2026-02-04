@@ -10,58 +10,43 @@ $start_date = $_GET['start'] ?? date('Y-01-01');
 $end_date = $_GET['end'] ?? date('Y-12-31');
 
 // ==========================================
-// 1. LOGIKA KEUANGAN (DARI dashboard_keuangan.php)
+// 1. LOGIKA KEUANGAN
 // ==========================================
 $fin_report_data = [];
-// Init Totals (Akan dihitung ulang query direct agar akurat sesuai tanggal)
-$fin_totals = [
-    'omzet' => 0, 
-    'total_keluar' => 0, 
-    'profit' => 0
-];
+$fin_totals = ['omzet' => 0, 'total_keluar' => 0, 'profit' => 0];
 
 if ($access_finance) {
-    // A. HITUNG TOTAL SESUAI EXACT DATE RANGE (Agar sama dengan Laporan)
+    // A. HITUNG TOTAL
     $fin_totals['omzet'] = $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='INCOME' AND date BETWEEN '$start_date' AND '$end_date'")->fetchColumn() ?: 0;
     $fin_totals['total_keluar'] = $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='EXPENSE' AND date BETWEEN '$start_date' AND '$end_date'")->fetchColumn() ?: 0;
     $fin_totals['profit'] = $fin_totals['omzet'] - $fin_totals['total_keluar'];
 
-    // B. HITUNG DATA UNTUK GRAFIK (Tetap per bulan untuk visualisasi Trend)
-    // Normalize ke tanggal 1 bulan tersebut agar loop akurat
-    $current_ts = strtotime($start_date);
-    $end_ts = strtotime($end_date);
-    
-    $current_ts = strtotime(date('Y-m-01', $current_ts)); 
-    $final_month_ts = strtotime(date('Y-m-01', $end_ts));
+    // B. HITUNG DATA GRAFIK
+    $current_ts = strtotime(date('Y-m-01', strtotime($start_date))); 
+    $final_month_ts = strtotime(date('Y-m-01', strtotime($end_date)));
 
     while ($current_ts <= $final_month_ts) {
         $date_start = date('Y-m-01', $current_ts);
         $date_end = date('Y-m-t', $current_ts);
         
-        // Label Bulan
-        $month_num = date('n', $current_ts);
-        $year_num = date('Y', $current_ts);
         $indo_months = [1=>'Jan', 2=>'Feb', 3=>'Mar', 4=>'Apr', 5=>'Mei', 6=>'Jun', 7=>'Jul', 8=>'Agu', 9=>'Sep', 10=>'Okt', 11=>'Nov', 12=>'Des'];
-        $month_label = $indo_months[$month_num] . ' ' . $year_num;
+        $month_label = $indo_months[date('n', $current_ts)] . ' ' . date('Y', $current_ts);
 
-        // Query Per Bulan (Untuk Grafik)
         $m_omzet = $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='INCOME' AND date BETWEEN '$date_start' AND '$date_end'")->fetchColumn() ?: 0;
         $m_expense = $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='EXPENSE' AND date BETWEEN '$date_start' AND '$date_end'")->fetchColumn() ?: 0;
-        $m_profit = $m_omzet - $m_expense;
-
+        
         $fin_report_data[] = [
             'label' => $month_label,
             'omzet' => $m_omzet,
             'total_keluar' => $m_expense,
-            'profit' => $m_profit
+            'profit' => $m_omzet - $m_expense
         ];
-
         $current_ts = strtotime("+1 month", $current_ts);
     }
 }
 
 // ==========================================
-// 2. LOGIKA INVENTORI (DARI dashboard_gudang.php)
+// 2. LOGIKA INVENTORI (DIGABUNG)
 // ==========================================
 $inv_stats = ['in'=>0, 'out'=>0, 'items'=>0, 'low'=>0];
 $inv_chart_labels = [];
@@ -80,7 +65,7 @@ if ($access_inventory) {
     $inv_stats['items'] = $pdo->query("SELECT COUNT(*) FROM products")->fetchColumn();
     $inv_stats['low'] = $pdo->query("SELECT COUNT(*) FROM products WHERE stock < 10")->fetchColumn();
 
-    // Chart 1: Daily Activity (Last 7 Days relative to End Date)
+    // Chart 1: Daily Activity (7 Hari Terakhir dari End Date)
     $end_ts_fixed = strtotime($end_date);
     for($i=6; $i>=0; $i--) {
         $d = date('Y-m-d', strtotime("-$i days", $end_ts_fixed));
@@ -107,16 +92,12 @@ if ($access_inventory) {
 ?>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<style>
-    .cell-nominal { font-weight: bold; font-size: 1em; }
-    .cell-percent { font-size: 0.8em; font-weight: normal; color: #6b7280; }
-</style>
 
 <!-- HEADER & FILTER -->
 <div class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4 no-print">
     <div>
         <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-tachometer-alt text-indigo-600"></i> Dashboard Utama</h2>
-        <p class="text-sm text-gray-500">Ringkasan aktivitas Keuangan & Inventori</p>
+        <p class="text-sm text-gray-500">Ringkasan aktivitas operasional perusahaan</p>
     </div>
     
     <form method="GET" class="flex flex-wrap gap-2 items-center bg-white p-3 rounded shadow border-l-4 border-indigo-500">
@@ -213,25 +194,25 @@ if ($access_inventory) {
 <div class="mb-6 animate-fade-in-up" style="animation-delay: 0.1s;">
     <div class="flex items-center gap-2 mb-4 border-b pb-2 border-gray-300">
         <div class="bg-orange-500 text-white p-2 rounded shadow"><i class="fas fa-warehouse"></i></div>
-        <h3 class="text-xl font-bold text-gray-800">Aktivitas Gudang</h3>
+        <h3 class="text-xl font-bold text-gray-800">Aktivitas Gudang & Inventori</h3>
     </div>
 
     <!-- 1. INVENTORY STATS -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
         <div class="bg-white p-4 rounded-lg shadow border-l-4 border-green-500">
-            <p class="text-xs font-bold text-gray-500 uppercase">Barang Masuk</p>
+            <p class="text-xs font-bold text-gray-500 uppercase">Barang Masuk (Periode Ini)</p>
             <h3 class="text-xl font-bold text-green-600"><?= number_format($inv_stats['in']) ?> <span class="text-xs text-gray-400">Qty</span></h3>
         </div>
         <div class="bg-white p-4 rounded-lg shadow border-l-4 border-red-500">
-            <p class="text-xs font-bold text-gray-500 uppercase">Barang Keluar</p>
+            <p class="text-xs font-bold text-gray-500 uppercase">Barang Keluar (Periode Ini)</p>
             <h3 class="text-xl font-bold text-red-600"><?= number_format($inv_stats['out']) ?> <span class="text-xs text-gray-400">Qty</span></h3>
         </div>
         <div class="bg-white p-4 rounded-lg shadow border-l-4 border-purple-500">
-            <p class="text-xs font-bold text-gray-500 uppercase">Total Produk</p>
+            <p class="text-xs font-bold text-gray-500 uppercase">Total Produk Terdaftar</p>
             <h3 class="text-xl font-bold text-purple-600"><?= number_format($inv_stats['items']) ?> <span class="text-xs text-gray-400">Item</span></h3>
         </div>
         <div class="bg-white p-4 rounded-lg shadow border-l-4 border-orange-500">
-            <p class="text-xs font-bold text-gray-500 uppercase">Stok Menipis</p>
+            <p class="text-xs font-bold text-gray-500 uppercase">Stok Menipis (< 10)</p>
             <h3 class="text-xl font-bold text-orange-600"><?= $inv_stats['low'] ?> <span class="text-xs text-gray-400">Item</span></h3>
         </div>
     </div>
@@ -272,10 +253,10 @@ if ($access_inventory) {
 
         <!-- 4. CHART GUDANG -->
         <div class="lg:col-span-1 bg-white p-4 rounded-lg shadow">
-            <h4 class="font-bold text-gray-700 mb-4 text-sm text-center">Distribusi per Wilayah</h4>
+            <h4 class="font-bold text-gray-700 mb-4 text-sm text-center">Distribusi Aktivitas per Wilayah</h4>
             <div class="h-64 flex justify-center">
                 <?php if(empty($inv_wh_data)): ?>
-                    <p class="text-gray-400 italic self-center">Belum ada data</p>
+                    <p class="text-gray-400 italic self-center">Belum ada data aktivitas gudang.</p>
                 <?php else: ?>
                     <canvas id="invWhChart"></canvas>
                 <?php endif; ?>

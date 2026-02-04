@@ -145,10 +145,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 // TRANSAKSI KOREKSI STOK / KONVERSI SN
                 if ($required_sn_count > 0) {
-                    // Jika konversi (old=0, new=1), insert semua SN
-                    // Jika penambahan (diff > 0), insert SN baru
-                    // Kita perlu trx_id jika ini penambahan stok
-                    
                     $trx_id = null;
                     if ($stock_diff > 0) {
                         $ref = 'ADJ-IN-' . date('ymdHi');
@@ -158,14 +154,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $trx_id = $pdo->lastInsertId();
                     } 
                     
-                    // Insert SNs
                     $stmtSN = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
                     
-                    // Gunakan warehouse input atau default warehouse jika konversi stok lama
                     $target_wh = !empty($wh_id) ? $wh_id : ($pdo->query("SELECT id FROM warehouses LIMIT 1")->fetchColumn());
 
                     foreach($sn_list as $sn_code) {
-                        // Cek Duplikat
                         $chk = $pdo->prepare("SELECT id FROM product_serials WHERE product_id=? AND serial_number=?");
                         $chk->execute([$id, $sn_code]);
                         if($chk->rowCount() == 0) {
@@ -224,7 +217,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // 4. DELETE PRODUCT (UPDATED: Cascade Delete to Inventory, SN, and Finance)
+    // 4. DELETE PRODUCT
     if (isset($_POST['delete_id'])) {
         $del_id = (int)$_POST['delete_id'];
         
@@ -247,9 +240,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // 3. Hapus Transaksi Inventori
             $pdo->prepare("DELETE FROM inventory_transactions WHERE product_id = ?")->execute([$del_id]);
 
-            // 4. Hapus Transaksi Keuangan yang terkait (Berdasarkan kemunculan SKU/Nama di deskripsi)
-            // Note: Ini dilakukan agar data keuangan bersih jika barang master dihapus (permintaan user).
-            // PENTING: Menggunakan SKU sebagai kunci pencarian yang unik.
+            // 4. Hapus Transaksi Keuangan
             if (!empty($prodSku)) {
                 $pdo->prepare("DELETE FROM finance_transactions WHERE description LIKE ? OR description LIKE ?")
                     ->execute(["%$prodSku%", "%$prodName%"]);
@@ -328,11 +319,23 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $products = $stmt->fetchAll();
 
+// --- FETCH SN FOR ALL PRODUCTS (NEW LOGIC) ---
+foreach($products as &$prod_row) {
+    // Ambil SN yang AVAILABLE
+    $stmt_sn_list = $pdo->prepare("SELECT serial_number FROM product_serials WHERE product_id = ? AND status = 'AVAILABLE' ORDER BY serial_number ASC");
+    $stmt_sn_list->execute([$prod_row['id']]);
+    $sn_arr = $stmt_sn_list->fetchAll(PDO::FETCH_COLUMN);
+    
+    $prod_row['sn_list_array'] = $sn_arr;
+    $prod_row['sn_string'] = !empty($sn_arr) ? implode(', ', $sn_arr) : '-';
+}
+unset($prod_row); // break reference
+
 // --- EXPORT DATA PREPARATION ---
 $export_data_js = [];
 foreach($products as $p) {
     $export_data_js[] = [
-        'Nama' => $p['name'], 'SKU' => $p['sku'], 'SN' => $p['has_serial_number']?'YA':'TIDAK',
+        'Nama' => $p['name'], 'SKU' => $p['sku'], 'SN' => $p['sn_string'], // Export real SN
         'Beli (HPP)' => (float)$p['buy_price'], 'Gudang' => $p['warehouse_name']??'-',
         'Jual' => (float)$p['sell_price'], 'Stok' => (int)$p['stock'], 'Sat' => $p['unit']
     ];
@@ -536,10 +539,18 @@ foreach($products as $p) {
                         <p class="text-[10px] text-red-600 mt-1 font-bold">* WAJIB Pilih Gudang jika mengubah stok.</p>
                     </div>
 
+                    <!-- EXISTING SN DISPLAY -->
+                    <div id="existing_sn_area" class="hidden mb-3">
+                        <label class="block text-xs font-bold text-gray-700 mb-1">Serial Number Tersedia (Saat ini)</label>
+                        <div id="existing_sn_list" class="flex flex-wrap gap-1 p-2 bg-blue-50 border border-blue-200 rounded text-[10px] font-mono max-h-24 overflow-y-auto">
+                            <!-- Populated by JS -->
+                        </div>
+                    </div>
+
                     <!-- SN SELALU WAJIB (HIDDEN FLAG) -->
                     <div id="sn_input_area" class="hidden mb-3 bg-white p-2 rounded border-2 border-purple-300 border-dashed">
                         <div class="text-xs font-bold text-purple-700 mb-2 flex justify-between items-center">
-                            <span><i class="fas fa-barcode"></i> Input Serial Number (Wajib)</span>
+                            <span><i class="fas fa-barcode"></i> Input Serial Number Baru (Wajib)</span>
                             <span id="sn_count_badge" class="bg-purple-600 text-white px-2 rounded-full text-[10px]">0</span>
                         </div>
                         <div id="sn_inputs_container" class="grid grid-cols-1 gap-2 max-h-40 overflow-y-auto p-1"></div>
@@ -587,7 +598,7 @@ foreach($products as $p) {
                         <th class="p-2 border">Gbr</th>
                         <th class="p-2 border">Nama</th>
                         <th class="p-2 border">SKU</th>
-                        <th class="p-2 border">SN</th>
+                        <th class="p-2 border">SN Barang</th>
                         <th class="p-2 border">Beli (HPP)</th>
                         <th class="p-2 border">Gudang</th>
                         <th class="p-2 border">Jual</th>
@@ -607,11 +618,21 @@ foreach($products as $p) {
                         </td>
                         <td class="p-2 border font-bold"><?= h($p['name']) ?></td>
                         <td class="p-2 border font-mono text-center"><?= h($p['sku']) ?></td>
-                        <td class="p-2 border text-center">
-                            <span class="bg-purple-100 text-purple-800 px-1 rounded font-bold text-[10px]">WAJIB</span>
+                        <td class="p-2 border text-left bg-gray-50">
+                            <div class="text-[9px] font-mono break-words leading-tight max-w-[150px] max-h-16 overflow-y-auto" title="<?= h($p['sn_string']) ?>">
+                                <?= h($p['sn_string']) ?>
+                            </div>
                         </td>
                         <td class="p-2 border text-right"><?= formatRupiah($p['buy_price']) ?></td>
-                        <td class="p-2 border text-center font-bold text-blue-700"><?= h($p['warehouse_name'] ?? '-') ?></td>
+                        <td class="p-2 border text-center font-bold text-blue-700">
+                            <?php if(!empty($p['current_wh_id'])): ?>
+                                <a href="?page=detail_gudang&id=<?= $p['current_wh_id'] ?>" class="hover:underline hover:text-blue-900" title="Lihat Stok di Gudang ini">
+                                    <?= h($p['warehouse_name']) ?>
+                                </a>
+                            <?php else: ?>
+                                <?= h($p['warehouse_name'] ?? '-') ?>
+                            <?php endif; ?>
+                        </td>
                         <td class="p-2 border text-right"><?= formatRupiah($p['sell_price']) ?></td>
                         <td class="p-2 border text-center font-bold"><?= h($p['stock']) ?></td>
                         <td class="p-2 border text-center"><?= h($p['unit']) ?></td>
@@ -639,8 +660,8 @@ foreach($products as $p) {
                     </tr>
                     <?php endforeach; endforeach; ?>
                 <?php endif; ?>
-            </table>
-        </div>
+            </tbody>
+        </table>
     </div>
 </div>
 
@@ -792,6 +813,24 @@ function editProduct(p) {
     document.getElementById('inp_old_stock').value = p.stock;
     document.getElementById('inp_old_has_sn').value = p.has_serial_number;
 
+    // --- DISPLAY EXISTING SN ---
+    const existingContainer = document.getElementById('existing_sn_area');
+    const existingList = document.getElementById('existing_sn_list');
+    existingList.innerHTML = '';
+    
+    if (p.sn_list_array && p.sn_list_array.length > 0) {
+        existingContainer.classList.remove('hidden');
+        p.sn_list_array.forEach(sn => {
+            const span = document.createElement('span');
+            span.className = "bg-white px-2 py-1 rounded border border-blue-200 text-blue-800 font-bold shadow-sm";
+            span.innerText = sn;
+            existingList.appendChild(span);
+        });
+    } else {
+        existingContainer.classList.add('hidden');
+    }
+    // ---------------------------
+
     renderInitialSnInputs();
     previewBarcode();
     const content = document.getElementById('form_content');
@@ -806,6 +845,7 @@ function resetForm() {
     document.getElementById('inp_old_stock').value = 0;
     document.getElementById('inp_old_has_sn').value = 0;
     document.getElementById('sn_input_area').classList.add('hidden');
+    document.getElementById('existing_sn_area').classList.add('hidden'); // Hide existing SN
     document.getElementById('btn_save').disabled = false;
     document.getElementById('barcode_container').classList.add('hidden');
 }

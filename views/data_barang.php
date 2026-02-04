@@ -16,19 +16,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             foreach($data as $row) {
                 // Mapping Kolom (Support Format Baru & Lama)
                 $sku = trim(strval($row['SKU'] ?? $row['sku'] ?? ''));
-                $name = trim(strval($row['Nama'] ?? $row['Nama Barang'] ?? $row['nama'] ?? '')); // Format Baru: Nama
-                
-                // Kategori mungkin tidak ada di format baru, default 'Umum'
+                $name = trim(strval($row['Nama'] ?? $row['Nama Barang'] ?? $row['nama'] ?? '')); 
                 $cat = trim(strval($row['Kategori'] ?? $row['kategori'] ?? 'Umum')); 
+                $unit = trim(strval($row['Sat'] ?? $row['Satuan'] ?? 'Pcs')); 
                 
-                $unit = trim(strval($row['Sat'] ?? $row['Satuan'] ?? 'Pcs')); // Format Baru: Sat
-                
-                // Mapping Harga
-                $buyRaw = $row['Beli (HPP)'] ?? $row['Harga Beli'] ?? 0; // Format Baru: Beli (HPP)
-                $sellRaw = $row['Jual'] ?? $row['Harga Jual'] ?? 0;      // Format Baru: Jual
+                $buyRaw = $row['Beli (HPP)'] ?? $row['Harga Beli'] ?? 0;
+                $sellRaw = $row['Jual'] ?? $row['Harga Jual'] ?? 0;
                 $stockRaw = $row['Stok'] ?? $row['stok'] ?? 0;
 
-                // Mapping SN
                 $snRaw = $row['SN'] ?? $row['Wajib SN'] ?? '';
                 $has_sn = (strtoupper($snRaw) === 'YA' || $snRaw == '1') ? 1 : 0;
 
@@ -68,6 +63,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 3. SAVE PRODUCT (ADD/EDIT)
     if (isset($_POST['save_product'])) {
+        $id = isset($_POST['id']) ? trim($_POST['id']) : ''; // Tangkap ID dengan aman
+        
         $sku = trim($_POST['sku']);
         $name = trim($_POST['name']);
         $cat = $_POST['category'];
@@ -75,7 +72,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $buy = cleanNumber($_POST['buy_price']);
         $sell = cleanNumber($_POST['sell_price']);
         $stock = (int)$_POST['stock'];
-        $id = $_POST['id'] ?? '';
         $image_url = $_POST['old_image'] ?? '';
         $wh_id = $_POST['warehouse_id'] ?? ''; 
         $has_sn = isset($_POST['has_serial_number']) ? 1 : 0;
@@ -106,11 +102,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->beginTransaction();
 
         try {
-            if ($id) {
+            if (!empty($id)) {
                 // --- UPDATE PRODUCT ---
                 $stmtOld = $pdo->prepare("SELECT stock, has_serial_number FROM products WHERE id=?");
                 $stmtOld->execute([$id]);
                 $old_data = $stmtOld->fetch();
+                
+                if (!$old_data) throw new Exception("Data barang tidak ditemukan di database.");
+                
                 $old_stock = (int)$old_data['stock'];
                 $old_has_sn = (int)$old_data['has_serial_number'];
                 
@@ -118,22 +117,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 // VALIDASI: Jika stok berubah, Gudang WAJIB dipilih
                 if ($stock_diff != 0 && empty($wh_id)) {
-                    throw new Exception("GAGAL UPDATE: Stok berubah (Selisih: $stock_diff) tetapi Gudang belum dipilih. Harap pilih gudang untuk mencatat perubahan stok.");
+                    throw new Exception("GAGAL UPDATE: Stok berubah (Selisih: $stock_diff) tetapi Gudang belum dipilih.");
                 }
                 
                 // VALIDASI SN SAAT EDIT
                 if ($has_sn) {
                     $required_sn_count = 0;
                     if ($old_has_sn == 0) {
-                        $required_sn_count = $stock; // Konversi Non-SN ke SN: Butuh SN semua stok
+                        $required_sn_count = $stock; 
                     } elseif ($stock_diff > 0) {
-                        $required_sn_count = $stock_diff; // Tambah stok: Butuh SN selisih
+                        $required_sn_count = $stock_diff; 
                     } elseif ($stock_diff < 0) {
-                        throw new Exception("GAGAL UPDATE: Pengurangan stok barang Serial Number HARUS melalui menu 'Barang Keluar' agar bisa memilih SN spesifik yang keluar.");
+                        throw new Exception("GAGAL UPDATE: Pengurangan stok barang Serial Number HARUS melalui menu 'Barang Keluar'.");
                     }
                     
                     if (count($sn_list) < $required_sn_count) {
-                        throw new Exception("GAGAL UPDATE: Anda mengaktifkan Serial Number atau menambah stok, tetapi jumlah SN yang diinput (" . count($sn_list) . ") kurang dari yang dibutuhkan ($required_sn_count).");
+                        throw new Exception("GAGAL UPDATE: Input SN kurang ($required_sn_count dibutuhkan).");
                     }
                 }
 
@@ -162,15 +161,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'OUT', ?, ?, ?, ?, ?, ?)")
                         ->execute([$id, $wh_id, abs($stock_diff), $ref, $note, $_SESSION['user_id']]);
                 } else {
-                    // Stok Sama, tapi Konversi ke SN (0 -> 1)
+                    // Konversi ke SN (0 -> 1) tanpa ubah stok
                     if ($has_sn && $old_has_sn == 0 && $stock > 0) {
                         $stmtSN = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id) VALUES (?, ?, 'AVAILABLE', ?)");
+                        $wh_target = !empty($wh_id) ? $wh_id : ($pdo->query("SELECT id FROM warehouses LIMIT 1")->fetchColumn());
                         foreach($sn_list as $sn_code) {
-                            // Ignore Duplicate
                             $chk = $pdo->prepare("SELECT id FROM product_serials WHERE product_id=? AND serial_number=?");
                             $chk->execute([$id, $sn_code]);
                             if($chk->rowCount() == 0) {
-                                $wh_target = !empty($wh_id) ? $wh_id : ($pdo->query("SELECT id FROM warehouses LIMIT 1")->fetchColumn());
                                 $stmtSN->execute([$id, $sn_code, $wh_target]);
                             }
                         }
@@ -192,7 +190,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 if ($has_sn && $stock > 0) {
                     if (count($sn_list) != $stock) {
-                        throw new Exception("Jumlah Serial Number (" . count($sn_list) . ") harus sama dengan Stok Awal ($stock).");
+                        throw new Exception("Jumlah Serial Number tidak sesuai stok awal.");
                     }
                 }
 
@@ -247,12 +245,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // --- GET MASTER DATA ---
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
 $category_accounts = $pdo->query("SELECT * FROM accounts WHERE code IN ('3003', '2005', '2105') ORDER BY code ASC")->fetchAll();
-$existing_categories = $pdo->query("
-    SELECT DISTINCT p.category, a.name 
-    FROM products p 
-    LEFT JOIN accounts a ON p.category = a.code 
-    ORDER BY p.category ASC
-")->fetchAll();
+$existing_categories = $pdo->query("SELECT DISTINCT p.category, a.name FROM products p LEFT JOIN accounts a ON p.category = a.code ORDER BY p.category ASC")->fetchAll();
 
 // --- FILTER PARAMETERS ---
 $search = $_GET['q'] ?? '';
@@ -285,21 +278,11 @@ $sql = "SELECT p.*,
 
 $params = ["%$search%", "%$search%", "%$search%", "%$search%", $start_date, $end_date];
 
-if ($warehouse_filter !== 'ALL') {
-    $sql .= " AND it.warehouse_id = ?";
-    $params[] = $warehouse_filter;
-}
-if ($cat_filter !== 'ALL') {
-    $sql .= " AND p.category = ?";
-    $params[] = $cat_filter;
-}
-if ($stock_status === 'LOW') {
-    $sql .= " AND p.stock < 10 AND p.stock > 0";
-} elseif ($stock_status === 'EMPTY') {
-    $sql .= " AND p.stock = 0";
-} elseif ($stock_status === 'AVAILABLE') {
-    $sql .= " AND p.stock > 0";
-}
+if ($warehouse_filter !== 'ALL') { $sql .= " AND it.warehouse_id = ?"; $params[] = $warehouse_filter; }
+if ($cat_filter !== 'ALL') { $sql .= " AND p.category = ?"; $params[] = $cat_filter; }
+if ($stock_status === 'LOW') $sql .= " AND p.stock < 10 AND p.stock > 0";
+elseif ($stock_status === 'EMPTY') $sql .= " AND p.stock = 0";
+elseif ($stock_status === 'AVAILABLE') $sql .= " AND p.stock > 0";
 
 if ($sort_by === 'name_asc') $sql .= " ORDER BY p.name ASC";
 elseif ($sort_by === 'name_desc') $sql .= " ORDER BY p.name DESC";
@@ -311,32 +294,19 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $products = $stmt->fetchAll();
 
-// --- EXPORT DATA PREPARATION (SESUAI REQUEST: Gbr, Nama, SKU, SN, Beli (HPP), Gudang, Jual, Stok, Sat, Update, Ket) ---
+// --- EXPORT DATA PREPARATION ---
 $export_data_js = [];
 foreach($products as $p) {
     $export_data_js[] = [
-        'Gbr' => $p['image_url'], // URL Gambar
-        'Nama' => $p['name'],
-        'SKU' => $p['sku'],
-        'SN' => $p['has_serial_number'] ? 'YA' : 'TIDAK',
-        'Beli (HPP)' => (float)$p['buy_price'],
-        'Gudang' => $p['warehouse_name'] ?? '-',
-        'Jual' => (float)$p['sell_price'],
-        'Stok' => (int)$p['stock'],
-        'Sat' => $p['unit'],
-        'Update' => $p['trx_date'],
-        'Ket' => $p['trx_notes']
+        'Nama' => $p['name'], 'SKU' => $p['sku'], 'SN' => $p['has_serial_number']?'YA':'TIDAK',
+        'Beli (HPP)' => (float)$p['buy_price'], 'Gudang' => $p['warehouse_name']??'-',
+        'Jual' => (float)$p['sell_price'], 'Stok' => (int)$p['stock'], 'Sat' => $p['unit']
     ];
 }
 
 $grouped_products = [];
 foreach($products as $p) {
-    if (in_array($sort_by, ['newest'])) {
-        $timestamp = strtotime($p['trx_date']);
-        $group_key = "Periode " . date('F Y', $timestamp);
-    } else {
-        $group_key = "Semua Barang";
-    }
+    $group_key = in_array($sort_by, ['newest']) ? "Periode " . date('F Y', strtotime($p['trx_date'])) : "Semua Barang";
     $grouped_products[$group_key]['items'][] = $p;
     if(!isset($grouped_products[$group_key]['total'])) $grouped_products[$group_key]['total'] = 0;
     $grouped_products[$group_key]['total'] += $p['buy_price'];
@@ -347,6 +317,17 @@ foreach($products as $p) {
 <script src="https://cdnjs.cloudflare.com/ajax/libs/bwip-js/3.4.4/bwip-js-min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+
+<!-- FLASH MESSAGE AREA -->
+<?php if(isset($_SESSION['flash'])): ?>
+<div class="mb-4 p-4 rounded-lg text-sm font-bold flex items-center justify-between no-print <?= $_SESSION['flash']['type'] == 'success' ? 'bg-green-100 text-green-800 border border-green-200' : 'bg-red-100 text-red-800 border border-red-200' ?>">
+    <div class="flex items-center gap-2">
+        <i class="fas <?= $_SESSION['flash']['type'] == 'success' ? 'fa-check-circle' : 'fa-exclamation-triangle' ?>"></i>
+        <span><?= $_SESSION['flash']['message'] ?></span>
+    </div>
+    <button onclick="this.parentElement.remove()" class="text-gray-500 hover:text-gray-700"><i class="fas fa-times"></i></button>
+</div>
+<?php unset($_SESSION['flash']); endif; ?>
 
 <style>
     @media print {
@@ -394,10 +375,7 @@ foreach($products as $p) {
             <select name="category" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-indigo-500">
                 <option value="ALL">-- Semua --</option>
                 <?php foreach($existing_categories as $ec): ?>
-                    <?php 
-                        $label = $ec['category'];
-                        if(!empty($ec['name'])) $label .= " - " . $ec['name'];
-                    ?>
+                    <?php $label = $ec['category']; if(!empty($ec['name'])) $label .= " - " . $ec['name']; ?>
                     <option value="<?= $ec['category'] ?>" <?= $cat_filter==$ec['category'] ? 'selected' : '' ?>><?= htmlspecialchars($label) ?></option>
                 <?php endforeach; ?>
             </select>
@@ -626,11 +604,13 @@ foreach($products as $p) {
                             </div>
                         </td>
                         <td class="p-2 border text-center no-print flex justify-center gap-1">
-                            <button onclick='editProduct(<?= json_encode($p) ?>)' class="text-blue-600"><i class="fas fa-edit"></i></button>
+                            <!-- SAFE JSON ENCODE FOR EDIT BUTTON -->
+                            <button onclick="editProduct(<?= htmlspecialchars(json_encode($p), ENT_QUOTES, 'UTF-8') ?>)" class="text-blue-600 hover:text-blue-800"><i class="fas fa-edit"></i></button>
+                            
                             <form method="POST" onsubmit="return confirm('Hapus?')" class="inline">
                                 <?= csrf_field() ?>
                                 <input type="hidden" name="delete_id" value="<?= $p['id'] ?>">
-                                <button class="text-red-500"><i class="fas fa-trash"></i></button>
+                                <button class="text-red-500 hover:text-red-700"><i class="fas fa-trash"></i></button>
                             </form>
                         </td>
                     </tr>
@@ -726,8 +706,6 @@ function renderInitialSnInputs() {
 
     if (!oldHasSn) {
         // Konversi Barang Biasa -> SN (Baik barang baru atau lama yg belum SN)
-        // Jika stok lama 0, needed = newStock
-        // Jika stok lama > 0, needed = newStock (Harus input SN untuk SEMUA stok karena sebelumnya tidak punya SN)
         needed = newStock;
     } else {
         // Sudah Barang SN
@@ -754,8 +732,6 @@ function renderInitialSnInputs() {
         container.classList.remove('hidden');
         badge.innerText = needed + " SN";
         
-        // Regenerate Inputs only if count differs (simple approach)
-        // Better: preserve values if possible, but simplicity first.
         const currentInputs = inputsDiv.querySelectorAll('input');
         if (currentInputs.length !== needed) {
             inputsDiv.innerHTML = '';
@@ -782,21 +758,25 @@ function editProduct(p) {
     document.getElementById('inp_name').value = p.name;
     document.getElementById('inp_buy').value = new Intl.NumberFormat('id-ID').format(p.buy_price);
     document.getElementById('inp_sell').value = new Intl.NumberFormat('id-ID').format(p.sell_price);
+    
+    // Category Handling (Use Value or fallback)
     document.getElementById('inp_category').value = p.category;
+    
     document.getElementById('inp_unit').value = p.unit;
     document.getElementById('inp_stock').value = p.stock;
     document.getElementById('inp_old_image').value = p.image_url;
     
     document.getElementById('inp_has_sn').checked = (p.has_serial_number == 1);
 
-    // FIX: Warehouse selection logic
+    // FIX: Warehouse selection logic safe string handling
     const whSelect = document.getElementById('inp_warehouse');
-    if (p.current_wh_id) {
-        whSelect.value = p.current_wh_id;
+    const currentWh = p.current_wh_id ? String(p.current_wh_id) : "";
+    
+    if (currentWh) {
+        whSelect.value = currentWh;
     } else {
-        // Fallback: If warehouse not set in DB (no txn), select first option if available
         if (whSelect.options.length > 1) {
-            whSelect.selectedIndex = 1; // Index 0 is placeholder
+            whSelect.selectedIndex = 1; 
         }
     }
     

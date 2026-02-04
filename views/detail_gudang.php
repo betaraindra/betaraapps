@@ -196,17 +196,26 @@ if ($tab === 'history') {
 // --- 3. KEUANGAN WILAYAH ---
 if ($tab === 'finance') {
     $wh_name_clean = trim($warehouse['name']);
-    // Menambahkan filter untuk akun 2105 (Material) juga agar muncul
+    
+    // UPDATE: Menampilkan SEMUA Akun, bukan hanya (1004, 2009, 2105)
+    // Filter berdasarkan Tag [Wilayah: Nama] di deskripsi transaksi
     $sql_fin = "SELECT f.*, a.code, a.name as acc_name, u.username
                 FROM finance_transactions f
                 JOIN accounts a ON f.account_id = a.id
                 JOIN users u ON f.user_id = u.id
-                WHERE (a.code = '1004' OR a.code = '2009' OR a.code = '2105')
-                AND f.date BETWEEN ? AND ?
-                AND (f.description LIKE ? OR f.description LIKE ?)
+                WHERE f.date BETWEEN ? AND ?
+                AND f.description LIKE ? -- Filter Wajib Tag Wilayah
+                AND (f.description LIKE ? OR a.name LIKE ? OR a.code LIKE ?) -- Search Optional
                 ORDER BY f.date DESC";
+                
     $stmt_fin = $pdo->prepare($sql_fin);
-    $stmt_fin->execute([$start_date, $end_date, "%$wh_name_clean%", "%$q%"]);
+    // Execute: Start, End, %TagWilayah%, %Search%, %Search%, %Search%
+    $stmt_fin->execute([
+        $start_date, 
+        $end_date, 
+        "%[Wilayah: $wh_name_clean]%", 
+        "%$q%", "%$q%", "%$q%"
+    ]);
     $finances = $stmt_fin->fetchAll();
 
     $total_rev = 0; $total_exp = 0;
@@ -481,21 +490,20 @@ if ($tab === 'activity') {
 
     <!-- TAB 3: KEUANGAN WILAYAH -->
     <?php elseif($tab == 'finance'): ?>
-        <!-- ... Content Finance (Sama seperti sebelumnya) ... -->
         <div class="flex justify-between items-center mb-4 border-b pb-2">
-            <h3 class="font-bold text-gray-800">Laporan Akun 1004 & 2009</h3>
+            <h3 class="font-bold text-gray-800">Laporan Arus Kas Wilayah</h3>
             <div class="text-xs text-gray-500 italic bg-yellow-50 px-2 py-1 rounded border border-yellow-200">
-                <i class="fas fa-info-circle"></i> Menampilkan transaksi yang mengandung nama "<?= h($warehouse['name']) ?>" pada deskripsi.
+                <i class="fas fa-info-circle"></i> Menampilkan semua transaksi yang di-tag "<?= h($warehouse['name']) ?>" pada deskripsi.
             </div>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
             <div class="bg-green-50 p-4 rounded border border-green-200 text-center">
-                <p class="text-xs text-green-700 font-bold uppercase">Total Pemasukan (1004)</p>
+                <p class="text-xs text-green-700 font-bold uppercase">Total Pemasukan</p>
                 <p class="text-xl font-bold text-green-800"><?= formatRupiah($total_rev) ?></p>
             </div>
             <div class="bg-red-50 p-4 rounded border border-red-200 text-center">
-                <p class="text-xs text-red-700 font-bold uppercase">Total Pengeluaran (2009)</p>
+                <p class="text-xs text-red-700 font-bold uppercase">Total Pengeluaran</p>
                 <p class="text-xl font-bold text-red-800"><?= formatRupiah($total_exp) ?></p>
             </div>
             <div class="bg-blue-50 p-4 rounded border border-blue-200 text-center">

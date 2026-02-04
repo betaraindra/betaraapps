@@ -206,11 +206,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['start_update'])) {
                         <div class="text-center py-6">
                             <i class="fas fa-cloud-download-alt text-4xl text-gray-300 mb-3"></i>
                             <p class="text-sm text-gray-500 mb-4">Cek ketersediaan fitur baru dari server pusat.</p>
-                            <form method="POST">
-                                <button type="submit" name="check_update" value="1" class="w-full bg-blue-600 text-white px-4 py-2 rounded font-bold hover:bg-blue-700 transition shadow">
-                                    <i class="fas fa-search"></i> Cek Pembaruan
-                                </button>
-                            </form>
+                            
+                            <div class="flex flex-col gap-3">
+                                <form method="POST">
+                                    <button type="submit" name="check_update" value="1" class="w-full bg-blue-600 text-white px-4 py-2 rounded font-bold hover:bg-blue-700 transition shadow">
+                                        <i class="fas fa-search"></i> Cek Pembaruan
+                                    </button>
+                                </form>
+
+                                <div class="relative flex py-2 items-center">
+                                    <div class="flex-grow border-t border-gray-200"></div>
+                                    <span class="flex-shrink-0 mx-4 text-gray-300 text-xs">ATAU</span>
+                                    <div class="flex-grow border-t border-gray-200"></div>
+                                </div>
+
+                                <form method="POST" onsubmit="return confirm('PERINGATAN: Update Langsung akan menimpa file sistem dengan versi terbaru dari Branch Main. Config & Database aman. Lanjutkan?');">
+                                    <button type="submit" name="start_update" value="1" class="w-full bg-yellow-50 text-yellow-700 border border-yellow-300 px-4 py-2 rounded hover:bg-yellow-100 text-sm font-bold flex items-center justify-center gap-2">
+                                        <i class="fas fa-sync-alt"></i> Update Langsung (Force)
+                                    </button>
+                                </form>
+                            </div>
                         </div>
 
                     <?php elseif (!$update_available && isset($_POST['check_update'])): ?>
@@ -221,7 +236,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['start_update'])) {
                             <p class="text-xs text-green-600 mt-1">Anda menggunakan versi v<?= $current_version ?></p>
                         </div>
                         
-                        <!-- ADDED: FORCE UPDATE BUTTON -->
+                        <!-- ADDED: FORCE UPDATE BUTTON (EXISTING LOGIC) -->
                         <div class="mt-4 border-t pt-4">
                             <p class="text-[10px] text-gray-500 mb-2 text-center">Jika Anda yakin ada update di GitHub yang belum terdeteksi (misal versi metadata belum naik):</p>
                             <form method="POST" onsubmit="return confirm('PERINGATAN: Paksa update akan menimpa file sistem dengan versi terbaru dari Branch Main. Config & Database aman. Lanjutkan?');">

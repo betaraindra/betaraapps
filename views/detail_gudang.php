@@ -18,48 +18,76 @@ if(!$warehouse) {
     exit; 
 }
 
-// --- LOGIC BARU: HANDLE SIMPAN AKTIVITAS (PEMAKAIAN) ---
+// --- LOGIC BARU: HANDLE SIMPAN AKTIVITAS (PEMAKAIAN MULTI-ITEM) ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
     validate_csrf();
     
     $act_date = $_POST['act_date'];
-    $act_prod_id = $_POST['act_product_id'];
-    $act_qty = (float)$_POST['act_qty'];
-    $act_desc = trim($_POST['act_desc']);
+    $act_desc_main = trim($_POST['act_desc']);
     $act_ref = trim($_POST['act_ref']); // Misal ID Pelanggan
-    
-    // Validasi Stok
-    $stmtCheck = $pdo->prepare("
-        SELECT p.name, 
-               (COALESCE(SUM(CASE WHEN i.type = 'IN' THEN i.quantity ELSE 0 END), 0) -
-                COALESCE(SUM(CASE WHEN i.type = 'OUT' THEN i.quantity ELSE 0 END), 0)) as current_stock
-        FROM products p
-        JOIN inventory_transactions i ON p.id = i.product_id
-        WHERE i.warehouse_id = ? AND p.id = ?
-        GROUP BY p.id
-    ");
-    $stmtCheck->execute([$id, $act_prod_id]);
-    $stockData = $stmtCheck->fetch();
-    
-    if (!$stockData || $stockData['current_stock'] < $act_qty) {
-        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: Stok tidak mencukupi untuk aktivitas ini.'];
+    $cart_json = $_POST['activity_cart_json'];
+    $cart_items = json_decode($cart_json, true);
+
+    if (empty($cart_items) || !is_array($cart_items)) {
+        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: Tidak ada barang yang dipilih.'];
     } else {
-        // Generate Auto Reference jika kosong
-        if(empty($act_ref)) $act_ref = "ACT/" . date('ymd') . "/" . rand(100,999);
-        
-        // Simpan Transaksi OUT
-        // Note: Ini mengurangi stok fisik (availabilitas) sesuai request "mengurangi stok yang bisa di mutasi"
-        $final_notes = "Aktivitas Wilayah: " . $act_desc;
-        
-        $stmtIns = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
-        if ($stmtIns->execute([$act_date, $act_prod_id, $id, $act_qty, $act_ref, $final_notes, $_SESSION['user_id']])) {
-            $_SESSION['flash'] = ['type'=>'success', 'message'=>'Aktivitas wilayah berhasil dicatat. Stok fisik diperbarui.'];
-        } else {
-            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Terjadi kesalahan database.'];
+        $pdo->beginTransaction();
+        try {
+            // Generate Auto Reference jika kosong (Satu Ref untuk semua item di sesi ini)
+            if(empty($act_ref)) $act_ref = "ACT/" . date('ymd') . "/" . rand(100,999);
+            
+            $success_count = 0;
+
+            foreach ($cart_items as $item) {
+                $prod_id = $item['id'];
+                $qty = (float)$item['qty'];
+                $notes_item = isset($item['notes']) ? trim($item['notes']) : '';
+
+                // Validasi Stok Per Item
+                $stmtCheck = $pdo->prepare("
+                    SELECT p.name, 
+                           (COALESCE(SUM(CASE WHEN i.type = 'IN' THEN i.quantity ELSE 0 END), 0) -
+                            COALESCE(SUM(CASE WHEN i.type = 'OUT' THEN i.quantity ELSE 0 END), 0)) as current_stock
+                    FROM products p
+                    JOIN inventory_transactions i ON p.id = i.product_id
+                    WHERE i.warehouse_id = ? AND p.id = ?
+                    GROUP BY p.id
+                ");
+                $stmtCheck->execute([$id, $prod_id]);
+                $stockData = $stmtCheck->fetch();
+                
+                if (!$stockData) {
+                    throw new Exception("Barang ID $prod_id tidak ditemukan di gudang ini.");
+                }
+                
+                if ($stockData['current_stock'] < $qty) {
+                    throw new Exception("Stok {$stockData['name']} tidak cukup (Sisa: {$stockData['current_stock']}).");
+                }
+
+                // Format Catatan: Gabungan Deskripsi Utama + Note per Item
+                // PREFIX "Aktivitas:" PENTING UNTUK FILTER TAB AKTIVITAS
+                $final_notes = "Aktivitas: " . $act_desc_main;
+                if (!empty($notes_item)) {
+                    $final_notes .= " (" . $notes_item . ")";
+                }
+                
+                // Simpan Transaksi OUT
+                $stmtIns = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
+                $stmtIns->execute([$act_date, $prod_id, $id, $qty, $act_ref, $final_notes, $_SESSION['user_id']]);
+                
+                $success_count++;
+            }
+
+            $pdo->commit();
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>"$success_count item aktivitas berhasil dicatat. Stok diperbarui."];
+
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: ' . $e->getMessage()];
         }
     }
     
-    echo "<script>window.location='?page=detail_gudang&id=$id&tab=stock';</script>";
+    echo "<script>window.location='?page=detail_gudang&id=$id&tab=activity';</script>";
     exit;
 }
 
@@ -67,7 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
 $start_date = $_GET['start'] ?? date('Y-m-01');
 $end_date = $_GET['end'] ?? date('Y-m-d');
 $q = $_GET['q'] ?? '';
-$tab = $_GET['tab'] ?? 'stock'; // stock, history, finance
+$tab = $_GET['tab'] ?? 'stock'; // stock, history, finance, activity
 
 // --- QUERY PRODUK TERSEDIA (UNTUK MODAL AKTIVITAS) ---
 // Hanya ambil produk yang stoknya > 0 di gudang ini
@@ -147,7 +175,6 @@ if ($tab === 'history') {
 }
 
 // --- 3. KEUANGAN WILAYAH ---
-// ... (Logic Keuangan tetap sama, sudah cukup efisien dengan index baru) ...
 if ($tab === 'finance') {
     $wh_name_clean = trim($warehouse['name']);
     $sql_fin = "SELECT f.*, a.code, a.name as acc_name, u.username
@@ -166,6 +193,43 @@ if ($tab === 'finance') {
     foreach($finances as $f) {
         if($f['type'] == 'INCOME') $total_rev += $f['amount']; else $total_exp += $f['amount'];
     }
+}
+
+// --- 4. AKTIVITAS / PEMAKAIAN (TAB BARU) ---
+if ($tab === 'activity') {
+    // Mirip History tapi filter khusus notes LIKE 'Aktivitas:%' dan type OUT
+    $page_num = isset($_GET['p']) ? (int)$_GET['p'] : 1;
+    $limit = 20;
+    $offset = ($page_num - 1) * $limit;
+
+    $sql_act = "SELECT i.*, p.name as prod_name, p.sku, u.username 
+                 FROM inventory_transactions i 
+                 JOIN products p ON i.product_id = p.id 
+                 JOIN users u ON i.user_id = u.id 
+                 WHERE i.warehouse_id = ? 
+                 AND i.type = 'OUT' 
+                 AND i.notes LIKE 'Aktivitas:%'
+                 AND i.date BETWEEN ? AND ?
+                 AND (p.name LIKE ? OR p.sku LIKE ? OR i.reference LIKE ? OR i.notes LIKE ?)
+                 ORDER BY i.date DESC, i.created_at DESC
+                 LIMIT $limit OFFSET $offset";
+    
+    $stmt_act = $pdo->prepare($sql_act);
+    $stmt_act->execute([$id, $start_date, $end_date, "%$q%", "%$q%", "%$q%", "%$q%"]);
+    $activities = $stmt_act->fetchAll();
+
+    $sql_count_act = "SELECT COUNT(*) 
+                  FROM inventory_transactions i 
+                  JOIN products p ON i.product_id = p.id 
+                  WHERE i.warehouse_id = ? 
+                  AND i.type = 'OUT'
+                  AND i.notes LIKE 'Aktivitas:%'
+                  AND i.date BETWEEN ? AND ?
+                  AND (p.name LIKE ? OR p.sku LIKE ? OR i.reference LIKE ? OR i.notes LIKE ?)";
+    $stmt_count_act = $pdo->prepare($sql_count_act);
+    $stmt_count_act->execute([$id, $start_date, $end_date, "%$q%", "%$q%", "%$q%", "%$q%"]);
+    $total_rows_act = $stmt_count_act->fetchColumn();
+    $total_pages_act = ceil($total_rows_act / $limit);
 }
 ?>
 
@@ -225,17 +289,21 @@ if ($tab === 'finance') {
 </div>
 
 <!-- TABS NAVIGATION -->
-<div class="flex border-b border-gray-200 mb-6 bg-white rounded-t-lg overflow-hidden">
+<div class="flex border-b border-gray-200 mb-6 bg-white rounded-t-lg overflow-x-auto">
     <a href="?page=detail_gudang&id=<?= $id ?>&tab=stock&start=<?= $start_date ?>&end=<?= $end_date ?>&q=<?= h($q) ?>" 
-       class="flex-1 py-3 text-center text-sm font-bold border-b-2 hover:bg-gray-50 <?= $tab=='stock' ? 'border-blue-600 text-blue-600 bg-blue-50' : 'border-transparent text-gray-500' ?>">
+       class="flex-1 py-3 text-center text-sm font-bold border-b-2 hover:bg-gray-50 whitespace-nowrap px-4 <?= $tab=='stock' ? 'border-blue-600 text-blue-600 bg-blue-50' : 'border-transparent text-gray-500' ?>">
        <i class="fas fa-boxes mr-2"></i> Stok Fisik
     </a>
+    <a href="?page=detail_gudang&id=<?= $id ?>&tab=activity&start=<?= $start_date ?>&end=<?= $end_date ?>&q=<?= h($q) ?>" 
+       class="flex-1 py-3 text-center text-sm font-bold border-b-2 hover:bg-gray-50 whitespace-nowrap px-4 <?= $tab=='activity' ? 'border-purple-600 text-purple-600 bg-purple-50' : 'border-transparent text-gray-500' ?>">
+       <i class="fas fa-tools mr-2"></i> Aktivitas/Pemakaian
+    </a>
     <a href="?page=detail_gudang&id=<?= $id ?>&tab=history&start=<?= $start_date ?>&end=<?= $end_date ?>&q=<?= h($q) ?>" 
-       class="flex-1 py-3 text-center text-sm font-bold border-b-2 hover:bg-gray-50 <?= $tab=='history' ? 'border-orange-600 text-orange-600 bg-orange-50' : 'border-transparent text-gray-500' ?>">
+       class="flex-1 py-3 text-center text-sm font-bold border-b-2 hover:bg-gray-50 whitespace-nowrap px-4 <?= $tab=='history' ? 'border-orange-600 text-orange-600 bg-orange-50' : 'border-transparent text-gray-500' ?>">
        <i class="fas fa-history mr-2"></i> Riwayat Mutasi
     </a>
     <a href="?page=detail_gudang&id=<?= $id ?>&tab=finance&start=<?= $start_date ?>&end=<?= $end_date ?>&q=<?= h($q) ?>" 
-       class="flex-1 py-3 text-center text-sm font-bold border-b-2 hover:bg-gray-50 <?= $tab=='finance' ? 'border-green-600 text-green-600 bg-green-50' : 'border-transparent text-gray-500' ?>">
+       class="flex-1 py-3 text-center text-sm font-bold border-b-2 hover:bg-gray-50 whitespace-nowrap px-4 <?= $tab=='finance' ? 'border-green-600 text-green-600 bg-green-50' : 'border-transparent text-gray-500' ?>">
        <i class="fas fa-money-bill-wave mr-2"></i> Keuangan
     </a>
 </div>
@@ -281,7 +349,61 @@ if ($tab === 'finance') {
             </table>
         </div>
     
-    <!-- TAB 2: RIWAYAT MUTASI (WITH PAGINATION) -->
+    <!-- TAB 2: AKTIVITAS / PEMAKAIAN -->
+    <?php elseif($tab == 'activity'): ?>
+        <h3 class="font-bold text-gray-800 mb-4 border-b pb-2 flex items-center gap-2">
+            <i class="fas fa-tools text-purple-600"></i> Laporan Aktivitas / Pemakaian Barang
+        </h3>
+        <div class="overflow-x-auto mb-4">
+            <table class="w-full text-sm text-left border-collapse">
+                <thead class="bg-purple-100 text-purple-900">
+                    <tr>
+                        <th class="p-3 border-b">Tanggal</th>
+                        <th class="p-3 border-b">Ref (Pelanggan/Tiket)</th>
+                        <th class="p-3 border-b">Barang (SKU)</th>
+                        <th class="p-3 border-b text-right">Jumlah</th>
+                        <th class="p-3 border-b">Detail Aktivitas</th>
+                        <th class="p-3 border-b text-center">User</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y">
+                    <?php foreach($activities as $act): 
+                        // Bersihkan prefix "Aktivitas:" dari display jika mau, tapi biarkan saja untuk jelas
+                        $desc = str_replace("Aktivitas:", "<b>Aktivitas:</b>", h($act['notes']));
+                    ?>
+                    <tr class="hover:bg-gray-50">
+                        <td class="p-3 whitespace-nowrap"><?= date('d/m/Y', strtotime($act['date'])) ?></td>
+                        <td class="p-3 font-mono text-xs font-bold text-blue-700"><?= h($act['reference']) ?></td>
+                        <td class="p-3">
+                            <div class="font-bold text-gray-800"><?= h($act['prod_name']) ?></div>
+                            <div class="text-xs text-gray-500"><?= h($act['sku']) ?></div>
+                        </td>
+                        <td class="p-3 text-right font-bold text-red-600"><?= number_format($act['quantity']) ?></td>
+                        <td class="p-3 text-gray-700"><?= $desc ?></td>
+                        <td class="p-3 text-center text-xs text-gray-500"><?= h($act['username']) ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <?php if(empty($activities)): ?>
+                        <tr><td colspan="6" class="p-12 text-center text-gray-400">Belum ada data aktivitas/pemakaian pada periode ini.</td></tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- PAGINATION CONTROLS -->
+        <?php if($total_pages_act > 1): ?>
+        <div class="flex justify-center gap-2 mt-4">
+            <?php if($page_num > 1): ?>
+                <a href="?page=detail_gudang&id=<?= $id ?>&tab=activity&p=<?= $page_num - 1 ?>&start=<?= $start_date ?>&end=<?= $end_date ?>&q=<?= h($q) ?>" class="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-sm">Prev</a>
+            <?php endif; ?>
+            <span class="px-3 py-1 text-sm font-bold text-gray-600">Halaman <?= $page_num ?> dari <?= $total_pages_act ?></span>
+            <?php if($page_num < $total_pages_act): ?>
+                <a href="?page=detail_gudang&id=<?= $id ?>&tab=activity&p=<?= $page_num + 1 ?>&start=<?= $start_date ?>&end=<?= $end_date ?>&q=<?= h($q) ?>" class="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-sm">Next</a>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
+
+    <!-- TAB 3: RIWAYAT MUTASI -->
     <?php elseif($tab == 'history'): ?>
         <h3 class="font-bold text-gray-800 mb-4 border-b pb-2">Log Mutasi Barang</h3>
         <div class="overflow-x-auto mb-4">
@@ -398,9 +520,9 @@ if ($tab === 'finance') {
 
 </div>
 
-<!-- MODAL INPUT AKTIVITAS -->
+<!-- MODAL INPUT AKTIVITAS (MULTI ITEM) -->
 <div id="modalActivity" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-    <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6 relative flex flex-col max-h-[90vh]">
         <button onclick="document.getElementById('modalActivity').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
             <i class="fas fa-times text-xl"></i>
         </button>
@@ -408,52 +530,171 @@ if ($tab === 'finance') {
             <i class="fas fa-tools"></i> Input Aktivitas Wilayah
         </h3>
         <div class="mb-4 bg-green-50 p-3 rounded text-sm text-green-800 border border-green-200">
-            <p><strong>Info:</strong> Fitur ini mencatat pemakaian barang (modem, kabel, material) yang digunakan di wilayah ini. Stok akan berkurang dari gudang.</p>
+            <p><strong>Info:</strong> Gunakan fitur ini untuk mencatat pemakaian barang (modem, kabel, material) yang digunakan di wilayah ini.</p>
         </div>
         
-        <form method="POST">
+        <form method="POST" class="flex-1 flex flex-col" onsubmit="return validateActivityForm()">
             <?= csrf_field() ?>
             <input type="hidden" name="save_activity" value="1">
+            <input type="hidden" name="activity_cart_json" id="activity_cart_json">
             
-            <div class="mb-3">
-                <label class="block text-sm font-bold text-gray-700 mb-1">Tanggal</label>
-                <input type="date" name="act_date" value="<?= date('Y-m-d') ?>" class="w-full border p-2 rounded" required>
-            </div>
-            
-            <div class="mb-3">
-                <label class="block text-sm font-bold text-gray-700 mb-1">Pilih Barang (Stok Tersedia)</label>
-                <select name="act_product_id" class="w-full border p-2 rounded bg-white" required>
-                    <option value="" disabled selected>-- Pilih Barang --</option>
-                    <?php foreach($modal_products as $mp): ?>
-                        <option value="<?= $mp['id'] ?>">
-                            <?= $mp['name'] ?> (Sisa: <?= $mp['stock'] ?> <?= $mp['unit'] ?>)
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-                <?php if(empty($modal_products)): ?>
-                    <p class="text-xs text-red-500 mt-1">Stok kosong di gudang ini.</p>
-                <?php endif; ?>
-            </div>
-            
-            <div class="grid grid-cols-2 gap-4 mb-3">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <div>
-                    <label class="block text-sm font-bold text-gray-700 mb-1">Jumlah Pemakaian</label>
-                    <input type="number" name="act_qty" class="w-full border p-2 rounded font-bold" placeholder="0" min="1" step="0.01" required>
+                    <label class="block text-sm font-bold text-gray-700 mb-1">Tanggal</label>
+                    <input type="date" name="act_date" value="<?= date('Y-m-d') ?>" class="w-full border p-2 rounded text-sm" required>
                 </div>
                 <div>
-                    <label class="block text-sm font-bold text-gray-700 mb-1">ID Pelanggan / Ref</label>
-                    <input type="text" name="act_ref" class="w-full border p-2 rounded" placeholder="Contoh: PLG-001">
+                    <label class="block text-sm font-bold text-gray-700 mb-1">ID Pelanggan / Ref (Umum)</label>
+                    <input type="text" name="act_ref" class="w-full border p-2 rounded text-sm" placeholder="Contoh: PLG-001 / Tiket-123">
                 </div>
             </div>
             
             <div class="mb-4">
-                <label class="block text-sm font-bold text-gray-700 mb-1">Keterangan Aktivitas</label>
-                <textarea name="act_desc" class="w-full border p-2 rounded" rows="2" placeholder="Contoh: Pemasangan baru di rumah Bpk Budi" required></textarea>
+                <label class="block text-sm font-bold text-gray-700 mb-1">Keterangan Aktivitas (Utama)</label>
+                <input type="text" name="act_desc" class="w-full border p-2 rounded text-sm" placeholder="Contoh: Pemasangan baru di rumah Bpk Budi" required>
+            </div>
+
+            <!-- AREA INPUT BARANG (MINI CART) -->
+            <div class="bg-gray-50 p-3 rounded border border-gray-200 mb-4">
+                <h4 class="text-xs font-bold text-gray-600 mb-2 uppercase border-b pb-1">Tambah Barang ke Aktivitas</h4>
+                <div class="flex flex-wrap gap-2 items-end">
+                    <div class="flex-1 min-w-[200px]">
+                        <label class="block text-xs font-bold text-gray-500 mb-1">Pilih Barang</label>
+                        <select id="act_item_select" class="w-full border p-2 rounded text-sm bg-white">
+                            <option value="">-- Pilih Barang (Stok > 0) --</option>
+                            <?php foreach($modal_products as $mp): ?>
+                                <option value="<?= $mp['id'] ?>" data-name="<?= htmlspecialchars($mp['name']) ?>" data-stock="<?= $mp['stock'] ?>" data-unit="<?= $mp['unit'] ?>">
+                                    <?= htmlspecialchars($mp['name']) ?> (Stok: <?= $mp['stock'] ?>)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="w-20">
+                        <label class="block text-xs font-bold text-gray-500 mb-1">Qty</label>
+                        <input type="number" id="act_item_qty" class="w-full border p-2 rounded text-sm text-center font-bold" placeholder="1">
+                    </div>
+                    <div class="w-1/3">
+                        <label class="block text-xs font-bold text-gray-500 mb-1">Ket. Item (Opsional)</label>
+                        <input type="text" id="act_item_note" class="w-full border p-2 rounded text-sm" placeholder="SN/Lokasi...">
+                    </div>
+                    <div>
+                        <button type="button" onclick="addActivityItem()" class="bg-blue-600 text-white px-3 py-2 rounded text-sm hover:bg-blue-700 font-bold"><i class="fas fa-plus"></i></button>
+                    </div>
+                </div>
+                <div id="act_stock_warning" class="text-xs text-red-500 mt-1 hidden font-bold">Stok tidak mencukupi!</div>
+            </div>
+
+            <!-- LIST BARANG -->
+            <div class="flex-1 overflow-y-auto border rounded mb-4 bg-white">
+                <table class="w-full text-sm text-left">
+                    <thead class="bg-gray-100 text-gray-700 sticky top-0">
+                        <tr>
+                            <th class="p-2 border-b">Barang</th>
+                            <th class="p-2 border-b text-center w-16">Qty</th>
+                            <th class="p-2 border-b w-1/3">Catatan</th>
+                            <th class="p-2 border-b text-center w-10"><i class="fas fa-trash"></i></th>
+                        </tr>
+                    </thead>
+                    <tbody id="activity_cart_body">
+                        <tr><td colspan="4" class="p-4 text-center text-gray-400 italic">Belum ada barang dipilih.</td></tr>
+                    </tbody>
+                </table>
             </div>
             
-            <button type="submit" class="w-full bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 shadow">
-                Simpan Aktivitas
+            <button type="submit" id="btn_save_activity" class="w-full bg-green-600 text-white py-3 rounded font-bold hover:bg-green-700 shadow disabled:bg-gray-400 disabled:cursor-not-allowed">
+                Simpan Semua Aktivitas
             </button>
         </form>
     </div>
 </div>
+
+<script>
+let activityCart = [];
+
+function addActivityItem() {
+    const select = document.getElementById('act_item_select');
+    const qtyInput = document.getElementById('act_item_qty');
+    const noteInput = document.getElementById('act_item_note');
+    const warning = document.getElementById('act_stock_warning');
+    
+    const id = select.value;
+    if(!id) return alert("Pilih barang dulu!");
+    
+    const qty = parseFloat(qtyInput.value);
+    if(!qty || qty <= 0) return alert("Jumlah tidak valid!");
+    
+    const opt = select.options[select.selectedIndex];
+    const name = opt.getAttribute('data-name');
+    const stock = parseFloat(opt.getAttribute('data-stock'));
+    const unit = opt.getAttribute('data-unit');
+    const note = noteInput.value;
+
+    // Cek stok lokal (cart + new)
+    const existingIdx = activityCart.findIndex(item => item.id === id);
+    let currentQtyInCart = 0;
+    if(existingIdx > -1) currentQtyInCart = activityCart[existingIdx].qty;
+    
+    if((currentQtyInCart + qty) > stock) {
+        warning.classList.remove('hidden');
+        warning.innerText = `Stok tidak cukup! Tersedia: ${stock}, Di Keranjang: ${currentQtyInCart}, Input: ${qty}`;
+        return;
+    }
+    warning.classList.add('hidden');
+
+    // Add or Update
+    if(existingIdx > -1) {
+        activityCart[existingIdx].qty += qty;
+        // Append note if different? Simple logic: overwrite or append. Let's append if not empty.
+        if(note) activityCart[existingIdx].notes += (activityCart[existingIdx].notes ? ", " : "") + note;
+    } else {
+        activityCart.push({ id, name, qty, unit, notes: note });
+    }
+
+    // Reset Input Item
+    select.value = "";
+    qtyInput.value = "";
+    noteInput.value = "";
+    renderActivityCart();
+}
+
+function deleteActivityItem(index) {
+    activityCart.splice(index, 1);
+    renderActivityCart();
+}
+
+function renderActivityCart() {
+    const tbody = document.getElementById('activity_cart_body');
+    tbody.innerHTML = '';
+    
+    if(activityCart.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-gray-400 italic">Belum ada barang dipilih.</td></tr>';
+        document.getElementById('btn_save_activity').disabled = true;
+        return;
+    }
+    
+    document.getElementById('btn_save_activity').disabled = false;
+
+    activityCart.forEach((item, idx) => {
+        const tr = document.createElement('tr');
+        tr.className = 'border-b hover:bg-gray-50';
+        tr.innerHTML = `
+            <td class="p-2 font-medium">${item.name}</td>
+            <td class="p-2 text-center font-bold text-blue-600">${item.qty} ${item.unit}</td>
+            <td class="p-2 text-xs text-gray-500 italic">${item.notes || '-'}</td>
+            <td class="p-2 text-center">
+                <button type="button" onclick="deleteActivityItem(${idx})" class="text-red-500 hover:text-red-700"><i class="fas fa-times"></i></button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function validateActivityForm() {
+    if(activityCart.length === 0) {
+        alert("Pilih minimal satu barang!");
+        return false;
+    }
+    document.getElementById('activity_cart_json').value = JSON.stringify(activityCart);
+    return confirm("Simpan aktivitas ini? Stok gudang akan berkurang.");
+}
+</script>

@@ -80,6 +80,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $image_url = $_POST['old_image'] ?? '';
         $wh_id = $_POST['warehouse_id'] ?? ''; // Ambil Gudang ID
         $has_sn = isset($_POST['has_serial_number']) ? 1 : 0;
+        
+        // Ambil Data SN yang diinput
+        $sn_list = $_POST['sn_list'] ?? [];
+        // Filter empty SN
+        $sn_list = array_filter($sn_list, function($v) { return !empty(trim($v)); });
 
         // SECURE FILE UPLOAD
         if (isset($_FILES['image']) && $_FILES['image']['error'] === 0) {
@@ -114,36 +119,91 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
+        $pdo->beginTransaction(); // Start Transaction
+
         try {
             if ($id) {
                 // --- UPDATE PRODUCT ---
                 // Cek Stok Lama untuk menghitung selisih
-                $stmtOld = $pdo->prepare("SELECT stock FROM products WHERE id=?");
+                $stmtOld = $pdo->prepare("SELECT stock, has_serial_number FROM products WHERE id=?");
                 $stmtOld->execute([$id]);
-                $old_stock = (int)$stmtOld->fetchColumn();
+                $old_data = $stmtOld->fetch();
+                $old_stock = (int)$old_data['stock'];
+                $old_has_sn = (int)$old_data['has_serial_number'];
+                
                 $stock_diff = $stock - $old_stock;
 
                 // VALIDASI: Jika stok berubah, Gudang WAJIB dipilih
                 if ($stock_diff != 0 && empty($wh_id)) {
                     throw new Exception("Stok berubah (Selisih: $stock_diff). Harap pilih Gudang/Wilayah untuk mencatat perubahan ini.");
                 }
+                
+                // VALIDASI SN SAAT EDIT
+                if ($has_sn) {
+                    $required_sn_count = 0;
+                    
+                    if ($old_has_sn == 0) {
+                        // Kasus: Ubah Barang Biasa jadi Barang SN -> Butuh SN sejumlah Stok Total
+                        $required_sn_count = $stock;
+                    } elseif ($stock_diff > 0) {
+                        // Kasus: Tambah Stok Barang SN -> Butuh SN sejumlah Selisih
+                        $required_sn_count = $stock_diff;
+                    } elseif ($stock_diff < 0) {
+                        // Kasus: Kurang Stok -> Tidak diizinkan edit manual di sini (harus via Barang Keluar untuk pilih SN)
+                        throw new Exception("Pengurangan stok barang Serial Number TIDAK BOLEH melalui menu Edit. Gunakan menu 'Barang Keluar' agar bisa memilih SN yang dihapus.");
+                    }
+                    
+                    if (count($sn_list) < $required_sn_count) {
+                        throw new Exception("Jumlah Serial Number yang diinput (" . count($sn_list) . ") kurang dari yang dibutuhkan ($required_sn_count).");
+                    }
+                }
 
                 $stmt = $pdo->prepare("UPDATE products SET sku=?, name=?, category=?, unit=?, buy_price=?, sell_price=?, stock=?, image_url=?, has_serial_number=? WHERE id=?");
                 $stmt->execute([$sku, $name, $cat, $unit, $buy, $sell, $stock, $image_url, $has_sn, $id]);
                 
-                // LOGIC TRANSAKSI KOREKSI (JIKA ADA PERUBAHAN STOK)
-                if ($stock_diff != 0) {
-                    $type = ($stock_diff > 0) ? 'IN' : 'OUT';
-                    $qty_trx = abs($stock_diff);
-                    $ref = 'ADJ-' . date('ymdHi');
-                    $note = 'Koreksi Stok (Edit Data Barang)';
+                // LOGIC TRANSAKSI KOREKSI
+                if ($stock_diff > 0) {
+                    $ref = 'ADJ-IN-' . date('ymdHi');
+                    $note = 'Penambahan Stok (Edit Data Barang)';
+                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'IN', ?, ?, ?, ?, ?, ?)")
+                        ->execute([$id, $wh_id, $stock_diff, $ref, $note, $_SESSION['user_id']]);
+                    $trx_id = $pdo->lastInsertId();
                     
-                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), ?, ?, ?, ?, ?, ?, ?)")
-                        ->execute([$type, $id, $wh_id, $qty_trx, $ref, $note, $_SESSION['user_id']]);
+                    // INSERT SN (Jika ada selisih positif atau konversi)
+                    if ($has_sn) {
+                        $stmtSN = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+                        // Ambil sejumlah yang dibutuhkan dari list (sisanya mungkin sudah ada jika konversi)
+                        // Logic simple: Insert semua yang baru
+                        foreach($sn_list as $sn_code) {
+                            // Cek duplikat
+                            $chk = $pdo->prepare("SELECT id FROM product_serials WHERE product_id=? AND serial_number=?");
+                            $chk->execute([$id, $sn_code]);
+                            if($chk->rowCount() == 0) {
+                                $stmtSN->execute([$id, $sn_code, $wh_id, $trx_id]);
+                            }
+                        }
+                    }
+                } elseif ($stock_diff < 0) {
+                    $ref = 'ADJ-OUT-' . date('ymdHi');
+                    $note = 'Pengurangan Stok (Edit Data Barang)';
+                    // Jika Non-SN, boleh langsung kurang
+                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'OUT', ?, ?, ?, ?, ?, ?)")
+                        ->execute([$id, $wh_id, abs($stock_diff), $ref, $note, $_SESSION['user_id']]);
+                } else {
+                    // Stok Sama, tapi mungkin konversi ke SN (0 -> 1)
+                    if ($has_sn && $old_has_sn == 0 && $stock > 0) {
+                        // Insert SN tanpa transaksi stok baru (karena stok qty tidak berubah, hanya status)
+                        // Gunakan dummy transaction atau NULL
+                        $stmtSN = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id) VALUES (?, ?, 'AVAILABLE', ?)");
+                        foreach($sn_list as $sn_code) {
+                            $stmtSN->execute([$id, $sn_code, $wh_id]);
+                        }
+                    }
                 }
 
                 logActivity($pdo, 'UPDATE_BARANG', "Update barang: $name ($sku)");
                 $_SESSION['flash'] = ['type'=>'success', 'message'=>'Data Barang Diperbarui'];
+            
             } else {
                 // --- ADD NEW PRODUCT ---
                 $check = $pdo->prepare("SELECT id FROM products WHERE sku = ?");
@@ -153,6 +213,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // VALIDASI: Jika stok awal > 0, Gudang WAJIB dipilih
                 if ($stock > 0 && empty($wh_id)) {
                     throw new Exception("Stok awal diisi ($stock). Harap pilih Gudang/Wilayah penyimpanan.");
+                }
+                
+                // VALIDASI SN NEW PRODUCT
+                if ($has_sn && $stock > 0) {
+                    if (count($sn_list) != $stock) {
+                        throw new Exception("Jumlah Serial Number (" . count($sn_list) . ") harus sama dengan Stok Awal ($stock).");
+                    }
                 }
 
                 $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, image_url, has_serial_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -164,12 +231,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $ref = 'INIT-' . date('ymdHi'); // Ref Otomatis
                     $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'IN', ?, ?, ?, ?, 'Stok Awal Barang Baru', ?)")
                         ->execute([$new_id, $wh_id, $stock, $ref, $_SESSION['user_id']]);
+                    $trx_id = $pdo->lastInsertId();
+                    
+                    // INSERT SN
+                    if ($has_sn) {
+                        $stmtSN = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+                        foreach($sn_list as $sn_code) {
+                            $stmtSN->execute([$new_id, $sn_code, $wh_id, $trx_id]);
+                        }
+                    }
                 }
 
                 logActivity($pdo, 'ADD_BARANG', "Tambah barang baru: $name ($sku)");
                 $_SESSION['flash'] = ['type'=>'success', 'message'=>'Barang Baru Ditambahkan'];
             }
+            
+            $pdo->commit();
+            
         } catch(Exception $e) {
+            $pdo->rollBack();
             $_SESSION['flash'] = ['type'=>'error', 'message'=>$e->getMessage()];
         }
         echo "<script>window.location='?page=data_barang';</script>";
@@ -427,6 +507,10 @@ foreach($products as $p) {
                     <input type="hidden" name="save_product" value="1">
                     <input type="hidden" name="id" id="inp_id">
                     <input type="hidden" name="old_image" id="inp_old_image">
+                    
+                    <!-- HIDDEN FIELDS FOR SN LOGIC -->
+                    <input type="hidden" id="inp_old_stock" value="0">
+                    <input type="hidden" id="inp_old_has_sn" value="0">
 
                     <div class="mb-3">
                         <label class="block text-xs font-bold text-gray-700 mb-1">SKU (Barcode)</label>
@@ -481,7 +565,7 @@ foreach($products as $p) {
                     <div class="mb-3">
                         <label class="block text-xs font-bold text-gray-700 mb-1">Stok & Gudang</label>
                         <div class="flex gap-2">
-                            <input type="number" name="stock" id="inp_stock" class="w-1/2 border p-2 rounded text-sm font-bold" placeholder="0">
+                            <input type="number" name="stock" id="inp_stock" onchange="renderInitialSnInputs()" onkeyup="renderInitialSnInputs()" class="w-1/2 border p-2 rounded text-sm font-bold" placeholder="0">
                             <select name="warehouse_id" id="inp_warehouse" class="w-1/2 border p-2 rounded text-sm bg-white text-gray-700">
                                 <option value="">-- Pilih Gudang --</option>
                                 <?php foreach($warehouses as $w): ?>
@@ -495,10 +579,24 @@ foreach($products as $p) {
                     <!-- NEW: SERIAL NUMBER CHECKBOX -->
                     <div class="mb-3 bg-purple-50 p-2 rounded border border-purple-200">
                         <label class="flex items-center space-x-2 cursor-pointer">
-                            <input type="checkbox" name="has_serial_number" id="inp_has_sn" class="form-checkbox h-4 w-4 text-purple-600 rounded">
+                            <input type="checkbox" name="has_serial_number" id="inp_has_sn" onchange="renderInitialSnInputs()" class="form-checkbox h-4 w-4 text-purple-600 rounded">
                             <span class="text-xs font-bold text-purple-800">Barang Wajib Serial Number (SN)?</span>
                         </label>
                         <p class="text-[10px] text-gray-500 mt-1 ml-6">Jika dicentang, wajib input/scan SN saat barang masuk/keluar.</p>
+                    </div>
+
+                    <!-- DYNAMIC SN INPUT -->
+                    <div id="sn_input_area" class="hidden mb-3 bg-white p-2 rounded border-2 border-purple-300 border-dashed">
+                        <div class="text-xs font-bold text-purple-700 mb-2 flex justify-between items-center">
+                            <span><i class="fas fa-barcode"></i> Input Serial Number Awal</span>
+                            <span id="sn_count_badge" class="bg-purple-600 text-white px-2 rounded-full text-[10px]">0</span>
+                        </div>
+                        <div id="sn_inputs_container" class="grid grid-cols-1 gap-2 max-h-40 overflow-y-auto p-1">
+                            <!-- Inputs generated by JS -->
+                        </div>
+                        <p id="sn_warning" class="text-[10px] text-red-500 mt-2 hidden italic">
+                            * Pengurangan stok barang SN (Edit) tidak diizinkan di sini. Gunakan menu 'Barang Keluar'.
+                        </p>
                     </div>
 
                     <div class="mb-3">
@@ -507,7 +605,7 @@ foreach($products as $p) {
                     </div>
 
                     <div class="flex gap-2">
-                        <button type="submit" class="flex-1 bg-blue-600 text-white py-2 rounded font-bold text-sm shadow hover:bg-blue-700">Simpan</button>
+                        <button type="submit" id="btn_save" class="flex-1 bg-blue-600 text-white py-2 rounded font-bold text-sm shadow hover:bg-blue-700">Simpan</button>
                         <button type="button" onclick="resetForm()" class="px-3 py-2 bg-gray-200 text-gray-700 rounded text-sm hover:bg-gray-300">Reset</button>
                     </div>
                 </form>
@@ -539,15 +637,15 @@ foreach($products as $p) {
                     </tr>
                     <tr class="bg-yellow-400 font-bold text-center">
                         <th class="p-2 border">Gbr</th>
-                        <th class="p-2 border">SKU</th>
-                        <th class="p-2 border">Update</th>
                         <th class="p-2 border">Nama</th>
+                        <th class="p-2 border">SKU</th>
+                        <th class="p-2 border">SN</th>
                         <th class="p-2 border">Beli (HPP)</th>
                         <th class="p-2 border">Gudang</th>
                         <th class="p-2 border">Jual</th>
                         <th class="p-2 border">Stok</th>
                         <th class="p-2 border">Sat</th>
-                        <th class="p-2 border">SN</th>
+                        <th class="p-2 border">Update</th>
                         <th class="p-2 border">Ket</th>
                         <th class="p-2 border">Ref / Cetak</th> 
                         <th class="p-2 border no-print">Aksi</th>
@@ -559,14 +657,8 @@ foreach($products as $p) {
                                 <img src="<?= h($p['image_url']) ?>" class="w-8 h-8 object-cover mx-auto" loading="lazy" width="32" height="32">
                             <?php endif; ?>
                         </td>
-                        <td class="p-2 border font-mono text-center"><?= h($p['sku']) ?></td>
-                        <td class="p-2 border text-center"><?= date('d/m/Y', strtotime($p['trx_date'])) ?></td>
                         <td class="p-2 border font-bold"><?= h($p['name']) ?></td>
-                        <td class="p-2 border text-right"><?= formatRupiah($p['buy_price']) ?></td>
-                        <td class="p-2 border text-center font-bold text-blue-700"><?= h($p['warehouse_name'] ?? '-') ?></td>
-                        <td class="p-2 border text-right"><?= formatRupiah($p['sell_price']) ?></td>
-                        <td class="p-2 border text-center font-bold"><?= h($p['stock']) ?></td>
-                        <td class="p-2 border text-center"><?= h($p['unit']) ?></td>
+                        <td class="p-2 border font-mono text-center"><?= h($p['sku']) ?></td>
                         <td class="p-2 border text-center">
                             <?php if($p['has_serial_number']): ?>
                                 <span class="bg-purple-100 text-purple-800 px-1 rounded font-bold text-[10px]">YA</span>
@@ -574,6 +666,12 @@ foreach($products as $p) {
                                 -
                             <?php endif; ?>
                         </td>
+                        <td class="p-2 border text-right"><?= formatRupiah($p['buy_price']) ?></td>
+                        <td class="p-2 border text-center font-bold text-blue-700"><?= h($p['warehouse_name'] ?? '-') ?></td>
+                        <td class="p-2 border text-right"><?= formatRupiah($p['sell_price']) ?></td>
+                        <td class="p-2 border text-center font-bold"><?= h($p['stock']) ?></td>
+                        <td class="p-2 border text-center"><?= h($p['unit']) ?></td>
+                        <td class="p-2 border text-center"><?= date('d/m/Y', strtotime($p['trx_date'])) ?></td>
                         <td class="p-2 border"><?= h($p['trx_notes']) ?></td>
                         <td class="p-2 border text-center">
                             <div class="font-mono text-xs font-bold text-blue-600 mb-1"><?= h($p['reference']) ?></div>
@@ -831,6 +929,87 @@ function printLabelDirect(sku, name) {
     } catch(e) { alert("Gagal render label."); }
 }
 
+// --- DYNAMIC SN INPUT LOGIC ---
+function renderInitialSnInputs() {
+    const hasSn = document.getElementById('inp_has_sn').checked;
+    const newStock = parseInt(document.getElementById('inp_stock').value) || 0;
+    const oldStock = parseInt(document.getElementById('inp_old_stock').value) || 0;
+    const oldHasSn = document.getElementById('inp_old_has_sn').value == '1';
+    
+    const container = document.getElementById('sn_input_area');
+    const inputsDiv = document.getElementById('sn_inputs_container');
+    const warning = document.getElementById('sn_warning');
+    const badge = document.getElementById('sn_count_badge');
+    const btnSave = document.getElementById('btn_save');
+    
+    if (!hasSn) {
+        container.classList.add('hidden');
+        inputsDiv.innerHTML = '';
+        btnSave.disabled = false;
+        return;
+    }
+
+    // Hitung berapa SN yang butuh diinput
+    let needed = 0;
+    let allowInput = true;
+
+    if (!oldHasSn && oldStock === 0) {
+        // Barang Baru (Non-SN -> SN dengan stok baru)
+        needed = newStock;
+    } else if (!oldHasSn && oldStock > 0) {
+        // Konversi Barang Biasa (Stok Ada) -> Barang SN
+        // Butuh SN sejumlah Total Stok Baru (karena yang lama belum punya SN)
+        needed = newStock; 
+    } else if (oldHasSn) {
+        // Barang SN Existing
+        if (newStock > oldStock) {
+            // Tambah Stok -> Butuh SN sejumlah selisih
+            needed = newStock - oldStock;
+        } else if (newStock < oldStock) {
+            // Kurang Stok -> Tidak boleh edit di sini
+            allowInput = false;
+        }
+        // Jika sama, tidak perlu input
+    }
+
+    if (!allowInput) {
+        container.classList.remove('hidden');
+        inputsDiv.innerHTML = '';
+        warning.classList.remove('hidden');
+        badge.innerText = "Error";
+        btnSave.disabled = true; // Disable save to prevent error
+        return;
+    }
+
+    btnSave.disabled = false;
+    warning.classList.add('hidden');
+
+    if (needed > 0) {
+        container.classList.remove('hidden');
+        badge.innerText = needed + " SN";
+        
+        // Generate Inputs
+        // Don't regenerate if count matches (to keep user input), unless forcing refresh
+        // Simple approach: regenerate always for now or check length
+        if (inputsDiv.children.length !== needed) {
+            inputsDiv.innerHTML = '';
+            for(let i=1; i<=needed; i++) {
+                const div = document.createElement('div');
+                div.innerHTML = `
+                    <div class="relative">
+                        <span class="absolute left-2 top-1.5 text-[10px] text-gray-400 font-mono">SN#${i}</span>
+                        <input type="text" name="sn_list[]" class="w-full border p-1 pl-8 rounded text-sm font-mono uppercase bg-purple-50 focus:bg-white transition" placeholder="Scan/Ketik SN" required>
+                    </div>
+                `;
+                inputsDiv.appendChild(div);
+            }
+        }
+    } else {
+        container.classList.add('hidden');
+        inputsDiv.innerHTML = '';
+    }
+}
+
 function editProduct(p) {
     document.getElementById('inp_id').value = p.id;
     document.getElementById('inp_sku').value = p.sku;
@@ -849,6 +1028,13 @@ function editProduct(p) {
     // Agar kolom Wilayah tidak kosong saat disimpan
     document.getElementById('inp_warehouse').value = p.current_wh_id || "";
     
+    // Set Old Values for Logic
+    document.getElementById('inp_old_stock').value = p.stock;
+    document.getElementById('inp_old_has_sn').value = p.has_serial_number;
+
+    // Trigger Render SN Logic immediately
+    renderInitialSnInputs();
+    
     previewBarcode();
     const content = document.getElementById('form_content');
     if(content.classList.contains('hidden')) toggleFormMobile();
@@ -861,6 +1047,13 @@ function resetForm() {
     document.getElementById('inp_old_image').value = '';
     document.getElementById('inp_warehouse').value = ''; // Reset Warehouse
     document.getElementById('inp_has_sn').checked = false;
+    
+    // Reset Logic Fields
+    document.getElementById('inp_old_stock').value = 0;
+    document.getElementById('inp_old_has_sn').value = 0;
+    document.getElementById('sn_input_area').classList.add('hidden');
+    document.getElementById('btn_save').disabled = false;
+
     document.getElementById('barcode_container').classList.add('hidden');
     document.getElementById('scanner_area').classList.add('hidden');
     if(html5QrCode) { try { html5QrCode.stop(); html5QrCode.clear(); } catch(e) {} }

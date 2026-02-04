@@ -444,7 +444,17 @@ async function checkSku() {
 
     try {
         const res = await fetch(`api.php?action=get_product_by_sku&sku=${encodeURIComponent(sku)}`);
-        const data = await res.json();
+        
+        // Handle non-JSON response gracefully
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch(e) {
+            console.error("JSON Parse Error. Response:", text);
+            throw new Error("Respon server tidak valid (Bukan JSON).");
+        }
 
         detailSec.classList.remove('hidden');
 
@@ -489,7 +499,8 @@ async function checkSku() {
             }, 100);
         }
     } catch (e) {
-        statusEl.innerText = "Error API.";
+        statusEl.innerHTML = `<span class="text-red-600 font-bold">Error: ${e.message}</span>`;
+        console.error(e);
     }
 }
 
@@ -531,7 +542,7 @@ async function generateNewSku() {
             document.getElementById('sku_input').value = data.sku;
             checkSku();
         }
-    } catch(e) { alert("Gagal generate SKU"); }
+    } catch(e) { alert("Gagal generate SKU: " + e.message); }
     btn.innerHTML = oldHtml;
 }
 

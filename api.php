@@ -98,7 +98,7 @@ if ($action === 'generate_sku') {
     // Loop sampai nemu yang belum ada di DB
     while($found) {
         // Format: 899 + 9 digit random (Format umum Indonesia)
-        $sku = '899' . str_pad(mt_rand(0, 999999999), 9, '0', STR_PAD_LEFT);
+        $sku = '899' . str_pad((string)mt_rand(0, 999999999), 9, '0', STR_PAD_LEFT);
         $stmt = $pdo->prepare("SELECT id FROM products WHERE sku = ?");
         $stmt->execute([$sku]);
         if($stmt->rowCount() == 0) {
@@ -108,4 +108,3 @@ if ($action === 'generate_sku') {
     echo json_encode(['sku' => $sku]);
     exit;
 }
-?>

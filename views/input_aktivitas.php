@@ -21,8 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_id'])) {
             // Hapus Transaksi Inventori
             $pdo->prepare("DELETE FROM inventory_transactions WHERE id=?")->execute([$del_id]);
             
-            // Reset SN jika perlu (Simple logic: jika hapus transaksi OUT, SN jadi Available. Jika hapus IN, SN jadi Sold/Deleted?)
-            // Untuk keamanan, fitur hapus di sini hanya mengembalikan stok global. SN perlu penyesuaian manual jika kompleks.
+            // Reset SN jika perlu
             if ($trx['type'] == 'OUT') {
                 $pdo->prepare("UPDATE product_serials SET status='AVAILABLE', out_transaction_id=NULL WHERE out_transaction_id=?")->execute([$del_id]);
             }
@@ -79,7 +78,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                 $finType = 'EXPENSE';
             } else {
                 // PENGEMBALIAN -> INCOME (Recovery Asset/Pemasukan Wilayah)
-                // Kita gunakan akun 1004 (Pemasukan Wilayah) atau 1003 (Lain-lain) untuk menyeimbangkan
                 $accStmt = $pdo->query("SELECT id FROM accounts WHERE code = '1004' LIMIT 1");
                 $accId = $accStmt->fetchColumn();
                 if (!$accId) $accId = $pdo->query("SELECT id FROM accounts WHERE code = '1003' LIMIT 1")->fetchColumn();
@@ -97,12 +95,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                 
                 // --- LOGIKA PEMAKAIAN (OUT) ---
                 if ($mode == 'OUT') {
-                    // Cek SN & Stok
-                    if ($prod['has_serial_number'] == 1) {
-                        if (empty($item['sns']) || count($item['sns']) != $item['qty']) {
-                            throw new Exception("Produk {$prod['name']} wajib SN sesuai Qty.");
-                        }
+                    // Cek SN (MANDATORY)
+                    if (empty($item['sns']) || count($item['sns']) != $item['qty']) {
+                        throw new Exception("Produk {$prod['name']} wajib SN sesuai Qty.");
                     }
+                    
                     if ($prod['stock'] < $item['qty']) {
                         throw new Exception("Stok {$item['name']} tidak cukup! Sisa: {$prod['stock']}");
                     }
@@ -119,7 +116,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                     $trx_id = $pdo->lastInsertId();
 
                     // Update SN jadi SOLD
-                    if ($prod['has_serial_number'] == 1 && !empty($item['sns'])) {
+                    if (!empty($item['sns'])) {
                         $snStmt = $pdo->prepare("UPDATE product_serials SET status = 'SOLD', out_transaction_id = ? WHERE product_id = ? AND serial_number = ? AND status = 'AVAILABLE'");
                         foreach ($item['sns'] as $sn) {
                             $snStmt->execute([$trx_id, $prod['id'], $sn]);
@@ -142,8 +139,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                     $trx_id = $pdo->lastInsertId();
 
                     // Update SN jadi AVAILABLE
-                    if ($prod['has_serial_number'] == 1 && !empty($item['sns'])) {
-                        // Cek apakah SN ada? Jika ada update, jika tidak insert (kalau barang lama banget)
+                    if (!empty($item['sns'])) {
+                        // Cek apakah SN ada? Jika ada update, jika tidak insert
                         $checkSn = $pdo->prepare("SELECT id FROM product_serials WHERE product_id=? AND serial_number=?");
                         $stmtUpdate = $pdo->prepare("UPDATE product_serials SET status = 'AVAILABLE', warehouse_id = ?, in_transaction_id = ? WHERE id = ?");
                         $stmtInsert = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
@@ -356,7 +353,6 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 </div>
 
                 <input type="hidden" id="h_name"><input type="hidden" id="h_stock">
-                <input type="hidden" id="h_has_sn" value="0">
                 <input type="hidden" id="h_scanned_sn" value="">
             </div>
 
@@ -427,7 +423,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                             $badge = $is_return ? '<span class="bg-teal-100 text-teal-800 px-2 py-1 rounded text-xs font-bold">RETUR</span>' : '<span class="bg-purple-100 text-purple-800 px-2 py-1 rounded text-xs font-bold">PAKAI</span>';
                         ?>
                         <tr class="<?= $row_class ?>">
-                            <td class="p-3 whitespace-nowrap"><?= date('d/m/y', strtotime($row['date'])) ?></td>
+                            <td class="p-3 whitespace-nowrap"><?= date('d/m/Y', strtotime($row['date'])) ?></td>
                             <td class="p-3 text-center"><?= $badge ?></td>
                             <td class="p-3">
                                 <div class="font-bold text-xs text-blue-700"><?= h($row['reference']) ?></div>
@@ -564,7 +560,6 @@ async function checkSku() {
     const stat = document.getElementById('sku_status'); 
     const n = document.getElementById('h_name'); 
     const st = document.getElementById('h_stock'); 
-    const h_has_sn = document.getElementById('h_has_sn');
     const h_scanned_sn = document.getElementById('h_scanned_sn');
     
     stat.innerHTML = 'Searching...'; 
@@ -573,12 +568,15 @@ async function checkSku() {
         const d = await r.json(); 
         if(d && d.id) { 
             stat.innerHTML = `<span class="text-green-600">Found: ${d.name} (${d.stock})</span>`; 
-            n.value = d.name; st.value = d.stock; h_has_sn.value = d.has_serial_number;
+            n.value = d.name; 
+            st.value = d.stock; 
             
+            // Cek apakah scan SN langsung?
             if (d.scanned_sn) {
                 h_scanned_sn.value = d.scanned_sn;
+                // Jika scan SN langsung, otomatis set qty 1 dan auto add
                 document.getElementById('qty_input').value = 1;
-                renderSnInputs();
+                renderSnInputs(); 
             } else {
                 h_scanned_sn.value = '';
                 document.getElementById('qty_input').focus(); 
@@ -592,18 +590,22 @@ async function checkSku() {
                 }
             }
             
-            if (d.scanned_sn) setTimeout(() => addToCart(), 200);
+            // Auto add jika direct SN scan
+            if (d.scanned_sn) {
+                setTimeout(() => addToCart(), 200);
+            }
 
         } else { 
             stat.innerHTML = '<span class="text-red-600">Not Found!</span>'; 
-            n.value=''; st.value=0; h_has_sn.value=0; h_scanned_sn.value='';
+            n.value=''; st.value=0; h_scanned_sn.value='';
         } 
     } catch(e){ stat.innerText = "Error API"; } 
 }
 
 function renderSnInputs() {
     const qty = parseInt(document.getElementById('qty_input').value) || 0;
-    const hasSn = document.getElementById('h_has_sn').value == '1';
+    // SN ALWAYS REQUIRED
+    const hasSn = true; 
     const container = document.getElementById('sn_out_container');
     const inputsDiv = document.getElementById('sn_out_inputs');
     const scannedSn = document.getElementById('h_scanned_sn').value;
@@ -629,7 +631,7 @@ function addToCart() {
     const st = parseFloat(document.getElementById('h_stock').value||0); 
     const q = parseFloat(document.getElementById('qty_input').value); 
     const nt = document.getElementById('notes_input').value; 
-    const hasSn = document.getElementById('h_has_sn').value == '1';
+    const hasSn = true; // FORCE SN
     
     if(!n) return alert("Scan item first"); 
     if(!q || q<=0) return alert("Qty invalid"); 
@@ -662,7 +664,6 @@ function addToCart() {
     document.getElementById('sku_input').value=''; 
     document.getElementById('h_name').value=''; 
     document.getElementById('h_stock').value=''; 
-    document.getElementById('h_has_sn').value='0';
     document.getElementById('h_scanned_sn').value='';
     document.getElementById('qty_input').value=''; 
     document.getElementById('notes_input').value=''; 

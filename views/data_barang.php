@@ -14,7 +14,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->beginTransaction();
         try {
             foreach($data as $row) {
-                // Mapping Kolom (Support Format Baru & Lama)
+                // Mapping Kolom
                 $sku = trim(strval($row['SKU'] ?? $row['sku'] ?? ''));
                 $name = trim(strval($row['Nama'] ?? $row['Nama Barang'] ?? $row['nama'] ?? '')); 
                 $cat = trim(strval($row['Kategori'] ?? $row['kategori'] ?? 'Umum')); 
@@ -24,8 +24,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $sellRaw = $row['Jual'] ?? $row['Harga Jual'] ?? 0;
                 $stockRaw = $row['Stok'] ?? $row['stok'] ?? 0;
 
-                $snRaw = $row['SN'] ?? $row['Wajib SN'] ?? '';
-                $has_sn = (strtoupper($snRaw) === 'YA' || $snRaw == '1') ? 1 : 0;
+                // FORCE SN = 1
+                $has_sn = 1;
 
                 $buy = cleanNumber($buyRaw);
                 $sell = cleanNumber($sellRaw);
@@ -63,7 +63,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 3. SAVE PRODUCT (ADD/EDIT)
     if (isset($_POST['save_product'])) {
-        $id = isset($_POST['id']) ? trim($_POST['id']) : ''; // Tangkap ID dengan aman
+        $id = isset($_POST['id']) ? trim($_POST['id']) : ''; 
         
         $sku = trim($_POST['sku']);
         $name = trim($_POST['name']);
@@ -74,7 +74,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stock = (int)$_POST['stock'];
         $image_url = $_POST['old_image'] ?? '';
         $wh_id = $_POST['warehouse_id'] ?? ''; 
-        $has_sn = isset($_POST['has_serial_number']) ? 1 : 0;
+        
+        // FORCE ALWAYS 1 (WAJIB SN)
+        $has_sn = 1;
         
         $sn_list = $_POST['sn_list'] ?? [];
         $sn_list = array_filter($sn_list, function($v) { return !empty(trim($v)); });
@@ -120,57 +122,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     throw new Exception("GAGAL UPDATE: Stok berubah (Selisih: $stock_diff) tetapi Gudang belum dipilih.");
                 }
                 
-                // VALIDASI SN SAAT EDIT
-                if ($has_sn) {
-                    $required_sn_count = 0;
-                    if ($old_has_sn == 0) {
-                        $required_sn_count = $stock; 
-                    } elseif ($stock_diff > 0) {
-                        $required_sn_count = $stock_diff; 
-                    } elseif ($stock_diff < 0) {
-                        throw new Exception("GAGAL UPDATE: Pengurangan stok barang Serial Number HARUS melalui menu 'Barang Keluar'.");
-                    }
-                    
-                    if (count($sn_list) < $required_sn_count) {
-                        throw new Exception("GAGAL UPDATE: Input SN kurang ($required_sn_count dibutuhkan).");
-                    }
+                // VALIDASI SN SAAT EDIT (WAJIB SN)
+                $required_sn_count = 0;
+                
+                if ($old_has_sn == 0) {
+                    // Konversi dari Non-SN ke SN: Harus input SN untuk SEMUA stok yang ada
+                    $required_sn_count = $stock; 
+                } elseif ($stock_diff > 0) {
+                    // Penambahan stok: Input SN untuk selisihnya
+                    $required_sn_count = $stock_diff; 
+                } elseif ($stock_diff < 0) {
+                    // Pengurangan stok manual dilarang untuk barang SN
+                    throw new Exception("GAGAL UPDATE: Pengurangan stok barang Serial Number HARUS melalui menu 'Barang Keluar'.");
+                }
+                
+                if (count($sn_list) < $required_sn_count) {
+                    throw new Exception("GAGAL UPDATE: Input SN kurang ($required_sn_count SN dibutuhkan). Silakan input Serial Number.");
                 }
 
                 $stmt = $pdo->prepare("UPDATE products SET sku=?, name=?, category=?, unit=?, buy_price=?, sell_price=?, stock=?, image_url=?, has_serial_number=? WHERE id=?");
                 $stmt->execute([$sku, $name, $cat, $unit, $buy, $sell, $stock, $image_url, $has_sn, $id]);
                 
-                // TRANSAKSI KOREKSI STOK
-                if ($stock_diff > 0) {
-                    $ref = 'ADJ-IN-' . date('ymdHi');
-                    $note = 'Koreksi Stok (Edit Data)';
-                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'IN', ?, ?, ?, ?, ?, ?)")
-                        ->execute([$id, $wh_id, $stock_diff, $ref, $note, $_SESSION['user_id']]);
-                    $trx_id = $pdo->lastInsertId();
+                // TRANSAKSI KOREKSI STOK / KONVERSI SN
+                if ($required_sn_count > 0) {
+                    // Jika konversi (old=0, new=1), insert semua SN
+                    // Jika penambahan (diff > 0), insert SN baru
+                    // Kita perlu trx_id jika ini penambahan stok
                     
-                    if ($has_sn) {
-                        $stmtSN = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
-                        foreach($sn_list as $sn_code) {
-                            $chk = $pdo->prepare("SELECT id FROM product_serials WHERE product_id=? AND serial_number=?");
-                            $chk->execute([$id, $sn_code]);
-                            if($chk->rowCount() == 0) $stmtSN->execute([$id, $sn_code, $wh_id, $trx_id]);
-                        }
-                    }
-                } elseif ($stock_diff < 0) {
-                    $ref = 'ADJ-OUT-' . date('ymdHi');
-                    $note = 'Koreksi Stok (Edit Data)';
-                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'OUT', ?, ?, ?, ?, ?, ?)")
-                        ->execute([$id, $wh_id, abs($stock_diff), $ref, $note, $_SESSION['user_id']]);
-                } else {
-                    // Konversi ke SN (0 -> 1) tanpa ubah stok
-                    if ($has_sn && $old_has_sn == 0 && $stock > 0) {
-                        $stmtSN = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id) VALUES (?, ?, 'AVAILABLE', ?)");
-                        $wh_target = !empty($wh_id) ? $wh_id : ($pdo->query("SELECT id FROM warehouses LIMIT 1")->fetchColumn());
-                        foreach($sn_list as $sn_code) {
-                            $chk = $pdo->prepare("SELECT id FROM product_serials WHERE product_id=? AND serial_number=?");
-                            $chk->execute([$id, $sn_code]);
-                            if($chk->rowCount() == 0) {
-                                $stmtSN->execute([$id, $sn_code, $wh_target]);
-                            }
+                    $trx_id = null;
+                    if ($stock_diff > 0) {
+                        $ref = 'ADJ-IN-' . date('ymdHi');
+                        $note = 'Koreksi Stok (Edit Data)';
+                        $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'IN', ?, ?, ?, ?, ?, ?)")
+                            ->execute([$id, $wh_id, $stock_diff, $ref, $note, $_SESSION['user_id']]);
+                        $trx_id = $pdo->lastInsertId();
+                    } 
+                    
+                    // Insert SNs
+                    $stmtSN = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+                    
+                    // Gunakan warehouse input atau default warehouse jika konversi stok lama
+                    $target_wh = !empty($wh_id) ? $wh_id : ($pdo->query("SELECT id FROM warehouses LIMIT 1")->fetchColumn());
+
+                    foreach($sn_list as $sn_code) {
+                        // Cek Duplikat
+                        $chk = $pdo->prepare("SELECT id FROM product_serials WHERE product_id=? AND serial_number=?");
+                        $chk->execute([$id, $sn_code]);
+                        if($chk->rowCount() == 0) {
+                            $stmtSN->execute([$id, $sn_code, $target_wh, $trx_id]);
                         }
                     }
                 }
@@ -188,9 +187,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     throw new Exception("Stok awal diisi ($stock). Harap pilih Gudang/Wilayah penyimpanan.");
                 }
                 
-                if ($has_sn && $stock > 0) {
+                // WAJIB SN MATCH STOCK
+                if ($stock > 0) {
                     if (count($sn_list) != $stock) {
-                        throw new Exception("Jumlah Serial Number tidak sesuai stok awal.");
+                        throw new Exception("Jumlah Serial Number tidak sesuai stok awal. Masukkan $stock Serial Number.");
                     }
                 }
 
@@ -204,11 +204,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ->execute([$new_id, $wh_id, $stock, $ref, $_SESSION['user_id']]);
                     $trx_id = $pdo->lastInsertId();
                     
-                    if ($has_sn) {
-                        $stmtSN = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
-                        foreach($sn_list as $sn_code) {
-                            $stmtSN->execute([$new_id, $sn_code, $wh_id, $trx_id]);
-                        }
+                    $stmtSN = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+                    foreach($sn_list as $sn_code) {
+                        $stmtSN->execute([$new_id, $sn_code, $wh_id, $trx_id]);
                     }
                 }
 
@@ -502,22 +500,15 @@ foreach($products as $p) {
                         <p class="text-[10px] text-red-600 mt-1 font-bold">* WAJIB Pilih Gudang jika mengubah stok.</p>
                     </div>
 
-                    <div class="mb-3 bg-purple-50 p-2 rounded border border-purple-200">
-                        <label class="flex items-center space-x-2 cursor-pointer">
-                            <input type="checkbox" name="has_serial_number" id="inp_has_sn" onchange="renderInitialSnInputs()" class="form-checkbox h-4 w-4 text-purple-600 rounded">
-                            <span class="text-xs font-bold text-purple-800">Barang Wajib Serial Number (SN)?</span>
-                        </label>
-                        <p class="text-[10px] text-gray-500 mt-1 ml-6">Jika dicentang, wajib input/scan SN sejumlah stok.</p>
-                    </div>
-
+                    <!-- SN SELALU WAJIB (HIDDEN FLAG) -->
                     <div id="sn_input_area" class="hidden mb-3 bg-white p-2 rounded border-2 border-purple-300 border-dashed">
                         <div class="text-xs font-bold text-purple-700 mb-2 flex justify-between items-center">
-                            <span><i class="fas fa-barcode"></i> Input Serial Number</span>
+                            <span><i class="fas fa-barcode"></i> Input Serial Number (Wajib)</span>
                             <span id="sn_count_badge" class="bg-purple-600 text-white px-2 rounded-full text-[10px]">0</span>
                         </div>
                         <div id="sn_inputs_container" class="grid grid-cols-1 gap-2 max-h-40 overflow-y-auto p-1"></div>
                         <p id="sn_warning" class="text-[10px] text-red-500 mt-2 hidden italic font-bold">
-                            * Error: Pengurangan stok barang SN harus via Barang Keluar.
+                            * Error: Pengurangan stok harus via Barang Keluar.
                         </p>
                     </div>
 
@@ -581,11 +572,7 @@ foreach($products as $p) {
                         <td class="p-2 border font-bold"><?= h($p['name']) ?></td>
                         <td class="p-2 border font-mono text-center"><?= h($p['sku']) ?></td>
                         <td class="p-2 border text-center">
-                            <?php if($p['has_serial_number']): ?>
-                                <span class="bg-purple-100 text-purple-800 px-1 rounded font-bold text-[10px]">YA</span>
-                            <?php else: ?>
-                                -
-                            <?php endif; ?>
+                            <span class="bg-purple-100 text-purple-800 px-1 rounded font-bold text-[10px]">WAJIB</span>
                         </td>
                         <td class="p-2 border text-right"><?= formatRupiah($p['buy_price']) ?></td>
                         <td class="p-2 border text-center font-bold text-blue-700"><?= h($p['warehouse_name'] ?? '-') ?></td>
@@ -681,9 +668,9 @@ function previewBarcode() { const s = document.getElementById('inp_sku').value.t
 function printSingleLabel() { window.print(); }
 function printLabelDirect(sku, name) { document.getElementById('lbl_name').innerText = name; try { bwipjs.toCanvas('lbl_barcode_canvas', { bcid:'code128', text:sku, scale:2, height:10, includetext:true, textxalign:'center' }); window.print(); } catch(e) {} }
 
-// SN LOGIC FIX
+// SN LOGIC FIX - ALWAYS REQUIRED
 function renderInitialSnInputs() {
-    const hasSn = document.getElementById('inp_has_sn').checked;
+    const hasSn = true; // Always true
     const newStock = parseInt(document.getElementById('inp_stock').value) || 0;
     const oldStock = parseInt(document.getElementById('inp_old_stock').value) || 0;
     const oldHasSn = document.getElementById('inp_old_has_sn').value == '1';
@@ -694,13 +681,6 @@ function renderInitialSnInputs() {
     const badge = document.getElementById('sn_count_badge');
     const btnSave = document.getElementById('btn_save');
     
-    if (!hasSn) {
-        container.classList.add('hidden');
-        inputsDiv.innerHTML = '';
-        btnSave.disabled = false;
-        return;
-    }
-
     let needed = 0;
     let allowInput = true;
 
@@ -758,26 +738,19 @@ function editProduct(p) {
     document.getElementById('inp_name').value = p.name;
     document.getElementById('inp_buy').value = new Intl.NumberFormat('id-ID').format(p.buy_price);
     document.getElementById('inp_sell').value = new Intl.NumberFormat('id-ID').format(p.sell_price);
-    
-    // Category Handling (Use Value or fallback)
     document.getElementById('inp_category').value = p.category;
-    
     document.getElementById('inp_unit').value = p.unit;
     document.getElementById('inp_stock').value = p.stock;
     document.getElementById('inp_old_image').value = p.image_url;
     
-    document.getElementById('inp_has_sn').checked = (p.has_serial_number == 1);
-
-    // FIX: Warehouse selection logic safe string handling
+    // Checkbox dihapus, has_sn selalu true di backend logic
+    
     const whSelect = document.getElementById('inp_warehouse');
     const currentWh = p.current_wh_id ? String(p.current_wh_id) : "";
-    
     if (currentWh) {
         whSelect.value = currentWh;
     } else {
-        if (whSelect.options.length > 1) {
-            whSelect.selectedIndex = 1; 
-        }
+        if (whSelect.options.length > 1) whSelect.selectedIndex = 1; 
     }
     
     document.getElementById('inp_old_stock').value = p.stock;
@@ -794,7 +767,6 @@ function resetForm() {
     document.getElementById('productForm').reset();
     document.getElementById('inp_id').value = '';
     document.getElementById('inp_old_image').value = '';
-    document.getElementById('inp_has_sn').checked = false;
     document.getElementById('inp_old_stock').value = 0;
     document.getElementById('inp_old_has_sn').value = 0;
     document.getElementById('sn_input_area').classList.add('hidden');
@@ -811,7 +783,6 @@ function toggleFormMobile() {
 }
 if(window.innerWidth < 1024) document.getElementById('form_content').classList.add('hidden');
 
-// ... (initCamera, startScan, stopScan preserved) ...
 async function initCamera() { initAudio(); document.getElementById('scanner_area').classList.remove('hidden'); try { await navigator.mediaDevices.getUserMedia({ video: true }); const d = await Html5Qrcode.getCameras(); const s = document.getElementById('camera_select'); s.innerHTML = ""; if (d && d.length) { let id = d[0].id; d.forEach(dev => { if(dev.label.toLowerCase().includes('back')) id = dev.id; const o = document.createElement("option"); o.value = dev.id; o.text = dev.label; s.appendChild(o); }); s.value = id; startScan(id); s.onchange = () => { if(html5QrCode) html5QrCode.stop().then(() => startScan(s.value)); }; } else alert("No camera"); } catch (e) { alert("Camera error"); document.getElementById('scanner_area').classList.add('hidden'); } }
 function startScan(id) { if(html5QrCode) try{html5QrCode.stop()}catch(e){} html5QrCode = new Html5Qrcode("reader"); html5QrCode.start(id, { fps: 10, qrbox: { width: 250, height: 250 } }, (t) => { document.getElementById('inp_sku').value = t; playBeep(); previewBarcode(); stopScan(); }, () => {}).catch(()=>{}); }
 function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }); }

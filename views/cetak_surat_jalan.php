@@ -95,6 +95,7 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
         .item-category { font-size: 10px; font-style: italic; color: #555; }
         .item-notes { font-size: 10px; margin-top: 2px; }
         .prod-img { width: 50px; height: 50px; object-fit: cover; border: 1px solid #ddd; }
+        .sn-list { font-size: 9px; font-family: monospace; color: #333; word-break: break-all; margin-top: 2px; }
     </style>
 </head>
 <body>
@@ -158,11 +159,12 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                     <th style="width: 60px;">Foto</th>
                     <th style="width: 110px;">SKU / Barcode</th>
                     <th>Detail Material / Barang</th>
-                    <th style="width: 90px;">Gudang</th>
+                    <th style="width: 80px;">Gudang</th>
+                    <th style="width: 120px;">Serial Number (SN)</th>
                     <th>Catatan Item</th>
-                    <th style="width: 50px;">Jml</th>
-                    <th style="width: 50px;">Unit</th>
-                    <th style="width: 40px;">Cek</th>
+                    <th style="width: 40px;">Jml</th>
+                    <th style="width: 40px;">Unit</th>
+                    <th style="width: 30px;">Cek</th>
                 </tr>
             </thead>
             <tbody>
@@ -170,6 +172,26 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                 $no = 1; 
                 foreach($items as $item): 
                     $row_id = "bc_" . $no; 
+                    
+                    // --- LOGIC FETCH SN ---
+                    // Mengambil SN dari tabel product_serials berdasarkan ID transaksi
+                    $trx_id = $item['id'];
+                    $col_trx = ($item['type'] == 'IN') ? 'in_transaction_id' : 'out_transaction_id';
+                    
+                    $stmtSn = $pdo->prepare("SELECT serial_number FROM product_serials WHERE $col_trx = ? ORDER BY serial_number ASC");
+                    $stmtSn->execute([$trx_id]);
+                    $serial_numbers = $stmtSn->fetchAll(PDO::FETCH_COLUMN);
+                    
+                    $sn_display = '-';
+                    if (!empty($serial_numbers)) {
+                        $sn_display = implode(', ', $serial_numbers);
+                    }
+
+                    // --- BERSIHKAN CATATAN ---
+                    // Hapus string "[SN: ...]" dari kolom catatan agar tidak redundan
+                    $clean_notes = preg_replace('/\[SN:.*?\]/', '', $item['notes'] ?? '');
+                    $clean_notes = trim($clean_notes);
+                    if ($clean_notes == '-') $clean_notes = '';
                 ?>
                 <tr>
                     <td class="text-center"><?= $no++ ?></td>
@@ -188,8 +210,14 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                         <div class="text-bold"><?= $item['prod_name'] ?></div>
                         <div class="item-category">Kategori: <?= $item['category'] ?></div>
                     </td>
-                    <td class="text-center"><?= $item['origin_warehouse'] ?? '-' ?></td>
-                    <td class="item-notes"><?= $item['notes'] ?? '-' ?></td>
+                    <td class="text-center" style="font-size: 10px;"><?= $item['origin_warehouse'] ?? '-' ?></td>
+                    
+                    <!-- KOLOM SN BARU -->
+                    <td>
+                        <div class="sn-list"><?= $sn_display ?></div>
+                    </td>
+
+                    <td class="item-notes"><?= !empty($clean_notes) ? $clean_notes : '-' ?></td>
                     <td class="text-center text-bold" style="font-size: 14px;"><?= $item['quantity'] ?></td>
                     <td class="text-center"><?= $item['unit'] ?></td>
                     <td class="text-center">▢</td>

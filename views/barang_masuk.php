@@ -12,8 +12,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $qty = (float)$_POST['quantity']; // Support desimal
     $notes = $_POST['notes'];
     
-    // SN Fields - Mengambil value dari checkbox visual
-    $has_sn = isset($_POST['chk_has_sn']); 
+    // SN Fields - DEFAULT SELALU WAJIB (TRUE)
+    $has_sn = true; 
     $sn_list = $_POST['sn_list'] ?? [];
 
     // Validasi Input Wajib
@@ -24,8 +24,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif (empty($warehouse_id)) {
         $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gudang Penerima harus dipilih.'];
     } elseif ($has_sn && count(array_filter($sn_list)) < $qty) {
-        // Validasi jumlah SN harus sama dengan Qty jika wajib SN
-        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Wajib input Serial Number sejumlah Qty barang.'];
+        // Validasi jumlah SN harus sama dengan Qty
+        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Wajib input Serial Number sejumlah Qty barang. Klik "Generate Auto SN" jika tidak ada SN fisik.'];
     } else {
         $pdo->beginTransaction();
         try {
@@ -49,9 +49,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $current_buy_price = ($input_buy_price > 0) ? $input_buy_price : $product['buy_price'];
                 $current_sell_price = ($input_sell_price > 0) ? $input_sell_price : $product['sell_price'];
                 
-                // Update flag has_serial_number jika user mencentang SN pada barang lama
-                $db_has_sn = $product['has_serial_number'];
-                if ($has_sn && $db_has_sn == 0) {
+                // Force update has_serial_number jadi 1 karena sekarang sistem mewajibkan SN
+                if ($product['has_serial_number'] == 0) {
                     $pdo->prepare("UPDATE products SET has_serial_number = 1 WHERE id = ?")->execute([$product_id]);
                 }
 
@@ -72,8 +71,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $current_buy_price = cleanNumber($_POST['buy_price'] ?? 0);
                 $sell = cleanNumber($_POST['sell_price'] ?? 0);
                 
-                // Set has_serial_number berdasarkan checkbox
-                $sn_flag = $has_sn ? 1 : 0;
+                // Set has_serial_number selalu 1
+                $sn_flag = 1;
 
                 $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, has_serial_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmt->execute([$sku, $name, $cat, $unit, $current_buy_price, $sell, $qty, $sn_flag]);
@@ -104,7 +103,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             // 4. INSERT SERIAL NUMBERS
-            if ($has_sn && !empty($sn_list)) {
+            if (!empty($sn_list)) {
                 $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
                 foreach ($sn_list as $sn) {
                     if (!empty($sn)) {
@@ -112,7 +111,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $chk = $pdo->prepare("SELECT id FROM product_serials WHERE product_id=? AND serial_number=?");
                         $chk->execute([$product_id, $sn]);
                         if($chk->rowCount() > 0) {
-                            throw new Exception("Serial Number '$sn' sudah ada untuk produk ini.");
+                            // Jika SN sudah ada tapi status SOLD/RETURNED, mungkin ini barang retur masuk?
+                            // Untuk simplifikasi, jika duplikat lempar error.
+                            throw new Exception("Serial Number '$sn' sudah ada di database untuk produk ini.");
                         }
                         $stmtSn->execute([$product_id, $sn, $warehouse_id, $trx_id]);
                     }
@@ -150,7 +151,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
 <!-- Import bwip-js untuk barcode -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/bwip-js/3.4.4/bwip-js-min.js"></script>
 
-<!-- STYLE KHUSUS PRINT LABEL (Hidden di layar biasa) -->
+<!-- STYLE KHUSUS PRINT LABEL -->
 <style>
     #print_area { display: none; }
     @media print {
@@ -165,7 +166,6 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
     }
 </style>
 
-<!-- Hidden Print Area -->
 <div id="print_area">
     <div class="label-box">
         <canvas id="p_canvas"></canvas>
@@ -195,7 +195,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
             </div>
         </div>
         
-        <!-- Area Scanner Live -->
+        <!-- Area Scanner Live (Main) -->
         <div id="scanner_area" class="hidden mb-6 bg-black rounded-lg relative overflow-hidden shadow-inner border-4 border-gray-800">
             <div class="absolute top-2 left-2 z-20">
                 <select id="camera_select" class="bg-white text-gray-800 text-xs py-1 px-2 rounded shadow border border-gray-300 focus:outline-none"><option value="">Memuat Kamera...</option></select>
@@ -237,13 +237,14 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
             </div>
             
             <div class="mb-2">
-                <label class="block text-sm font-bold text-gray-700 mb-1">SKU / Kode Barang (Scan disini)</label>
+                <label class="block text-sm font-bold text-gray-700 mb-1">Scan Barcode (SKU Produk / Serial Number)</label>
                 <div class="flex gap-2">
-                    <input type="text" name="sku" id="sku_input" class="w-full border-2 border-green-600 p-3 rounded font-mono font-bold text-lg focus:ring-4 focus:ring-green-200 focus:outline-none transition-all uppercase" placeholder="SCAN BARCODE..." onchange="checkSku()" onkeydown="if(event.key === 'Enter'){ checkSku(); event.preventDefault(); }" required autofocus>
+                    <input type="text" name="sku" id="sku_input" class="w-full border-2 border-green-600 p-3 rounded font-mono font-bold text-lg focus:ring-4 focus:ring-green-200 focus:outline-none transition-all uppercase" placeholder="SCAN BARCODE / SN..." onchange="checkSku()" onkeydown="if(event.key === 'Enter'){ checkSku(); event.preventDefault(); }" required autofocus>
                     
                     <button type="button" id="btn_gen_sku" onclick="generateNewSku()" class="bg-yellow-500 text-white px-3 rounded hover:bg-yellow-600 font-bold whitespace-nowrap text-sm" title="Generate SKU Baru"><i class="fas fa-plus"></i> SKU Baru</button>
                 </div>
                 <p id="sku_status" class="text-xs mt-1 min-h-[1.25rem] font-medium transition-all"></p>
+                <input type="hidden" id="h_scanned_sn" value=""> <!-- Penampung sementara SN jika user scan SN langsung -->
             </div>
 
             <!-- DETAIL SECTION -->
@@ -309,35 +310,48 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 </div>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 items-end">
-                <div>
-                    <label class="block text-sm font-bold text-gray-700 mb-1">Jumlah Masuk <span class="text-red-500">*</span></label>
-                    <input type="number" id="quantity_input" name="quantity" step="1" onchange="renderSnInputs()" onkeyup="renderSnInputs()" class="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-green-500 focus:outline-none font-bold text-lg" placeholder="0" required>
-                </div>
-                <div>
-                    <!-- CHECKBOX SN VISIBLE -->
-                    <label class="flex items-center space-x-2 cursor-pointer bg-purple-100 p-3 rounded border border-purple-200 hover:bg-purple-200 transition">
-                        <input type="checkbox" name="chk_has_sn" id="chk_has_sn" onchange="renderSnInputs()" class="w-5 h-5 text-purple-600 focus:ring-purple-500 border-gray-300 rounded">
-                        <span class="font-bold text-purple-800 text-sm">Input Serial Number?</span>
-                    </label>
-                </div>
+            <!-- QTY INPUT -->
+            <div class="mb-4">
+                <label class="block text-sm font-bold text-gray-700 mb-1">Jumlah Masuk <span class="text-red-500">*</span></label>
+                <input type="number" id="quantity_input" name="quantity" step="1" onchange="renderSnInputs()" onkeyup="renderSnInputs()" class="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-green-500 focus:outline-none font-bold text-lg" placeholder="0" required>
             </div>
 
-            <!-- SERIAL NUMBER INPUT AREA -->
+            <!-- SERIAL NUMBER INPUT AREA (SELALU WAJIB) -->
             <div id="sn_container" class="hidden mb-6 bg-purple-50 p-4 rounded border border-purple-200">
-                <div class="flex justify-between items-center mb-3 border-b border-purple-200 pb-2">
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-3 border-b border-purple-200 pb-2 gap-2">
                     <h4 class="font-bold text-purple-800 text-sm flex items-center gap-2">
                         <i class="fas fa-barcode"></i> Input Serial Number (Wajib)
                     </h4>
-                    <button type="button" onclick="autoGenerateSN()" class="bg-purple-600 text-white px-3 py-1 rounded text-xs font-bold hover:bg-purple-700 shadow flex items-center gap-1">
-                        <i class="fas fa-magic"></i> Generate Auto SN
-                    </button>
+                    
+                    <div class="flex gap-1 flex-wrap">
+                         <!-- Tools for SN -->
+                         <button type="button" onclick="focusNextEmptySn()" class="bg-gray-700 text-white px-2 py-1 rounded text-xs font-bold hover:bg-gray-800 flex items-center gap-1" title="Mode Cepat (USB)">
+                             <i class="fas fa-keyboard"></i> USB
+                         </button>
+                         <input type="file" id="sn_file_input" accept="image/*" class="hidden" onchange="handleSnFileScan(this)">
+                         <button type="button" onclick="document.getElementById('sn_file_input').click()" class="bg-indigo-600 text-white px-2 py-1 rounded text-xs font-bold hover:bg-indigo-700 flex items-center gap-1" title="Foto Scan">
+                             <i class="fas fa-camera"></i> Foto
+                         </button>
+                         <button type="button" onclick="initSnCamera()" class="bg-blue-600 text-white px-2 py-1 rounded text-xs font-bold hover:bg-blue-700 flex items-center gap-1" title="Live Camera">
+                             <i class="fas fa-video"></i> Live
+                         </button>
+                         <button type="button" onclick="autoGenerateSN()" class="bg-purple-600 text-white px-2 py-1 rounded text-xs font-bold hover:bg-purple-700 shadow flex items-center gap-1">
+                            <i class="fas fa-magic"></i> Generate Auto SN
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Live Camera SN Area -->
+                <div id="sn_scanner_area" class="hidden mb-3 bg-black rounded p-2 relative border-4 border-gray-800">
+                    <div id="sn_reader" class="w-full h-48 bg-black"></div>
+                    <button type="button" onclick="stopSnCamera()" class="absolute top-2 right-2 text-white bg-red-600 rounded-full w-8 h-8 flex items-center justify-center font-bold shadow hover:bg-red-700"><i class="fas fa-times"></i></button>
+                    <div class="text-white text-center text-xs mt-1">Arahkan kamera ke Serial Number</div>
                 </div>
                 
                 <div id="sn_inputs" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                     <!-- Dynamic Inputs Here -->
                 </div>
-                <p class="text-xs text-purple-600 mt-2 italic">* Scan atau ketik SN untuk setiap item. Gunakan tombol Generate jika barang tidak ada SN pabrikan.</p>
+                <p class="text-xs text-purple-600 mt-2 italic">* Sistem akan mendeteksi apakah Anda menscan SN langsung. Jika barang tidak punya SN fisik, klik "Generate Auto SN".</p>
             </div>
 
             <div class="mb-6">
@@ -397,6 +411,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
 <script>
 // --- AUDIO CONTEXT UNTUK BEEP ---
 let html5QrCode;
+let snQrCode; // Dedicated instance for SN
 let audioCtx = null;
 let isFlashOn = false;
 const APP_NAME_PREFIX = "<?= $app_ref_prefix ?>";
@@ -444,7 +459,8 @@ async function checkSku() {
     const statusEl = document.getElementById('sku_status');
     const detailSec = document.getElementById('detail_section');
     const newFields = document.getElementById('new_fields'); 
-    const chkHasSn = document.getElementById('chk_has_sn');
+    
+    const h_scanned_sn = document.getElementById('h_scanned_sn'); // Hidden Input untuk SN
     
     // UI Elements for Data
     const infoBanner = document.getElementById('info_banner');
@@ -470,8 +486,17 @@ async function checkSku() {
 
         if (data && data.id) {
             // --- PRODUK DITEMUKAN ---
-            let snText = data.has_serial_number == 1 ? ' [WAJIB SN]' : '';
-            statusEl.innerHTML = `<span class="text-green-600 font-bold"><i class="fas fa-check-circle"></i> Ditemukan: ${data.name} (Stok: ${data.stock})${snText}</span>`;
+            
+            // Cek apakah scan direct SN? (Dari API returns 'scanned_sn')
+            if (data.scanned_sn) {
+                h_scanned_sn.value = data.scanned_sn;
+                // Jika direct SN, set Qty 1 dan render
+                document.getElementById('quantity_input').value = 1;
+                statusEl.innerHTML = `<span class="text-purple-600 font-bold"><i class="fas fa-tag"></i> SN Ditemukan: ${data.scanned_sn} -> Produk: ${data.name}</span>`;
+            } else {
+                h_scanned_sn.value = '';
+                statusEl.innerHTML = `<span class="text-green-600 font-bold"><i class="fas fa-check-circle"></i> Produk: ${data.name} (Stok: ${data.stock})</span>`;
+            }
             
             infoBanner.className = "flex items-center gap-2 mb-3 bg-blue-100 text-blue-800 p-2 rounded border border-blue-200";
             infoBanner.innerHTML = `<i class="fas fa-info-circle text-lg"></i><span class="font-bold text-sm">Data Barang Ditemukan. Detail terkunci (readonly).</span>`;
@@ -488,17 +513,6 @@ async function checkSku() {
             inpUnit.setAttribute('readonly', 'readonly');
             inpUnit.classList.add('bg-gray-100', 'cursor-not-allowed');
             
-            // LOGIKA CHECKBOX SN
-            if (data.has_serial_number == 1) {
-                // Jika DB wajib SN, Check dan Disable (forced)
-                chkHasSn.checked = true;
-                chkHasSn.disabled = true; 
-            } else {
-                // Jika DB tidak wajib, Uncheck tapi bisa di-centang manual (optional)
-                chkHasSn.checked = false;
-                chkHasSn.disabled = false;
-            }
-            
             if(data.buy_price) document.getElementById('buy_price').value = new Intl.NumberFormat('id-ID').format(data.buy_price);
             if(data.sell_price) document.getElementById('sell_price').value = new Intl.NumberFormat('id-ID').format(data.sell_price);
             
@@ -508,10 +522,17 @@ async function checkSku() {
                 whSelect.value = data.last_warehouse_id;
             }
 
-            document.querySelector('input[name="quantity"]').focus();
-            renderSnInputs();
+            // Jika scan direct SN, trigger render untuk auto-fill input SN #1
+            if (data.scanned_sn) {
+                renderSnInputs();
+            } else {
+                document.querySelector('input[name="quantity"]').focus();
+                renderSnInputs();
+            }
+
         } else {
             // --- PRODUK BARU ---
+            h_scanned_sn.value = '';
             statusEl.innerHTML = '<span class="text-orange-600 font-bold"><i class="fas fa-plus-circle"></i> Produk Baru. Silakan lengkapi data.</span>';
             
             infoBanner.className = "flex items-center gap-2 mb-3 bg-orange-100 text-orange-800 p-2 rounded border border-orange-200";
@@ -529,10 +550,6 @@ async function checkSku() {
             inpUnit.removeAttribute('readonly');
             inpUnit.classList.remove('bg-gray-100', 'cursor-not-allowed');
 
-            // Default Checkbox: Unchecked but Enabled
-            chkHasSn.checked = false;
-            chkHasSn.disabled = false;
-
             document.getElementById('new_name').focus();
             renderSnInputs();
             
@@ -549,27 +566,31 @@ async function checkSku() {
 
 function renderSnInputs() {
     const qty = parseInt(document.getElementById('quantity_input').value) || 0;
-    const hasSn = document.getElementById('chk_has_sn').checked; // Read visible checkbox
     const container = document.getElementById('sn_container');
     const inputsDiv = document.getElementById('sn_inputs');
+    const scannedSn = document.getElementById('h_scanned_sn').value; // Ambil nilai SN jika ada
     
-    if (hasSn && qty > 0) {
+    // SELALU TAMPILKAN JIKA QTY > 0 (WAJIB SN)
+    if (qty > 0) {
         container.classList.remove('hidden');
         
         // Cek jika jumlah input sudah sesuai, jangan render ulang agar value tidak hilang
+        // KECUALI jika kita punya scannedSn (Auto-fill case)
         const currentInputs = inputsDiv.getElementsByTagName('input');
-        if (currentInputs.length === qty) return;
+        if (currentInputs.length === qty && !scannedSn) return;
 
-        // Render ulang (Simple logic: clear and redraw)
-        // Improvement: Bisa preserve value jika qty bertambah
+        // Reset dan Render
         inputsDiv.innerHTML = '';
         
         for (let i = 1; i <= qty; i++) {
+            // Jika scannedSn ada dan ini input pertama, isi otomatis
+            let val = (i === 1 && scannedSn) ? scannedSn : '';
+            
             const div = document.createElement('div');
             div.innerHTML = `
                 <div class="relative">
                     <span class="absolute left-2 top-2 text-xs font-bold text-gray-400">#${i}</span>
-                    <input type="text" name="sn_list[]" class="w-full border p-2 pl-8 rounded text-sm font-mono uppercase focus:ring-1 focus:ring-purple-500" placeholder="Scan SN" required>
+                    <input type="text" name="sn_list[]" value="${val}" class="w-full border p-2 pl-8 rounded text-sm font-mono uppercase focus:ring-1 focus:ring-purple-500 sn-input-field" placeholder="Scan SN" required>
                 </div>
             `;
             inputsDiv.appendChild(div);
@@ -643,12 +664,164 @@ async function generateReference() {
     } finally { btn.disabled = false; }
 }
 
-// Scanner Functions
+// ==========================================
+// SCANNER FUNCTIONS (MAIN & SN)
+// ==========================================
+
+// 1. MAIN SCANNER (PRODUK)
 function handleFileScan(input) { if (input.files.length === 0) return; const file = input.files[0]; initAudio(); const skuInput = document.getElementById('sku_input'); const p = skuInput.placeholder; skuInput.value = ""; skuInput.placeholder = "Processing..."; const h = new Html5Qrcode("reader"); h.scanFile(file, true).then(d => { playBeep(); skuInput.value = d; skuInput.placeholder = p; checkSku(); input.value = ''; }).catch(e => { alert("Gagal."); skuInput.placeholder = p; input.value = ''; }); }
-async function initCamera() { initAudio(); document.getElementById('scanner_area').classList.remove('hidden'); try { await navigator.mediaDevices.getUserMedia({ video: true }); const d = await Html5Qrcode.getCameras(); const s = document.getElementById('camera_select'); s.innerHTML = ""; if (d && d.length) { let id = d[0].id; d.forEach(dev => { if(dev.label.toLowerCase().includes('back')) id = dev.id; const o = document.createElement("option"); o.value = dev.id; o.text = dev.label; s.appendChild(o); }); s.value = id; startScan(id); s.onchange = () => { if(html5QrCode) html5QrCode.stop().then(() => startScan(s.value)); }; } else { alert("Kamera tidak ditemukan."); } } catch (e) { alert("Gagal akses kamera."); document.getElementById('scanner_area').classList.add('hidden'); } }
-function startScan(id) { if(html5QrCode) try { html5QrCode.stop(); } catch(e) {} html5QrCode = new Html5Qrcode("reader"); const config = { fps: 10, qrbox: { width: 250, height: 250 } }; html5QrCode.start(id, config, (d) => { playBeep(); document.getElementById('sku_input').value = d; checkSku(); stopScan(); }, () => {}).then(() => { const t = html5QrCode.getRunningTrackCameraCapabilities(); if (t && t.torchFeature().isSupported()) document.getElementById('btn_flash').classList.remove('hidden'); }); }
+async function initCamera() { 
+    initAudio(); 
+    // Stop SN Camera if active
+    if(snQrCode) try { await snQrCode.stop(); document.getElementById('sn_scanner_area').classList.add('hidden'); } catch(e){}
+    
+    document.getElementById('scanner_area').classList.remove('hidden'); 
+    try { 
+        await navigator.mediaDevices.getUserMedia({ video: true }); 
+        const d = await Html5Qrcode.getCameras(); 
+        const s = document.getElementById('camera_select'); s.innerHTML = ""; 
+        if (d && d.length) { 
+            let id = d[0].id; 
+            d.forEach(dev => { 
+                if(dev.label.toLowerCase().includes('back')) id = dev.id; 
+                const o = document.createElement("option"); o.value = dev.id; o.text = dev.label; s.appendChild(o); 
+            }); 
+            s.value = id; startScan(id); 
+            s.onchange = () => { if(html5QrCode) html5QrCode.stop().then(() => startScan(s.value)); }; 
+        } else { alert("Kamera tidak ditemukan."); } 
+    } catch (e) { alert("Gagal akses kamera."); document.getElementById('scanner_area').classList.add('hidden'); } 
+}
+function startScan(id) { 
+    if(html5QrCode) try { html5QrCode.stop(); } catch(e) {} 
+    html5QrCode = new Html5Qrcode("reader"); 
+    const config = { fps: 10, qrbox: { width: 250, height: 250 } }; 
+    html5QrCode.start(id, config, (d) => { 
+        playBeep(); document.getElementById('sku_input').value = d; checkSku(); stopScan(); 
+    }, () => {}).then(() => { 
+        const t = html5QrCode.getRunningTrackCameraCapabilities(); 
+        if (t && t.torchFeature().isSupported()) document.getElementById('btn_flash').classList.remove('hidden'); 
+    }); 
+}
 function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }); }
 function toggleFlash() { if(html5QrCode) { isFlashOn = !isFlashOn; html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] }); } }
+
+// 2. SN SCANNER FUNCTIONS (NEW)
+function focusNextEmptySn() {
+    const inputs = document.querySelectorAll('.sn-input-field');
+    for (let input of inputs) {
+        if (!input.value) {
+            input.focus();
+            input.classList.add('ring-4', 'ring-purple-400');
+            setTimeout(() => input.classList.remove('ring-4', 'ring-purple-400'), 1000);
+            return;
+        }
+    }
+    alert("Semua kolom SN sudah terisi.");
+}
+
+function handleSnFileScan(inputElement) {
+    if (!inputElement.files.length) return;
+    const file = inputElement.files[0];
+    initAudio();
+    
+    const h = new Html5Qrcode("sn_reader"); // Use temp instance or reuse div
+    
+    h.scanFile(file, true).then(decodedText => {
+        playBeep();
+        processSnInput(decodedText);
+        inputElement.value = '';
+    }).catch(err => {
+        alert("Gagal membaca barcode dari gambar.");
+        inputElement.value = '';
+    });
+}
+
+async function initSnCamera() {
+    initAudio();
+    // Stop Main Camera if active
+    if(html5QrCode) try { await html5QrCode.stop(); document.getElementById('scanner_area').classList.add('hidden'); } catch(e){}
+
+    const area = document.getElementById('sn_scanner_area');
+    area.classList.remove('hidden');
+    
+    try {
+        await navigator.mediaDevices.getUserMedia({ video: true });
+        const devices = await Html5Qrcode.getCameras();
+        if (devices && devices.length) {
+            let cameraId = devices[0].id;
+            // Prefer back camera
+            for(let dev of devices) {
+                if(dev.label.toLowerCase().includes('back')) cameraId = dev.id;
+            }
+            startSnScan(cameraId);
+        } else {
+            alert("Kamera tidak ditemukan.");
+            area.classList.add('hidden');
+        }
+    } catch(e) {
+        alert("Error kamera: " + e);
+        area.classList.add('hidden');
+    }
+}
+
+function startSnScan(cameraId) {
+    if(snQrCode) try { snQrCode.stop(); } catch(e){}
+    snQrCode = new Html5Qrcode("sn_reader");
+    
+    snQrCode.start(
+        cameraId, 
+        { fps: 10, qrbox: { width: 200, height: 200 } },
+        (decodedText, decodedResult) => {
+            playBeep();
+            processSnInput(decodedText);
+            // Don't stop automatically to allow continuous scanning
+        },
+        (errorMessage) => { /* ignore */ }
+    );
+}
+
+function stopSnCamera() {
+    if(snQrCode) {
+        snQrCode.stop().then(() => {
+            document.getElementById('sn_scanner_area').classList.add('hidden');
+            snQrCode.clear();
+        }).catch(err => {
+            document.getElementById('sn_scanner_area').classList.add('hidden');
+        });
+    } else {
+        document.getElementById('sn_scanner_area').classList.add('hidden');
+    }
+}
+
+function processSnInput(text) {
+    const inputs = document.querySelectorAll('.sn-input-field');
+    let filled = false;
+    
+    // Check duplicates first
+    for(let inp of inputs) {
+        if(inp.value === text) {
+            alert("Serial Number " + text + " sudah diinput!");
+            return;
+        }
+    }
+    
+    // Fill first empty
+    for(let inp of inputs) {
+        if(!inp.value) {
+            inp.value = text;
+            // Visual feedback
+            inp.classList.add('bg-green-100');
+            setTimeout(() => inp.classList.remove('bg-green-100'), 500);
+            filled = true;
+            break;
+        }
+    }
+    
+    if(!filled) {
+        alert("Semua kolom SN sudah terisi!");
+        stopSnCamera();
+    }
+}
 
 document.addEventListener('DOMContentLoaded', generateReference);
 </script>

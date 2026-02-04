@@ -18,7 +18,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cancel_id'])) {
             $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?")
                 ->execute([$trx['quantity'], $trx['product_id']]);
 
-            // 3. Kembalikan Status SN menjadi AVAILABLE (Jika ada)
+            // 3. Kembalikan Status SN menjadi AVAILABLE
             $pdo->prepare("UPDATE product_serials SET status = 'AVAILABLE', out_transaction_id = NULL WHERE out_transaction_id = ?")->execute([$cancel_id]);
 
             // 4. Hapus Transaksi Inventori
@@ -48,8 +48,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
     $cart = json_decode($cart_json, true);
     
     $date = $_POST['date'];
-    $wh_id = $_POST['warehouse_id']; // Gudang Asal
-    $dest_wh_id = !empty($_POST['dest_warehouse_id']) ? $_POST['dest_warehouse_id'] : null; // Gudang Tujuan (Opsional)
+    $wh_id = $_POST['warehouse_id']; 
+    $dest_wh_id = !empty($_POST['dest_warehouse_id']) ? $_POST['dest_warehouse_id'] : null; 
     
     $ref = $_POST['reference'];
     $out_type = $_POST['out_type']; // INTERNAL / EXTERNAL
@@ -95,11 +95,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                 
                 if (!$prod) throw new Exception("Produk dengan SKU {$item['sku']} tidak ditemukan.");
                 
-                // 2. Validate SN if product has SN
-                if ($prod['has_serial_number'] == 1) {
-                    if (empty($item['sns']) || count($item['sns']) != $item['qty']) {
-                        throw new Exception("Produk {$prod['name']} wajib Serial Number sesuai Qty.");
-                    }
+                // 2. Validate SN (ALWAYS MANDATORY)
+                if (empty($item['sns']) || count($item['sns']) != $item['qty']) {
+                    throw new Exception("Produk {$prod['name']} wajib Serial Number sesuai Qty.");
                 }
 
                 if ($prod['stock'] < $item['qty']) {
@@ -113,7 +111,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                 $notes_out = $item['notes'];
                 if($dest_wh_id) $notes_out .= " (Mutasi ke $dest_wh_name)";
                 
-                // Add SNs to notes if available for simple tracking
                 if(!empty($item['sns'])) {
                     $notes_out .= " [SN: " . implode(', ', $item['sns']) . "]";
                 }
@@ -122,8 +119,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                     ->execute([$date, $prod['id'], $wh_id, $item['qty'], $ref, $notes_out, $_SESSION['user_id']]);
                 $trx_out_id = $pdo->lastInsertId();
 
-                // 5. UPDATE SN STATUS (IF SN)
-                if ($prod['has_serial_number'] == 1 && !empty($item['sns'])) {
+                // 5. UPDATE SN STATUS (ALWAYS)
+                if (!empty($item['sns'])) {
                     $snStmt = $pdo->prepare("UPDATE product_serials SET status = 'SOLD', out_transaction_id = ? WHERE product_id = ? AND serial_number = ? AND status = 'AVAILABLE'");
                     foreach ($item['sns'] as $sn) {
                         $snStmt->execute([$trx_out_id, $prod['id'], $sn]);
@@ -152,8 +149,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                     $trx_in_id = $pdo->lastInsertId();
 
                     // C. Update Location SN (Set AVAILABLE again but in new warehouse)
-                    // Note: Previous logic set it to SOLD. We need to set it back to AVAILABLE with new WH ID if transfer.
-                    if ($prod['has_serial_number'] == 1 && !empty($item['sns'])) {
+                    if (!empty($item['sns'])) {
                         $snUpdate = $pdo->prepare("UPDATE product_serials SET status = 'AVAILABLE', warehouse_id = ?, in_transaction_id = ? WHERE product_id = ? AND serial_number = ?");
                         foreach ($item['sns'] as $sn) {
                             $snUpdate->execute([$dest_wh_id, $trx_in_id, $prod['id'], $sn]);
@@ -162,7 +158,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
 
                     // D. Catat Transaksi Keuangan (Opsional: Nilai Transfer antar Wilayah)
                     if ($total_buy_val > 0) {
-                        // 1. Pengeluaran Wilayah Asal (Account 2009)
                         $acc_out_id = $pdo->query("SELECT id FROM accounts WHERE code = '2009'")->fetchColumn();
                         if ($acc_out_id) {
                             $desc_trf_out = "Mutasi Keluar: {$prod['name']} ke $dest_wh_name{$wilayah_tag_origin}";
@@ -170,7 +165,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                                 ->execute([$date, $acc_out_id, $total_buy_val, $desc_trf_out, $_SESSION['user_id']]);
                         }
 
-                        // 2. Pemasukan Wilayah Tujuan (Account 1004)
                         $acc_in_id = $pdo->query("SELECT id FROM accounts WHERE code = '1004'")->fetchColumn();
                         if ($acc_in_id) {
                             $desc_trf_in = "Mutasi Masuk: {$prod['name']} dari $wh_name{$wilayah_tag_dest}";
@@ -182,9 +176,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
 
                 // 7. LOGIKA PENJUALAN (EXTERNAL)
                 elseif ($out_type === 'EXTERNAL') {
-                    // A. Transaksi Keuntungan/Omzet (INCOME - Harga Jual)
                     if ($total_sell_val > 0) {
-                        $acc_rev_id = $pdo->query("SELECT id FROM accounts WHERE code = '1001'")->fetchColumn(); // Penjualan Produk
+                        $acc_rev_id = $pdo->query("SELECT id FROM accounts WHERE code = '1001'")->fetchColumn();
                         if ($acc_rev_id) {
                             $desc_rev = "[PENJUALAN] {$prod['name']} ({$item['qty']} unit). Ref: $ref{$wilayah_tag_origin}";
                             $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, 'INCOME', ?, ?, ?, ?)")
@@ -350,14 +343,13 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                     </div>
                 </div>
                 
-                <!-- SN INPUT AREA -->
+                <!-- SN INPUT AREA (ALWAYS VISIBLE if Qty > 0) -->
                 <div id="sn_out_container" class="hidden mt-4 bg-purple-100 p-3 rounded border border-purple-200">
                     <h5 class="text-xs font-bold text-purple-800 mb-2">Scan Serial Number (Wajib)</h5>
                     <div id="sn_out_inputs" class="grid grid-cols-2 md:grid-cols-4 gap-2"></div>
                 </div>
 
                 <input type="hidden" id="h_name"><input type="hidden" id="h_stock">
-                <input type="hidden" id="h_has_sn" value="0">
                 <input type="hidden" id="h_scanned_sn" value=""> <!-- Stores SN if scanned directly -->
             </div>
 
@@ -461,7 +453,6 @@ async function checkSku() {
     const stat = document.getElementById('sku_status'); 
     const n = document.getElementById('h_name'); 
     const st = document.getElementById('h_stock'); 
-    const h_has_sn = document.getElementById('h_has_sn');
     const h_scanned_sn = document.getElementById('h_scanned_sn');
     
     stat.innerHTML = 'Searching...'; 
@@ -473,14 +464,13 @@ async function checkSku() {
             stat.innerHTML = `<span class="text-green-600">Found: ${d.name} (${d.stock})</span>`; 
             n.value = d.name; 
             st.value = d.stock; 
-            h_has_sn.value = d.has_serial_number;
             
             // Cek apakah scan SN langsung?
             if (d.scanned_sn) {
                 h_scanned_sn.value = d.scanned_sn;
                 // Jika scan SN langsung, otomatis set qty 1 dan auto add
                 document.getElementById('qty_input').value = 1;
-                renderSnInputs(); // Ini akan trigger pengisian kolom SN #1
+                renderSnInputs(); 
             } else {
                 h_scanned_sn.value = '';
                 document.getElementById('qty_input').focus(); 
@@ -511,7 +501,6 @@ async function checkSku() {
             stat.innerHTML = '<span class="text-red-600">Not Found!</span>'; 
             n.value=''; 
             st.value=0; 
-            h_has_sn.value=0;
             h_scanned_sn.value='';
         } 
     } catch(e){ 
@@ -521,7 +510,8 @@ async function checkSku() {
 
 function renderSnInputs() {
     const qty = parseInt(document.getElementById('qty_input').value) || 0;
-    const hasSn = document.getElementById('h_has_sn').value == '1';
+    // ALWAYS TRUE FOR ALL ITEMS
+    const hasSn = true; 
     const container = document.getElementById('sn_out_container');
     const inputsDiv = document.getElementById('sn_out_inputs');
     const scannedSn = document.getElementById('h_scanned_sn').value;
@@ -552,7 +542,7 @@ function addToCart() {
     const st = parseFloat(document.getElementById('h_stock').value||0); 
     const q = parseFloat(document.getElementById('qty_input').value); 
     const nt = document.getElementById('notes_input').value; 
-    const hasSn = document.getElementById('h_has_sn').value == '1';
+    const hasSn = true; // FORCE SN
     
     if(!n) return alert("Scan item first"); 
     if(!q || q<=0) return alert("Qty invalid"); 
@@ -574,10 +564,6 @@ function addToCart() {
 
     const exist = cart.findIndex(x => x.sku === s); 
     
-    // Khusus SN, jika exist, kita append Qty dan SN listnya
-    // Tapi karena SN unik, logicnya lebih baik tambahkan row baru atau merge.
-    // Simpelnya: jika produk sama, merge qty dan array SN
-    
     if(exist > -1) { 
         if((cart[exist].qty + q) > st) return alert("Total stok kurang!"); 
         cart[exist].qty += q;
@@ -594,7 +580,6 @@ function addToCart() {
     document.getElementById('sku_input').value=''; 
     document.getElementById('h_name').value=''; 
     document.getElementById('h_stock').value=''; 
-    document.getElementById('h_has_sn').value='0';
     document.getElementById('h_scanned_sn').value='';
     document.getElementById('qty_input').value=''; 
     document.getElementById('notes_input').value=''; 

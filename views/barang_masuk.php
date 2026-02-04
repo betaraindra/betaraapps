@@ -140,6 +140,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
 $category_accounts = $pdo->query("SELECT * FROM accounts WHERE code IN ('3003', '2005', '2105') ORDER BY code ASC")->fetchAll();
+// Ambil daftar produk untuk dropdown pencarian manual
+$products_list = $pdo->query("SELECT sku, name, stock FROM products ORDER BY name ASC")->fetchAll();
 
 $recent_trx = $pdo->query("
     SELECT i.*, p.name as prod_name, p.sku, w.name as wh_name 
@@ -242,6 +244,19 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 </div>
             </div>
             
+            <!-- PILIH BARANG MANUAL -->
+            <div class="mb-4 bg-blue-50 p-3 rounded border border-blue-200">
+                <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang dari Database (Manual)</label>
+                <select id="manual_product_select" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-blue-500" onchange="handleManualProductSelect(this)">
+                    <option value="">-- Pilih / Cari Nama Barang --</option>
+                    <?php foreach($products_list as $prod): ?>
+                        <option value="<?= $prod['sku'] ?>">
+                            <?= $prod['name'] ?> (Stok: <?= $prod['stock'] ?>) - SKU: <?= $prod['sku'] ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+
             <div class="mb-2">
                 <label class="block text-sm font-bold text-gray-700 mb-1">Scan Barcode (SKU Produk / Serial Number)</label>
                 <div class="flex gap-2">
@@ -444,6 +459,15 @@ function playBeep() {
 }
 
 // --- FUNGSI UTAMA ---
+function handleManualProductSelect(selectElement) {
+    const sku = selectElement.value;
+    if (sku) {
+        document.getElementById('sku_input').value = sku;
+        checkSku();
+        selectElement.value = ""; // Reset dropdown
+    }
+}
+
 function activateUSB() {
     const input = document.getElementById('sku_input');
     input.focus();

@@ -55,8 +55,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             if (!empty($_POST['edit_id'])) {
-                // UPDATE
+                // === UPDATE PRODUCT ===
                 $id = $_POST['edit_id'];
+                
+                // Ambil Data Lama (Stok)
+                $oldData = $pdo->query("SELECT stock FROM products WHERE id=$id")->fetch();
+                $old_stock = (int)$oldData['stock'];
+                $new_stock = (int)$_POST['initial_stock']; // Input dari form
+                
+                $pdo->beginTransaction();
+
+                // 1. Update Informasi Dasar (Termasuk Kategori)
                 $sql_img = "";
                 $params = [$sku, $name, $category, $unit, $buy_price, $sell_price];
                 
@@ -64,18 +73,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $sql_img = ", image_url = ?";
                     $params[] = $image_path;
                     // Hapus gambar lama
-                    $old_img = $pdo->query("SELECT image_url FROM products WHERE id=$id")->fetchColumn();
-                    if ($old_img && file_exists($old_img)) unlink($old_img);
+                    $old_img_path = $pdo->query("SELECT image_url FROM products WHERE id=$id")->fetchColumn();
+                    if ($old_img_path && file_exists($old_img_path)) unlink($old_img_path);
                 }
                 
-                $params[] = $id; // ID
+                $params[] = $id; // ID untuk WHERE
                 
                 $stmt = $pdo->prepare("UPDATE products SET sku=?, name=?, category=?, unit=?, buy_price=?, sell_price=? $sql_img WHERE id=?");
                 $stmt->execute($params);
+
+                // 2. Handle Perubahan Stok
+                if ($new_stock != $old_stock) {
+                    if ($new_stock < $old_stock) {
+                        throw new Exception("Pengurangan stok tidak diizinkan melalui menu Edit. Gunakan menu Barang Keluar agar pencatatan SN akurat.");
+                    }
+                    
+                    // Jika Stok Bertambah (Adjustment IN)
+                    $delta = $new_stock - $old_stock;
+                    $wh_id = $_POST['warehouse_id'] ?? null;
+                    $sn_string = $_POST['sn_list_text'] ?? '';
+
+                    if (empty($wh_id)) {
+                        throw new Exception("Gudang Penempatan wajib dipilih karena ada penambahan stok ($delta unit).");
+                    }
+
+                    // Buat Transaksi IN
+                    $ref = "ADJ/" . date('ymd') . "/" . rand(100,999);
+                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'IN', ?, ?, ?, ?, 'Adjustment via Edit Produk', ?)")
+                        ->execute([$id, $wh_id, $delta, $ref, $_SESSION['user_id']]);
+                    $trx_id = $pdo->lastInsertId();
+
+                    // Insert SN Baru
+                    $sns = array_filter(array_map('trim', explode(',', $sn_string)));
+                    // Auto generate SN jika kurang
+                    $needed = $delta - count($sns);
+                    for($i=0; $i<$needed; $i++) {
+                        $sns[] = "SN" . time() . rand(1000,9999);
+                    }
+                    // Ambil sejumlah delta saja
+                    $sns = array_slice($sns, 0, $delta);
+
+                    $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+                    foreach($sns as $sn) {
+                        // Cek duplikat SN
+                        $existSn = $pdo->query("SELECT COUNT(*) FROM product_serials WHERE product_id=$id AND serial_number='$sn'")->fetchColumn();
+                        if ($existSn > 0) throw new Exception("SN $sn sudah ada di sistem.");
+                        
+                        $stmtSn->execute([$id, $sn, $wh_id, $trx_id]);
+                    }
+
+                    // Update Total Stok di Tabel Products
+                    $pdo->prepare("UPDATE products SET stock = ? WHERE id = ?")->execute([$new_stock, $id]);
+                }
+
+                $pdo->commit();
                 $_SESSION['flash'] = ['type'=>'success', 'message'=>'Data barang diperbarui.'];
 
             } else {
-                // INSERT NEW
+                // === INSERT NEW PRODUCT ===
                 // Cek SKU
                 $check = $pdo->prepare("SELECT id FROM products WHERE sku=?");
                 $check->execute([$sku]);
@@ -240,6 +295,7 @@ $start_date = $_GET['start'] ?? date('Y-01-01');
 $end_date = $_GET['end'] ?? date('Y-12-31'); // Future date default
 $search = $_GET['q'] ?? '';
 $cat_filter = $_GET['category'] ?? 'ALL';
+$wh_filter = $_GET['warehouse'] ?? 'ALL'; // Filter Gudang Baru
 $sort_by = $_GET['sort'] ?? 'newest';
 
 // Master Data for Filter (Distinct existing categories)
@@ -257,6 +313,13 @@ $params = ["%$search%", "%$search%"];
 if ($cat_filter !== 'ALL') {
     $sql .= " AND p.category = ?";
     $params[] = $cat_filter;
+}
+
+// LOGIK FILTER GUDANG
+if ($wh_filter !== 'ALL') {
+    // Tampilkan produk yang pernah memiliki transaksi di gudang tersebut
+    $sql .= " AND EXISTS (SELECT 1 FROM inventory_transactions it WHERE it.product_id = p.id AND it.warehouse_id = ?)";
+    $params[] = $wh_filter;
 }
 
 if ($sort_by === 'name_asc') $sql .= " ORDER BY p.name ASC";
@@ -355,7 +418,7 @@ if (isset($_GET['edit_id'])) {
 
 <!-- FILTER BAR -->
 <div class="bg-white p-4 rounded-lg shadow mb-6 border-l-4 border-indigo-600 no-print">
-    <form method="GET" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+    <form method="GET" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 items-end">
         <input type="hidden" name="page" value="data_barang">
         <div class="lg:col-span-1">
             <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang</label>
@@ -372,6 +435,20 @@ if (isset($_GET['edit_id'])) {
                 <?php endforeach; ?>
             </select>
         </div>
+        
+        <!-- NEW WAREHOUSE FILTER -->
+        <div>
+            <label class="block text-xs font-bold text-gray-600 mb-1">Wilayah / Gudang</label>
+            <select name="warehouse" class="w-full border p-2 rounded text-sm bg-white font-medium text-blue-800">
+                <option value="ALL">-- Semua --</option>
+                <?php foreach($warehouses as $w): ?>
+                    <option value="<?= $w['id'] ?>" <?= $wh_filter == $w['id'] ? 'selected' : '' ?>>
+                        <?= $w['name'] ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+
         <div>
             <label class="block text-xs font-bold text-gray-600 mb-1">Urutkan (Sort)</label>
             <select name="sort" class="w-full border p-2 rounded text-sm bg-white">
@@ -380,11 +457,11 @@ if (isset($_GET['edit_id'])) {
                 <option value="stock_high" <?= $sort_by=='stock_high'?'selected':'' ?>>Stok Terbanyak</option>
             </select>
         </div>
-        <div>
+        <div class="lg:col-span-1">
             <label class="block text-xs font-bold text-gray-600 mb-1">Update Terakhir</label>
             <div class="flex gap-1">
                 <input type="date" name="start" value="<?= $start_date ?>" class="border p-2 rounded text-xs w-full">
-                <input type="date" name="end" value="<?= $end_date ?>" class="border p-2 rounded text-xs w-full">
+                <!-- <input type="date" name="end" value="<?= $end_date ?>" class="border p-2 rounded text-xs w-full"> -->
             </div>
         </div>
         <div>
@@ -435,6 +512,7 @@ if (isset($_GET['edit_id'])) {
                 <input type="hidden" name="save_product" value="1">
                 <?php if($edit_item): ?>
                     <input type="hidden" name="edit_id" value="<?= $edit_item['id'] ?>">
+                    <input type="hidden" id="edit_mode_flag" value="1">
                 <?php endif; ?>
 
                 <div class="mb-3">
@@ -464,17 +542,14 @@ if (isset($_GET['edit_id'])) {
                 <div class="grid grid-cols-2 gap-2 mb-3">
                     <div>
                         <label class="block text-xs font-bold text-gray-700 mb-1">Kategori (Akun)</label>
-                        <?php if($edit_item): ?>
-                            <!-- Saat Edit, Text Input biasa atau Readonly jika mau -->
-                            <input type="text" name="category" value="<?= $edit_item['category'] ?>" class="w-full border p-2 rounded text-sm bg-gray-100" readonly title="Tidak bisa ubah kategori saat edit">
-                        <?php else: ?>
-                            <!-- Saat Baru, Dropdown Akun -->
-                            <select name="category" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-blue-500">
-                                <?php foreach($category_accounts as $acc): ?>
-                                    <option value="<?= $acc['code'] ?>"><?= $acc['code'] ?> - <?= $acc['name'] ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        <?php endif; ?>
+                        <!-- Kategori Dropdown selalu aktif -->
+                        <select name="category" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-blue-500">
+                            <?php foreach($category_accounts as $acc): ?>
+                                <option value="<?= $acc['code'] ?>" <?= ($edit_item && $edit_item['category'] == $acc['code']) ? 'selected' : '' ?>>
+                                    <?= $acc['code'] ?> - <?= $acc['name'] ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
                     </div>
                     <div>
                         <label class="block text-xs font-bold text-gray-700 mb-1">Satuan</label>
@@ -483,9 +558,14 @@ if (isset($_GET['edit_id'])) {
                 </div>
 
                 <div class="mb-3 bg-gray-50 p-3 rounded border border-gray-200">
-                    <label class="block text-xs font-bold text-gray-700 mb-1">Stok Awal (Khusus Baru)</label>
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Stok <?= $edit_item ? ' (Edit = Tambah Stok)' : ' Awal' ?></label>
                     <div class="grid grid-cols-2 gap-2">
-                        <input type="number" name="initial_stock" id="init_qty" value="<?= $edit_item['stock']??0 ?>" class="w-full border p-2 rounded text-sm text-center font-bold" <?= $edit_item ? 'disabled bg-gray-200' : '' ?> onkeyup="toggleSnInput()">
+                        <!-- Stok bisa diedit sekarang -->
+                        <input type="number" name="initial_stock" id="init_qty" 
+                               value="<?= $edit_item['stock']??0 ?>" 
+                               data-original="<?= $edit_item['stock']??0 ?>"
+                               class="w-full border p-2 rounded text-sm text-center font-bold" 
+                               onkeyup="toggleSnInput()" onchange="toggleSnInput()">
                         
                         <select name="warehouse_id" id="init_wh" class="w-full border p-2 rounded text-sm text-gray-700" <?= $edit_item ? 'disabled' : '' ?>>
                             <option value="">-- Lokasi --</option>
@@ -495,13 +575,13 @@ if (isset($_GET['edit_id'])) {
                         </select>
                     </div>
                     <?php if($edit_item): ?>
-                        <p class="text-[9px] text-red-500 mt-1">*Stok hanya bisa diedit via Transaksi Masuk/Keluar</p>
+                        <p class="text-[9px] text-blue-600 mt-1" id="stock_hint">Ubah angka untuk menambah stok.</p>
                     <?php endif; ?>
                 </div>
 
                 <div id="sn_area" class="mb-3 <?= $edit_item ? 'hidden' : '' ?>">
                     <label class="block text-xs font-bold text-purple-700 mb-1">Serial Number (Pisahkan Koma)</label>
-                    <textarea name="sn_list_text" class="w-full border p-2 rounded text-xs font-mono uppercase h-20 bg-purple-50" placeholder="SN1, SN2, SN3..."></textarea>
+                    <textarea name="sn_list_text" id="sn_list_input" class="w-full border p-2 rounded text-xs font-mono uppercase h-20 bg-purple-50" placeholder="SN1, SN2, SN3..."></textarea>
                 </div>
 
                 <div class="mb-4">
@@ -742,20 +822,53 @@ function formatRupiah(input) {
 }
 
 function toggleSnInput() {
-    const qty = document.getElementById('init_qty').value;
+    const qtyInput = document.getElementById('init_qty');
+    const newQty = parseInt(qtyInput.value) || 0;
     const snArea = document.getElementById('sn_area');
-    // Enable/Disable Warehouse selection based on qty
+    const snText = document.getElementById('sn_list_input');
     const whSelect = document.getElementById('init_wh');
+    const stockHint = document.getElementById('stock_hint');
+    const editMode = document.getElementById('edit_mode_flag') ? true : false;
     
-    if(qty > 0) {
-        snArea.classList.remove('hidden');
-        if(whSelect) whSelect.removeAttribute('disabled');
+    let showSn = false;
+
+    if (editMode) {
+        // Mode Edit: Cek Selisih Stok
+        const originalStock = parseInt(qtyInput.getAttribute('data-original')) || 0;
+        const delta = newQty - originalStock;
+        
+        if (delta > 0) {
+            showSn = true;
+            snText.placeholder = `Masukkan ${delta} SN baru...`;
+            stockHint.innerText = `Menambah ${delta} stok. Wajib input SN & Pilih Gudang.`;
+            stockHint.classList.remove('text-blue-600', 'text-red-500');
+            stockHint.classList.add('text-green-600', 'font-bold');
+            whSelect.removeAttribute('disabled');
+        } else if (delta < 0) {
+            stockHint.innerText = "PERINGATAN: Pengurangan stok tidak bisa dilakukan di sini. Gunakan Barang Keluar.";
+            stockHint.classList.add('text-red-500', 'font-bold');
+            whSelect.setAttribute('disabled', 'disabled');
+        } else {
+            stockHint.innerText = "Ubah angka untuk menambah stok.";
+            stockHint.classList.remove('text-red-500', 'font-bold', 'text-green-600');
+            stockHint.classList.add('text-blue-600');
+            whSelect.setAttribute('disabled', 'disabled');
+        }
     } else {
-        snArea.classList.add('hidden');
-        if(whSelect) {
+        // Mode Baru
+        if (newQty > 0) {
+            showSn = true;
+            whSelect.removeAttribute('disabled');
+        } else {
             whSelect.setAttribute('disabled', 'disabled');
             whSelect.value = "";
         }
+    }
+
+    if (showSn) {
+        snArea.classList.remove('hidden');
+    } else {
+        snArea.classList.add('hidden');
     }
 }
 

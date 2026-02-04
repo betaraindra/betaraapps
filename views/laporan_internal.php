@@ -227,6 +227,7 @@ if ($view_type == 'CUSTOM') {
     $c_wh = $_GET['warehouse_id'] ?? 'ALL';
     $c_min = cleanNumber($_GET['min_amount'] ?? '');
     $c_max = cleanNumber($_GET['max_amount'] ?? '');
+    $c_source = $_GET['trx_source'] ?? 'ALL'; // NEW: Filter Sumber Aktivitas
     
     // Barang Filter
     $c_sku = trim($_GET['sku'] ?? '');
@@ -262,13 +263,22 @@ if ($view_type == 'CUSTOM') {
         }
     }
 
-    // 3. Filter SKU (Cari di Description karena pattern: "SKU - REF")
+    // 3. Filter Sumber Data (Aktivitas vs Manual)
+    if ($c_source === 'ACTIVITY') {
+        // Cari yang mengandung tag aktivitas otomatis
+        $sql .= " AND (f.description LIKE '%[PEMAKAIAN]%' OR f.description LIKE '%[PENGEMBALIAN]%')";
+    } elseif ($c_source === 'MANUAL') {
+        // Cari yang TIDAK mengandung tag aktivitas otomatis
+        $sql .= " AND f.description NOT LIKE '%[PEMAKAIAN]%' AND f.description NOT LIKE '%[PENGEMBALIAN]%'";
+    }
+
+    // 4. Filter SKU (Cari di Description karena pattern: "SKU - REF")
     if (!empty($c_sku)) {
         $sql .= " AND f.description LIKE ?";
         $params[] = "%$c_sku%";
     }
 
-    // 4. Filter Serial Number (Complex: SN -> Inventory Ref -> Finance Desc)
+    // 5. Filter Serial Number (Complex: SN -> Inventory Ref -> Finance Desc)
     // Mencari Transaksi Keuangan yang referensinya sama dengan transaksi SN tersebut
     if (!empty($c_sn)) {
         // Cari Reference dari SN di tabel Inventory/Serials
@@ -374,6 +384,14 @@ if ($view_type == 'CUSTOM') {
                 <div class="md:col-span-1 border-r border-gray-200 pr-4">
                     <h5 class="text-xs font-bold text-gray-500 uppercase mb-2 border-b pb-1">Filter Keuangan</h5>
                     <div class="space-y-2">
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 mb-1">Sumber Data</label>
+                            <select name="trx_source" class="border p-2 rounded text-sm w-full bg-white font-bold text-blue-700">
+                                <option value="ALL">Semua</option>
+                                <option value="ACTIVITY" <?= ($_GET['trx_source']??'')=='ACTIVITY'?'selected':'' ?>>Input Aktivitas (Pemakaian/Retur)</option>
+                                <option value="MANUAL" <?= ($_GET['trx_source']??'')=='MANUAL'?'selected':'' ?>>Input Manual / Umum</option>
+                            </select>
+                        </div>
                         <div class="flex gap-2">
                             <div class="w-1/2">
                                 <label class="block text-xs font-bold text-gray-600 mb-1">Akun</label>

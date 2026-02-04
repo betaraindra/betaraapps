@@ -96,8 +96,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                 if (!$prod) throw new Exception("Produk dengan SKU {$item['sku']} tidak ditemukan.");
                 
                 // 2. Validate SN (ALWAYS MANDATORY)
-                if (empty($item['sns']) || count($item['sns']) != $item['qty']) {
-                    throw new Exception("Produk {$prod['name']} wajib Serial Number sesuai Qty.");
+                // Karena logic baru 1 item = 1 row = 1 SN, maka array sns pasti isi 1
+                if (empty($item['sns']) || count($item['sns']) === 0) {
+                    throw new Exception("Produk {$prod['name']} wajib memiliki Serial Number.");
                 }
 
                 if ($prod['stock'] < $item['qty']) {
@@ -318,7 +319,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 <h4 class="font-bold text-blue-800 mb-3 text-sm border-b border-blue-200 pb-1">Input Barang</h4>
                 <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
                     <div class="md:col-span-4">
-                        <label class="block text-xs font-bold text-gray-600 mb-1">SKU / SN Barcode</label>
+                        <label class="block text-xs font-bold text-gray-600 mb-1">SKU Barcode / SN</label>
                         <div class="flex gap-1">
                             <input type="text" id="sku_input" class="w-full border-2 border-blue-500 p-2 rounded font-mono font-bold text-lg uppercase" placeholder="SCAN..." onchange="checkSku()" onkeydown="if(event.key === 'Enter'){ checkSku(); event.preventDefault(); }">
                             <button type="button" onclick="checkSku()" class="bg-blue-600 text-white px-3 rounded hover:bg-blue-700"><i class="fas fa-search"></i></button>
@@ -328,29 +329,29 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                     
                     <div class="md:col-span-2">
                         <label class="block text-xs font-bold text-gray-600 mb-1">Qty</label>
-                        <input type="number" id="qty_input" class="w-full border p-2 rounded font-bold text-center" placeholder="0" onchange="renderSnInputs()" onkeydown="if(event.key === 'Enter'){ addToCart(); event.preventDefault(); }">
+                        <!-- Qty Readonly 1 karena 1 SN = 1 Stock -->
+                        <input type="number" id="qty_input" class="w-full border p-2 rounded font-bold text-center bg-gray-100 cursor-not-allowed" value="1" readonly title="1 SN = 1 Stok">
                     </div>
 
-                    <div class="md:col-span-4">
-                        <label class="block text-xs font-bold text-gray-600 mb-1">Catatan</label>
-                        <input type="text" id="notes_input" class="w-full border p-2 rounded" placeholder="Keterangan..." onkeydown="if(event.key === 'Enter'){ addToCart(); event.preventDefault(); }">
+                    <!-- SINGLE SN INPUT FIELD -->
+                    <div class="md:col-span-4" id="sn_single_container">
+                        <label class="block text-xs font-bold text-purple-700 mb-1">Serial Number (SN)</label>
+                        <input type="text" id="sn_single_input" class="w-full border-2 border-purple-400 p-2 rounded font-mono font-bold uppercase" placeholder="Scan/Ketik SN" onkeydown="if(event.key === 'Enter'){ addToCart(); event.preventDefault(); }">
                     </div>
 
                     <div class="md:col-span-2">
+                        <label class="block text-xs font-bold text-gray-600 mb-1">Catatan</label>
+                        <input type="text" id="notes_input" class="w-full border p-2 rounded" placeholder="Opsional..." onkeydown="if(event.key === 'Enter'){ addToCart(); event.preventDefault(); }">
+                    </div>
+
+                    <div class="md:col-span-12 mt-2">
                         <button type="button" onclick="addToCart()" class="w-full bg-orange-500 text-white py-2 rounded font-bold hover:bg-orange-600 shadow flex justify-center items-center gap-2">
-                            <i class="fas fa-plus"></i> Tambah
+                            <i class="fas fa-plus"></i> Tambah ke Keranjang
                         </button>
                     </div>
                 </div>
-                
-                <!-- SN INPUT AREA (ALWAYS VISIBLE if Qty > 0) -->
-                <div id="sn_out_container" class="hidden mt-4 bg-purple-100 p-3 rounded border border-purple-200">
-                    <h5 class="text-xs font-bold text-purple-800 mb-2">Scan Serial Number (Wajib)</h5>
-                    <div id="sn_out_inputs" class="grid grid-cols-2 md:grid-cols-4 gap-2"></div>
-                </div>
 
                 <input type="hidden" id="h_name"><input type="hidden" id="h_stock">
-                <input type="hidden" id="h_scanned_sn" value=""> <!-- Stores SN if scanned directly -->
             </div>
 
             <div class="mb-6">
@@ -453,7 +454,7 @@ async function checkSku() {
     const stat = document.getElementById('sku_status'); 
     const n = document.getElementById('h_name'); 
     const st = document.getElementById('h_stock'); 
-    const h_scanned_sn = document.getElementById('h_scanned_sn');
+    const snInput = document.getElementById('sn_single_input');
     
     stat.innerHTML = 'Searching...'; 
     try { 
@@ -467,13 +468,13 @@ async function checkSku() {
             
             // Cek apakah scan SN langsung?
             if (d.scanned_sn) {
-                h_scanned_sn.value = d.scanned_sn;
-                // Jika scan SN langsung, otomatis set qty 1 dan auto add
-                document.getElementById('qty_input').value = 1;
-                renderSnInputs(); 
+                // Auto Fill SN Field
+                snInput.value = d.scanned_sn;
+                // Auto Add (Since 1 SN = 1 Qty)
+                setTimeout(() => addToCart(), 200);
             } else {
-                h_scanned_sn.value = '';
-                document.getElementById('qty_input').focus(); 
+                snInput.value = '';
+                snInput.focus(); 
             }
 
             // --- AUTO SELECT GUDANG ASAL ---
@@ -489,90 +490,42 @@ async function checkSku() {
                     whSelect.classList.add('bg-white');
                 }, 1000);
             }
-            // -------------------------------
-            
-            // Auto add jika direct SN scan
-            if (d.scanned_sn) {
-                // Wait small delay for UI rendering then add
-                setTimeout(() => addToCart(), 200);
-            }
-
         } else { 
             stat.innerHTML = '<span class="text-red-600">Not Found!</span>'; 
             n.value=''; 
             st.value=0; 
-            h_scanned_sn.value='';
+            snInput.value='';
         } 
     } catch(e){ 
         stat.innerText = "Error API"; 
     } 
 }
 
-function renderSnInputs() {
-    const qty = parseInt(document.getElementById('qty_input').value) || 0;
-    // ALWAYS TRUE FOR ALL ITEMS
-    const hasSn = true; 
-    const container = document.getElementById('sn_out_container');
-    const inputsDiv = document.getElementById('sn_out_inputs');
-    const scannedSn = document.getElementById('h_scanned_sn').value;
-    
-    if (hasSn && qty > 0) {
-        container.classList.remove('hidden');
-        inputsDiv.innerHTML = '';
-        
-        for (let i = 1; i <= qty; i++) {
-            // Jika scan direct SN, otomatis isi input pertama
-            let val = (i === 1 && scannedSn) ? scannedSn : '';
-            
-            const div = document.createElement('div');
-            div.innerHTML = `
-                <input type="text" name="sn_out[]" value="${val}" class="w-full border p-1 rounded text-sm font-mono uppercase bg-white border-purple-400" placeholder="SN Barang" required>
-            `;
-            inputsDiv.appendChild(div);
-        }
-    } else {
-        container.classList.add('hidden');
-        inputsDiv.innerHTML = '';
-    }
-}
-
 function addToCart() { 
     const s = document.getElementById('sku_input').value.trim(); 
     const n = document.getElementById('h_name').value; 
     const st = parseFloat(document.getElementById('h_stock').value||0); 
-    const q = parseFloat(document.getElementById('qty_input').value); 
+    const q = 1; // FORCE 1 SN = 1 QTY
+    const sn = document.getElementById('sn_single_input').value.trim();
     const nt = document.getElementById('notes_input').value; 
-    const hasSn = true; // FORCE SN
     
     if(!n) return alert("Scan item first"); 
-    if(!q || q<=0) return alert("Qty invalid"); 
-    if(q>st) return alert("Stok kurang!"); 
+    if(!sn) return alert("Serial Number (SN) wajib diisi!");
+    if(q > st) return alert("Stok kurang!"); 
     
-    // SN Validation
-    let sns = [];
-    if(hasSn) {
-        const inputs = document.getElementsByName('sn_out[]');
-        if(inputs.length != q) return alert("Jumlah input SN harus sama dengan Qty");
-        
-        for(let input of inputs) {
-            const val = input.value.trim();
-            if(!val) return alert("Semua Serial Number harus diisi!");
-            if(sns.includes(val)) return alert("SN duplikat terdeteksi: " + val);
-            sns.push(val);
-        }
-    }
+    // Cek Duplikat SN di Cart
+    const exists = cart.some(item => item.sns && item.sns.includes(sn));
+    if(exists) return alert("Serial Number " + sn + " sudah ada di keranjang!");
 
-    const exist = cart.findIndex(x => x.sku === s); 
-    
-    if(exist > -1) { 
-        if((cart[exist].qty + q) > st) return alert("Total stok kurang!"); 
-        cart[exist].qty += q;
-        if(hasSn) {
-            cart[exist].sns = cart[exist].sns.concat(sns);
-        }
-    } else { 
-        cart.push({sku:s, name:n, qty:q, notes:nt, sns: sns, has_sn: hasSn}); 
-    } 
+    // Add as NEW ROW (Don't merge)
+    cart.push({
+        sku: s, 
+        name: n, 
+        qty: 1, 
+        notes: nt, 
+        sns: [sn], 
+        has_sn: true
+    }); 
     
     renderCart(); 
     
@@ -580,12 +533,9 @@ function addToCart() {
     document.getElementById('sku_input').value=''; 
     document.getElementById('h_name').value=''; 
     document.getElementById('h_stock').value=''; 
-    document.getElementById('h_scanned_sn').value='';
-    document.getElementById('qty_input').value=''; 
+    document.getElementById('sn_single_input').value='';
     document.getElementById('notes_input').value=''; 
     document.getElementById('sku_status').innerText=''; 
-    document.getElementById('sn_out_container').classList.add('hidden');
-    document.getElementById('sn_out_inputs').innerHTML = '';
     
     document.getElementById('sku_input').focus(); 
 }
@@ -601,14 +551,14 @@ function renderCart() {
         cart.forEach((i,x) => { 
             let snHtml = '-';
             if(i.has_sn && i.sns.length > 0) {
-                snHtml = i.sns.map(s => `<span class="bg-purple-100 text-purple-800 text-[10px] px-1 rounded mr-1">${s}</span>`).join(' ');
+                snHtml = `<span class="bg-purple-100 text-purple-800 text-[10px] px-1 rounded font-bold">${i.sns[0]}</span>`;
             }
             
             const r = document.createElement('tr'); 
             r.innerHTML = `
                 <td class="p-3 font-mono">${i.sku}</td>
                 <td class="p-3">${i.name}</td>
-                <td class="p-3 text-center font-bold">${i.qty}</td>
+                <td class="p-3 text-center font-bold">1</td>
                 <td class="p-3">${snHtml}</td>
                 <td class="p-3 italic">${i.notes}</td>
                 <td class="p-3 text-center"><button type="button" onclick="removeFromCart(${x})" class="text-red-500"><i class="fas fa-trash"></i></button></td>

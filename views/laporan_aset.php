@@ -40,7 +40,8 @@ if ($warehouse_filter === 'ALL') {
     }
 
     if (!empty($search_query)) {
-        $sql .= " AND (p.name LIKE ? OR p.sku LIKE ?)";
+        $sql .= " AND (p.name LIKE ? OR p.sku LIKE ? OR EXISTS (SELECT 1 FROM product_serials ps WHERE ps.product_id = p.id AND ps.serial_number LIKE ?))";
+        $params[] = "%$search_query%";
         $params[] = "%$search_query%";
         $params[] = "%$search_query%";
     }
@@ -70,7 +71,8 @@ if ($warehouse_filter === 'ALL') {
     }
 
     if (!empty($search_query)) {
-        $sql .= " AND (p.name LIKE ? OR p.sku LIKE ?)";
+        $sql .= " AND (p.name LIKE ? OR p.sku LIKE ? OR EXISTS (SELECT 1 FROM product_serials ps WHERE ps.product_id = p.id AND ps.serial_number LIKE ?))";
+        $params[] = "%$search_query%";
         $params[] = "%$search_query%";
         $params[] = "%$search_query%";
     }
@@ -183,7 +185,7 @@ foreach($products as $p) {
         
         <div class="md:col-span-1">
             <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang</label>
-            <input type="text" name="q" value="<?= htmlspecialchars($search_query) ?>" class="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500" placeholder="Nama / SKU...">
+            <input type="text" name="q" value="<?= htmlspecialchars($search_query) ?>" class="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500" placeholder="Nama / SKU / SN...">
         </div>
 
         <div>

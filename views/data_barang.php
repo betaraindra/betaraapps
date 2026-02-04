@@ -188,9 +188,105 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // 3. IMPORT (Sama seperti sebelumnya)
+    // 3. IMPORT DATA BARANG (Backend Process)
     if (isset($_POST['import_products'])) {
-        // [Kode Import dipotong untuk ringkas, diasumsikan sama dengan file asli namun disarankan update logic HPP]
+        $json_data = $_POST['import_json'];
+        $items = json_decode($json_data, true);
+        
+        if (empty($items)) {
+            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Data Excel kosong atau format salah.'];
+        } else {
+            $pdo->beginTransaction();
+            try {
+                // Ambil Default Gudang (ID terkecil/pertama) untuk stok awal
+                $def_wh = $pdo->query("SELECT id FROM warehouses ORDER BY id ASC LIMIT 1")->fetchColumn();
+                if (!$def_wh) throw new Exception("Harap buat minimal 1 Data Gudang sebelum import.");
+
+                // Ambil Akun Persediaan (3003)
+                $acc3003 = $pdo->query("SELECT id FROM accounts WHERE code='3003'")->fetchColumn();
+
+                $count_new = 0;
+                $count_update = 0;
+
+                foreach ($items as $row) {
+                    // Mapping Key Excel (Case Insensitive logic handled by ensuring Excel headers match or checking variants)
+                    // Asumsi header Excel dari Export function: 'Nama', 'SKU', 'Beli (HPP)', 'Jual', 'Stok', 'Sat', 'SN', 'Kategori'
+                    
+                    $sku = trim($row['SKU'] ?? ($row['sku'] ?? ''));
+                    $name = trim($row['Nama'] ?? ($row['nama'] ?? ''));
+                    
+                    if (empty($sku) || empty($name)) continue;
+
+                    // Clean Values
+                    $buy = isset($row['Beli (HPP)']) ? cleanNumber($row['Beli (HPP)']) : 0;
+                    $sell = isset($row['Jual']) ? cleanNumber($row['Jual']) : 0;
+                    $stock = isset($row['Stok']) ? (int)$row['Stok'] : 0;
+                    $unit = trim($row['Sat'] ?? ($row['unit'] ?? 'Pcs'));
+                    $cat = trim($row['Kategori'] ?? ($row['category'] ?? 'Umum'));
+                    
+                    // Cek Existing
+                    $stmtCheck = $pdo->prepare("SELECT id FROM products WHERE sku = ?");
+                    $stmtCheck->execute([$sku]);
+                    $exists = $stmtCheck->fetch();
+
+                    if ($exists) {
+                        // UPDATE EXISTING (Master Data Only, Stock tidak ditimpa untuk safety)
+                        $pdo->prepare("UPDATE products SET name=?, category=?, unit=?, buy_price=?, sell_price=? WHERE id=?")
+                            ->execute([$name, $cat, $unit, $buy, $sell, $exists['id']]);
+                        $count_update++;
+                    } else {
+                        // INSERT NEW
+                        $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, has_serial_number) VALUES (?, ?, ?, ?, ?, ?, ?, 1)")
+                            ->execute([$sku, $name, $cat, $unit, $buy, $sell, $stock]);
+                        $new_id = $pdo->lastInsertId();
+                        $count_new++;
+
+                        // Handle Initial Stock Log (Hanya untuk Barang Baru)
+                        if ($stock > 0) {
+                            // 1. Inventory Log
+                            $ref = "IMP/" . date('ymd') . "/" . rand(100,999);
+                            $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'IN', ?, ?, ?, ?, 'Import Excel Awal', ?)")
+                                ->execute([$new_id, $def_wh, $stock, $ref, $_SESSION['user_id']]);
+                            $trx_id = $pdo->lastInsertId();
+
+                            // 2. Serial Numbers
+                            $sns_raw = trim($row['SN'] ?? '');
+                            $sns = [];
+                            if (!empty($sns_raw)) {
+                                $sns = array_map('trim', explode(',', $sns_raw));
+                            }
+                            
+                            // Generate sisa SN jika kurang dari stok
+                            $needed = $stock - count($sns);
+                            for($i=0; $i<$needed; $i++) $sns[] = "SN" . time() . rand(1000,9999) . $i;
+                            $sns = array_slice($sns, 0, $stock); // Ensure count matches stock
+
+                            $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+                            foreach($sns as $sn) {
+                                $stmtSn->execute([$new_id, $sn, $def_wh, $trx_id]);
+                            }
+
+                            // 3. Finance Log (3003 Asset)
+                            $total_val = $stock * $buy;
+                            if ($acc3003 && $total_val > 0) {
+                                $wh_name = $pdo->query("SELECT name FROM warehouses WHERE id=$def_wh")->fetchColumn();
+                                $desc_fin = "Stok Awal Import: $name ($stock) [Wilayah: $wh_name]";
+                                $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (CURDATE(), 'EXPENSE', ?, ?, ?, ?)")
+                                    ->execute([$acc3003, $total_val, $desc_fin, $_SESSION['user_id']]);
+                            }
+                        }
+                    }
+                }
+
+                $pdo->commit();
+                $_SESSION['flash'] = ['type'=>'success', 'message'=>"Import Selesai. Data Baru: $count_new, Data Update: $count_update"];
+            } catch (Exception $e) {
+                $pdo->rollBack();
+                $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal Import: '.$e->getMessage()];
+            }
+        }
+        echo "<script>window.location='?page=data_barang';</script>";
+        exit;
     }
 }
 

@@ -10,6 +10,42 @@ if (!isLoggedIn()) {
     exit;
 }
 
+// --- SELF-HEALING: AUTO MIGRATION CHECK ---
+// Memastikan struktur DB sinkron meskipun config.php tidak terupdate
+try {
+    // 1. Cek Kolom has_serial_number di products
+    // Menggunakan try-catch query column
+    $pdo->query("SELECT has_serial_number FROM products LIMIT 0");
+} catch (Exception $e) {
+    // Jika error (kolom tidak ada), tambahkan
+    try {
+        $pdo->exec("ALTER TABLE products ADD COLUMN has_serial_number TINYINT(1) DEFAULT 0");
+    } catch (Exception $ex) { /* Ignore if race condition */ }
+}
+
+try {
+    // 2. Cek Tabel product_serials
+    $pdo->query("SELECT 1 FROM product_serials LIMIT 0");
+} catch (Exception $e) {
+    // Jika error (tabel tidak ada), buat tabel
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS product_serials (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            product_id INT NOT NULL,
+            serial_number VARCHAR(100) NOT NULL,
+            status ENUM('AVAILABLE','SOLD','RETURNED','DEFECTIVE') DEFAULT 'AVAILABLE',
+            warehouse_id INT DEFAULT NULL,
+            in_transaction_id INT DEFAULT NULL,
+            out_transaction_id INT DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_sn_product (product_id, serial_number),
+            INDEX idx_sn (serial_number),
+            INDEX idx_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    } catch (Exception $ex) { /* Ignore */ }
+}
+// --- END SELF-HEALING ---
+
 $action = $_GET['action'] ?? '';
 
 // === PRODUCT SEARCH ===
@@ -34,6 +70,7 @@ if ($action === 'get_product_by_sku') {
 
     // 2. Jika bukan SKU, Cek Apakah ini Serial Number? (Hanya untuk yang statusnya AVAILABLE)
     if (!$product) {
+        // Karena tabel product_serials sudah dipastikan ada di atas, query ini aman
         $stmtSn = $pdo->prepare("
             SELECT p.*, ps.serial_number as scanned_sn 
             FROM product_serials ps

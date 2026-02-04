@@ -12,8 +12,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $qty = (float)$_POST['quantity']; // Support desimal
     $notes = $_POST['notes'];
     
-    // SN Fields
-    $has_sn = isset($_POST['has_sn_flag']) && $_POST['has_sn_flag'] == '1';
+    // SN Fields - Mengambil value dari checkbox visual
+    $has_sn = isset($_POST['chk_has_sn']); 
     $sn_list = $_POST['sn_list'] ?? [];
 
     // Validasi Input Wajib
@@ -25,7 +25,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gudang Penerima harus dipilih.'];
     } elseif ($has_sn && count(array_filter($sn_list)) < $qty) {
         // Validasi jumlah SN harus sama dengan Qty jika wajib SN
-        // Note: Floating point qty for SN items is usually 1, 2, 3 (integer based)
         $_SESSION['flash'] = ['type'=>'error', 'message'=>'Wajib input Serial Number sejumlah Qty barang.'];
     } else {
         $pdo->beginTransaction();
@@ -40,23 +39,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $product_category_code = ''; // Untuk Akun Keuangan
             
             if ($product) {
-                // Produk Lama: Update Stok, Harga Beli, DAN Harga Jual
+                // Produk Lama
                 $product_id = $product['id'];
                 $product_category_code = $product['category'];
                 
-                // Gunakan cleanNumber untuk membersihkan format Rp (titik/koma)
                 $input_buy_price = !empty($_POST['buy_price']) ? cleanNumber($_POST['buy_price']) : 0;
                 $input_sell_price = !empty($_POST['sell_price']) ? cleanNumber($_POST['sell_price']) : 0;
                 
-                // Jika user input harga baru, pakai itu. Jika tidak, pakai harga lama.
                 $current_buy_price = ($input_buy_price > 0) ? $input_buy_price : $product['buy_price'];
                 $current_sell_price = ($input_sell_price > 0) ? $input_sell_price : $product['sell_price'];
                 
+                // Update flag has_serial_number jika user mencentang SN pada barang lama
+                $db_has_sn = $product['has_serial_number'];
+                if ($has_sn && $db_has_sn == 0) {
+                    $pdo->prepare("UPDATE products SET has_serial_number = 1 WHERE id = ?")->execute([$product_id]);
+                }
+
                 $pdo->prepare("UPDATE products SET stock = stock + ?, buy_price = ?, sell_price = ? WHERE id = ?")
                     ->execute([$qty, $current_buy_price, $current_sell_price, $product_id]);
                     
             } else {
-                // Produk Baru: Insert
+                // Produk Baru
                 $name = $_POST['new_name'] ?? '';
                 if(empty($name)) throw new Exception("Barang SKU $sku belum terdaftar. Harap isi Nama Barang Baru.");
                 
@@ -66,21 +69,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $product_category_code = $cat;
                 $unit = $_POST['new_unit'] ?? 'Pcs';
                 
-                // Gunakan cleanNumber untuk input harga
                 $current_buy_price = cleanNumber($_POST['buy_price'] ?? 0);
                 $sell = cleanNumber($_POST['sell_price'] ?? 0);
                 
-                $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock) VALUES (?, ?, ?, ?, ?, ?, ?)");
-                $stmt->execute([$sku, $name, $cat, $unit, $current_buy_price, $sell, $qty]);
+                // Set has_serial_number berdasarkan checkbox
+                $sn_flag = $has_sn ? 1 : 0;
+
+                $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, has_serial_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute([$sku, $name, $cat, $unit, $current_buy_price, $sell, $qty, $sn_flag]);
                 $product_id = $pdo->lastInsertId();
             }
             
             // 2. Simpan Riwayat Transaksi (IN)
             $stmt = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'IN', ?, ?, ?, ?, ?, ?)");
             $stmt->execute([$date, $product_id, $warehouse_id, $qty, $reference, $notes, $_SESSION['user_id']]);
-            $trx_id = $pdo->lastInsertId(); // ID Transaksi Inventori
+            $trx_id = $pdo->lastInsertId(); 
             
-            // 3. AUTO RECORD FINANCIAL TRANSACTION (HPP/ASET)
+            // 3. AUTO RECORD FINANCIAL TRANSACTION
             if ($current_buy_price > 0 && !empty($product_category_code)) {
                 $total_value = $qty * $current_buy_price;
                 $stmtAcc = $pdo->prepare("SELECT id, type FROM accounts WHERE code = ?");
@@ -127,10 +132,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
-// Tambahkan 2105 ke dalam list kategori
 $category_accounts = $pdo->query("SELECT * FROM accounts WHERE code IN ('3003', '2005', '2105') ORDER BY code ASC")->fetchAll();
 
-// Ambil Riwayat Transaksi Terakhir (IN)
 $recent_trx = $pdo->query("
     SELECT i.*, p.name as prod_name, p.sku, w.name as wh_name 
     FROM inventory_transactions i 
@@ -141,7 +144,6 @@ $recent_trx = $pdo->query("
     LIMIT 10
 ")->fetchAll();
 
-// Ambil Nama Aplikasi untuk Prefix Referensi
 $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
 ?>
 
@@ -158,7 +160,6 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
         #print_area { display: flex !important; position: absolute; top: 0; left: 0; width: 100%; height: 100%; align-items: center; justify-content: center; background: white; z-index: 9999; }
         @page { size: 50mm 30mm; margin: 0; }
         .label-box { width: 48mm; height: 28mm; border: 1px solid #000; padding: 2px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; font-family: sans-serif; overflow: hidden; }
-        /* SKU dihapus karena sudah ada di barcode includetext */
         .lbl-name { font-size: 8pt; font-weight: bold; margin-top: 2px; line-height: 1; max-height: 2.2em; overflow: hidden; }
         canvas { max-width: 95% !important; max-height: 20mm !important; }
     }
@@ -180,7 +181,6 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 <i class="fas fa-box-open"></i> Input Barang Masuk
             </h3>
             
-            <!-- 3 MODE SCAN BUTTONS -->
             <div class="flex gap-2 flex-wrap">
                 <button type="button" onclick="activateUSB()" class="bg-gray-700 text-white px-3 py-2 rounded shadow hover:bg-gray-800 transition text-sm flex items-center gap-2" title="Scanner USB / Keyboard">
                     <i class="fas fa-keyboard"></i> USB Mode
@@ -198,23 +198,17 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
         <!-- Area Scanner Live -->
         <div id="scanner_area" class="hidden mb-6 bg-black rounded-lg relative overflow-hidden shadow-inner border-4 border-gray-800">
             <div class="absolute top-2 left-2 z-20">
-                <select id="camera_select" class="bg-white text-gray-800 text-xs py-1 px-2 rounded shadow border border-gray-300 focus:outline-none">
-                    <option value="">Memuat Kamera...</option>
-                </select>
+                <select id="camera_select" class="bg-white text-gray-800 text-xs py-1 px-2 rounded shadow border border-gray-300 focus:outline-none"><option value="">Memuat Kamera...</option></select>
             </div>
             <div id="reader" class="w-full h-64 md:h-80 bg-black"></div>
             <div class="absolute top-2 right-2 z-10 flex flex-col gap-2">
                 <button type="button" onclick="stopScan()" class="bg-red-600 text-white w-10 h-10 rounded-full shadow hover:bg-red-700 flex items-center justify-center"><i class="fas fa-times"></i></button>
                 <button type="button" id="btn_flash" onclick="toggleFlash()" class="hidden bg-yellow-400 text-black w-10 h-10 rounded-full shadow hover:bg-yellow-500 flex items-center justify-center border-2 border-yellow-600"><i class="fas fa-bolt"></i></button>
             </div>
-            <div class="absolute bottom-4 left-0 right-0 text-center pointer-events-none">
-                <span class="bg-black bg-opacity-50 text-white px-4 py-1 rounded-full text-xs">Arahkan kamera ke Barcode</span>
-            </div>
         </div>
 
         <form method="POST" autocomplete="off" onkeydown="return event.key != 'Enter';">
             <?= csrf_field() ?>
-            <input type="hidden" id="has_sn_flag" name="has_sn_flag" value="0">
             
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
                 <div>
@@ -223,7 +217,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 </div>
                 <div>
                     <label class="block text-sm font-bold text-gray-700 mb-1">Gudang Penerima <span class="text-red-500">*</span></label>
-                    <select name="warehouse_id" class="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-green-500 focus:outline-none bg-white font-bold text-gray-800" required>
+                    <select name="warehouse_id" id="warehouse_id" class="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-green-500 focus:outline-none bg-white font-bold text-gray-800" required>
                         <option value="" selected disabled>-- Pilih Gudang Penerima --</option>
                         <?php foreach($warehouses as $w): ?>
                             <option value="<?= $w['id'] ?>"><?= $w['name'] ?></option>
@@ -236,7 +230,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 <label class="block text-sm font-bold text-gray-700 mb-1">No. Surat Jalan / Referensi</label>
                 <div class="flex gap-2">
                     <input type="text" name="reference" id="reference_input" placeholder="Klik Auto untuk generate..." class="w-full border border-gray-300 p-2 rounded uppercase font-medium focus:ring-2 focus:ring-green-500 focus:outline-none" required>
-                    <button type="button" id="btn_auto_ref" onclick="generateReference()" class="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 font-bold whitespace-nowrap border border-gray-300 text-sm" title="Generate Format: APP/IN/DD/MM/YYYY-No">
+                    <button type="button" id="btn_auto_ref" onclick="generateReference()" class="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 font-bold whitespace-nowrap border border-gray-300 text-sm">
                         <i class="fas fa-magic text-green-600"></i> Auto
                     </button>
                 </div>
@@ -247,16 +241,14 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 <div class="flex gap-2">
                     <input type="text" name="sku" id="sku_input" class="w-full border-2 border-green-600 p-3 rounded font-mono font-bold text-lg focus:ring-4 focus:ring-green-200 focus:outline-none transition-all uppercase" placeholder="SCAN BARCODE..." onchange="checkSku()" onkeydown="if(event.key === 'Enter'){ checkSku(); event.preventDefault(); }" required autofocus>
                     
-                    <!-- Added ID "btn_gen_sku" for JS selector robustness -->
                     <button type="button" id="btn_gen_sku" onclick="generateNewSku()" class="bg-yellow-500 text-white px-3 rounded hover:bg-yellow-600 font-bold whitespace-nowrap text-sm" title="Generate SKU Baru"><i class="fas fa-plus"></i> SKU Baru</button>
                 </div>
                 <p id="sku_status" class="text-xs mt-1 min-h-[1.25rem] font-medium transition-all"></p>
             </div>
 
-            <!-- DETAIL SECTION: Info Barang (Baru/Lama) & Harga -->
+            <!-- DETAIL SECTION -->
             <div id="detail_section" class="hidden mb-6 p-5 border bg-green-50 border-green-200 rounded-lg transition-all duration-300">
                 
-                <!-- NEW FIELDS (Dipakai untuk Input Baru ATAU Display Info Lama) -->
                 <div id="new_fields" class="mb-4 border-b pb-4 border-green-200">
                     <div id="info_banner" class="flex items-center gap-2 mb-3 bg-orange-100 text-orange-800 p-2 rounded border border-orange-200">
                         <i class="fas fa-plus-circle text-lg"></i>
@@ -285,7 +277,6 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                         </div>
                     </div>
                     
-                    <!-- PREVIEW BARCODE BARANG BARU -->
                     <div class="mt-4 flex justify-center">
                         <div class="bg-white p-3 rounded border border-gray-300 text-center shadow-sm">
                             <div class="text-[10px] font-bold text-gray-500 mb-2">PREVIEW BARCODE</div>
@@ -318,20 +309,35 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 </div>
             </div>
 
-            <div class="mb-4">
-                <label class="block text-sm font-bold text-gray-700 mb-1">Jumlah Masuk <span class="text-red-500">*</span></label>
-                <input type="number" id="quantity_input" name="quantity" step="1" onchange="renderSnInputs()" onkeyup="renderSnInputs()" class="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-green-500 focus:outline-none font-bold text-lg" placeholder="0" required>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 items-end">
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-1">Jumlah Masuk <span class="text-red-500">*</span></label>
+                    <input type="number" id="quantity_input" name="quantity" step="1" onchange="renderSnInputs()" onkeyup="renderSnInputs()" class="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-green-500 focus:outline-none font-bold text-lg" placeholder="0" required>
+                </div>
+                <div>
+                    <!-- CHECKBOX SN VISIBLE -->
+                    <label class="flex items-center space-x-2 cursor-pointer bg-purple-100 p-3 rounded border border-purple-200 hover:bg-purple-200 transition">
+                        <input type="checkbox" name="chk_has_sn" id="chk_has_sn" onchange="renderSnInputs()" class="w-5 h-5 text-purple-600 focus:ring-purple-500 border-gray-300 rounded">
+                        <span class="font-bold text-purple-800 text-sm">Input Serial Number?</span>
+                    </label>
+                </div>
             </div>
 
             <!-- SERIAL NUMBER INPUT AREA -->
             <div id="sn_container" class="hidden mb-6 bg-purple-50 p-4 rounded border border-purple-200">
-                <h4 class="font-bold text-purple-800 text-sm mb-2 flex items-center gap-2">
-                    <i class="fas fa-barcode"></i> Input Serial Number (Wajib)
-                </h4>
+                <div class="flex justify-between items-center mb-3 border-b border-purple-200 pb-2">
+                    <h4 class="font-bold text-purple-800 text-sm flex items-center gap-2">
+                        <i class="fas fa-barcode"></i> Input Serial Number (Wajib)
+                    </h4>
+                    <button type="button" onclick="autoGenerateSN()" class="bg-purple-600 text-white px-3 py-1 rounded text-xs font-bold hover:bg-purple-700 shadow flex items-center gap-1">
+                        <i class="fas fa-magic"></i> Generate Auto SN
+                    </button>
+                </div>
+                
                 <div id="sn_inputs" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                     <!-- Dynamic Inputs Here -->
                 </div>
-                <p class="text-xs text-purple-600 mt-2 italic">* Scan atau ketik SN untuk setiap item.</p>
+                <p class="text-xs text-purple-600 mt-2 italic">* Scan atau ketik SN untuk setiap item. Gunakan tombol Generate jika barang tidak ada SN pabrikan.</p>
             </div>
 
             <div class="mb-6">
@@ -437,8 +443,8 @@ async function checkSku() {
 
     const statusEl = document.getElementById('sku_status');
     const detailSec = document.getElementById('detail_section');
-    const newFields = document.getElementById('new_fields'); // Container form baru
-    const hasSnInput = document.getElementById('has_sn_flag');
+    const newFields = document.getElementById('new_fields'); 
+    const chkHasSn = document.getElementById('chk_has_sn');
     
     // UI Elements for Data
     const infoBanner = document.getElementById('info_banner');
@@ -450,38 +456,31 @@ async function checkSku() {
 
     try {
         const res = await fetch(`api.php?action=get_product_by_sku&sku=${encodeURIComponent(sku)}`);
-        
-        // Handle non-JSON response gracefully
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const text = await res.text();
         let data;
         try {
             data = JSON.parse(text);
         } catch(e) {
-            console.error("JSON Parse Error. Response:", text);
-            throw new Error("Respon server tidak valid (Bukan JSON).");
+            throw new Error("Respon server tidak valid.");
         }
 
         detailSec.classList.remove('hidden');
-        newFields.classList.remove('hidden'); // Always show new_fields now, but manipulate content
+        newFields.classList.remove('hidden'); 
 
         if (data && data.id) {
             // --- PRODUK DITEMUKAN ---
             let snText = data.has_serial_number == 1 ? ' [WAJIB SN]' : '';
             statusEl.innerHTML = `<span class="text-green-600 font-bold"><i class="fas fa-check-circle"></i> Ditemukan: ${data.name} (Stok: ${data.stock})${snText}</span>`;
             
-            // Setup Info Banner
             infoBanner.className = "flex items-center gap-2 mb-3 bg-blue-100 text-blue-800 p-2 rounded border border-blue-200";
             infoBanner.innerHTML = `<i class="fas fa-info-circle text-lg"></i><span class="font-bold text-sm">Data Barang Ditemukan. Detail terkunci (readonly).</span>`;
 
-            // Fill & Lock Master Data
             inpName.value = data.name;
             inpName.setAttribute('readonly', 'readonly');
             inpName.classList.add('bg-gray-100', 'cursor-not-allowed');
 
             inpCat.value = data.category;
-            // Select doesn't support readonly in the same way, disable it but ensure value sends? 
-            // Disabled inputs are not sent. However, PHP checks logic based on DB existence for existing items.
             inpCat.setAttribute('disabled', 'disabled');
             inpCat.classList.add('bg-gray-100', 'cursor-not-allowed');
 
@@ -489,27 +488,35 @@ async function checkSku() {
             inpUnit.setAttribute('readonly', 'readonly');
             inpUnit.classList.add('bg-gray-100', 'cursor-not-allowed');
             
-            // Set SN Flag
-            hasSnInput.value = data.has_serial_number;
+            // LOGIKA CHECKBOX SN
+            if (data.has_serial_number == 1) {
+                // Jika DB wajib SN, Check dan Disable (forced)
+                chkHasSn.checked = true;
+                chkHasSn.disabled = true; 
+            } else {
+                // Jika DB tidak wajib, Uncheck tapi bisa di-centang manual (optional)
+                chkHasSn.checked = false;
+                chkHasSn.disabled = false;
+            }
             
-            // Auto fill price if exists
             if(data.buy_price) document.getElementById('buy_price').value = new Intl.NumberFormat('id-ID').format(data.buy_price);
             if(data.sell_price) document.getElementById('sell_price').value = new Intl.NumberFormat('id-ID').format(data.sell_price);
             
-            // Focus ke Quantity
+            // Auto Warehouse Selection
+            if(data.last_warehouse_id) {
+                const whSelect = document.getElementById('warehouse_id');
+                whSelect.value = data.last_warehouse_id;
+            }
+
             document.querySelector('input[name="quantity"]').focus();
-            
-            // Re-render inputs in case quantity was already filled
             renderSnInputs();
         } else {
             // --- PRODUK BARU ---
             statusEl.innerHTML = '<span class="text-orange-600 font-bold"><i class="fas fa-plus-circle"></i> Produk Baru. Silakan lengkapi data.</span>';
             
-            // Setup Info Banner
             infoBanner.className = "flex items-center gap-2 mb-3 bg-orange-100 text-orange-800 p-2 rounded border border-orange-200";
             infoBanner.innerHTML = `<i class="fas fa-plus-circle text-lg"></i><span class="font-bold text-sm">Barang Baru! Silakan lengkapi data master barang.</span>`;
 
-            // Unlock Inputs & Clear
             inpName.value = '';
             inpName.removeAttribute('readonly');
             inpName.classList.remove('bg-gray-100', 'cursor-not-allowed');
@@ -522,38 +529,39 @@ async function checkSku() {
             inpUnit.removeAttribute('readonly');
             inpUnit.classList.remove('bg-gray-100', 'cursor-not-allowed');
 
+            // Default Checkbox: Unchecked but Enabled
+            chkHasSn.checked = false;
+            chkHasSn.disabled = false;
+
             document.getElementById('new_name').focus();
-            hasSnInput.value = 0; // Default new product no SN unless explicit (currently no checkbox for new)
             renderSnInputs();
             
-            // Generate Preview Barcode Baru (Code 128)
             setTimeout(() => {
                 try {
-                    bwipjs.toCanvas('new_barcode_canvas', {
-                        bcid: 'code128', 
-                        text: sku, 
-                        scale: 2, 
-                        height: 10, 
-                        includetext: true,
-                        textxalign: 'center'
-                    });
+                    bwipjs.toCanvas('new_barcode_canvas', { bcid: 'code128', text: sku, scale: 2, height: 10, includetext: true, textxalign: 'center' });
                 } catch(e) {}
             }, 100);
         }
     } catch (e) {
         statusEl.innerHTML = `<span class="text-red-600 font-bold">Error: ${e.message}</span>`;
-        console.error(e);
     }
 }
 
 function renderSnInputs() {
     const qty = parseInt(document.getElementById('quantity_input').value) || 0;
-    const hasSn = document.getElementById('has_sn_flag').value == '1';
+    const hasSn = document.getElementById('chk_has_sn').checked; // Read visible checkbox
     const container = document.getElementById('sn_container');
     const inputsDiv = document.getElementById('sn_inputs');
     
     if (hasSn && qty > 0) {
         container.classList.remove('hidden');
+        
+        // Cek jika jumlah input sudah sesuai, jangan render ulang agar value tidak hilang
+        const currentInputs = inputsDiv.getElementsByTagName('input');
+        if (currentInputs.length === qty) return;
+
+        // Render ulang (Simple logic: clear and redraw)
+        // Improvement: Bisa preserve value jika qty bertambah
         inputsDiv.innerHTML = '';
         
         for (let i = 1; i <= qty; i++) {
@@ -561,7 +569,7 @@ function renderSnInputs() {
             div.innerHTML = `
                 <div class="relative">
                     <span class="absolute left-2 top-2 text-xs font-bold text-gray-400">#${i}</span>
-                    <input type="text" name="sn_list[]" class="w-full border p-2 pl-8 rounded text-sm font-mono uppercase focus:ring-1 focus:ring-purple-500" placeholder="Scan Serial Number" required>
+                    <input type="text" name="sn_list[]" class="w-full border p-2 pl-8 rounded text-sm font-mono uppercase focus:ring-1 focus:ring-purple-500" placeholder="Scan SN" required>
                 </div>
             `;
             inputsDiv.appendChild(div);
@@ -572,73 +580,58 @@ function renderSnInputs() {
     }
 }
 
+function autoGenerateSN() {
+    const inputs = document.getElementsByName('sn_list[]');
+    if (inputs.length === 0) return alert("Tidak ada kolom SN.");
+    
+    // Generate base: SN-YYMMDD-RAND
+    const d = new Date();
+    const prefix = "SN" + d.getDate() + (d.getMonth()+1) + d.getFullYear().toString().substr(-2);
+    
+    for (let input of inputs) {
+        if (!input.value) {
+            const rand = Math.floor(1000 + Math.random() * 9000);
+            input.value = prefix + "-" + rand;
+        }
+    }
+}
+
 async function generateNewSku() {
     const btn = document.getElementById('btn_gen_sku');
-    if (!btn) return alert("Tombol tidak ditemukan!");
-    
     const oldHtml = btn.innerHTML;
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
     btn.disabled = true;
-    
     try {
         const res = await fetch('api.php?action=generate_sku');
-        const text = await res.text();
-        let data;
-        
-        try {
-            data = JSON.parse(text);
-        } catch (e) {
-            throw new Error("Respon server error: " + text.substring(0, 100));
-        }
-
+        const data = await res.json();
         if (res.ok && data.sku) {
             document.getElementById('sku_input').value = data.sku;
             checkSku();
         } else {
-            throw new Error(data.error || "Gagal generate SKU");
+            throw new Error(data.error || "Gagal");
         }
-    } catch(e) {
-        alert("Gagal generate SKU: " + e.message);
-        console.error(e);
-    } finally {
-        btn.innerHTML = oldHtml;
-        btn.disabled = false;
-    }
+    } catch(e) { alert(e.message); } 
+    finally { btn.innerHTML = oldHtml; btn.disabled = false; }
 }
 
-// --- PRINT LABEL BARU ---
 function printNewLabel() {
     const sku = document.getElementById('sku_input').value;
     const name = document.getElementById('new_name').value || 'NAMA BARANG';
     if(!sku) return;
-    
     document.getElementById('p_name').innerText = name;
-    
     try {
-        bwipjs.toCanvas('p_canvas', {
-            bcid: 'code128', 
-            text: sku, 
-            scale: 2, 
-            height: 10, 
-            includetext: true,
-            textxalign: 'center'
-        });
+        bwipjs.toCanvas('p_canvas', { bcid: 'code128', text: sku, scale: 2, height: 10, includetext: true, textxalign: 'center' });
         window.print();
-    } catch(e) { alert('Gagal render barcode'); }
+    } catch(e) {}
 }
 
-// --- AUTO REFERENCE ---
 async function generateReference() {
     const btn = document.getElementById('btn_auto_ref');
-    const originalText = btn.innerHTML;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
     btn.disabled = true;
-
     const d = new Date();
     const dateStr = d.getDate().toString().padStart(2, '0');
     const monthStr = (d.getMonth()+1).toString().padStart(2, '0');
     const yearStr = d.getFullYear();
-    
     try {
         const res = await fetch('api.php?action=get_next_trx_number&type=IN');
         const data = await res.json();
@@ -647,71 +640,15 @@ async function generateReference() {
     } catch (error) {
         const rand = Math.floor(1000 + Math.random() * 9000);
         document.getElementById('reference_input').value = `${APP_NAME_PREFIX}/IN/${dateStr}/${monthStr}/${yearStr}-${rand}`;
-    } finally {
-        btn.innerHTML = originalText;
-        btn.disabled = false;
-    }
+    } finally { btn.disabled = false; }
 }
 
-// --- SCANNER CAMERA ---
-function handleFileScan(input) { /* (Sama seperti sebelumnya) */ 
-    if (input.files.length === 0) return;
-    const file = input.files[0];
-    initAudio(); 
-    const skuInput = document.getElementById('sku_input');
-    const originalPlaceholder = skuInput.placeholder;
-    skuInput.value = ""; skuInput.placeholder = "Memproses...";
-    const html5QrCode = new Html5Qrcode("reader"); 
-    html5QrCode.scanFile(file, true).then(decodedText => {
-        playBeep(); skuInput.value = decodedText; skuInput.placeholder = originalPlaceholder; checkSku(); input.value = '';
-    }).catch(err => { alert("Gagal baca foto."); skuInput.placeholder = originalPlaceholder; input.value = ''; });
-}
-
-async function initCamera() {
-    initAudio();
-    document.getElementById('scanner_area').classList.remove('hidden');
-    try {
-        await navigator.mediaDevices.getUserMedia({ video: true });
-        const devices = await Html5Qrcode.getCameras();
-        const cameraSelect = document.getElementById('camera_select');
-        cameraSelect.innerHTML = "";
-        if (devices && devices.length) {
-            let backCameraId = devices[0].id;
-            for (const device of devices) {
-                if (device.label.toLowerCase().includes('back') || device.label.toLowerCase().includes('rear')) { backCameraId = device.id; break; }
-            }
-            devices.forEach(device => {
-                const option = document.createElement("option"); option.value = device.id; option.text = device.label || `Kamera ${cameraSelect.length + 1}`; cameraSelect.appendChild(option);
-            });
-            cameraSelect.value = backCameraId;
-            startScan(backCameraId);
-            cameraSelect.onchange = () => { if(html5QrCode) html5QrCode.stop().then(() => startScan(cameraSelect.value)); };
-        } else { alert("Kamera tidak ditemukan."); }
-    } catch (err) { alert("Gagal akses kamera."); document.getElementById('scanner_area').classList.add('hidden'); }
-}
-
-function startScan(cameraId) {
-    if(html5QrCode) try { html5QrCode.stop(); } catch(e) {}
-    html5QrCode = new Html5Qrcode("reader");
-    const config = { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1.0, formatsToSupport: [ Html5QrcodeSupportedFormats.QR_CODE, Html5QrcodeSupportedFormats.DATA_MATRIX, Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.EAN_13 ] };
-    html5QrCode.start(cameraId, config, (decodedText) => {
-        playBeep(); document.getElementById('sku_input').value = decodedText; checkSku(); stopScan();
-    }, () => {}).then(() => {
-        const track = html5QrCode.getRunningTrackCameraCapabilities();
-        if (track && track.torchFeature().isSupported()) document.getElementById('btn_flash').classList.remove('hidden');
-    });
-}
-
-function stopScan() {
-    if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); });
-}
-
-function toggleFlash() {
-    if(html5QrCode) {
-        isFlashOn = !isFlashOn;
-        html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] });
-    }
-}
+// Scanner Functions
+function handleFileScan(input) { if (input.files.length === 0) return; const file = input.files[0]; initAudio(); const skuInput = document.getElementById('sku_input'); const p = skuInput.placeholder; skuInput.value = ""; skuInput.placeholder = "Processing..."; const h = new Html5Qrcode("reader"); h.scanFile(file, true).then(d => { playBeep(); skuInput.value = d; skuInput.placeholder = p; checkSku(); input.value = ''; }).catch(e => { alert("Gagal."); skuInput.placeholder = p; input.value = ''; }); }
+async function initCamera() { initAudio(); document.getElementById('scanner_area').classList.remove('hidden'); try { await navigator.mediaDevices.getUserMedia({ video: true }); const d = await Html5Qrcode.getCameras(); const s = document.getElementById('camera_select'); s.innerHTML = ""; if (d && d.length) { let id = d[0].id; d.forEach(dev => { if(dev.label.toLowerCase().includes('back')) id = dev.id; const o = document.createElement("option"); o.value = dev.id; o.text = dev.label; s.appendChild(o); }); s.value = id; startScan(id); s.onchange = () => { if(html5QrCode) html5QrCode.stop().then(() => startScan(s.value)); }; } else { alert("Kamera tidak ditemukan."); } } catch (e) { alert("Gagal akses kamera."); document.getElementById('scanner_area').classList.add('hidden'); } }
+function startScan(id) { if(html5QrCode) try { html5QrCode.stop(); } catch(e) {} html5QrCode = new Html5Qrcode("reader"); const config = { fps: 10, qrbox: { width: 250, height: 250 } }; html5QrCode.start(id, config, (d) => { playBeep(); document.getElementById('sku_input').value = d; checkSku(); stopScan(); }, () => {}).then(() => { const t = html5QrCode.getRunningTrackCameraCapabilities(); if (t && t.torchFeature().isSupported()) document.getElementById('btn_flash').classList.remove('hidden'); }); }
+function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }); }
+function toggleFlash() { if(html5QrCode) { isFlashOn = !isFlashOn; html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] }); } }
 
 document.addEventListener('DOMContentLoaded', generateReference);
 </script>

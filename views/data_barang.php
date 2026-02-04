@@ -1,6 +1,11 @@
 <?php
 checkRole(['SUPER_ADMIN', 'ADMIN_GUDANG', 'MANAGER', 'SVP']);
 
+// --- AMBIL DATA MASTER UNTUK FORM ---
+$warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
+// Akun Kategori Persediaan/Biaya (Sesuai Barang Masuk)
+$category_accounts = $pdo->query("SELECT * FROM accounts WHERE code IN ('3003', '2005', '2105') ORDER BY code ASC")->fetchAll();
+
 // --- HANDLE POST REQUESTS ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     validate_csrf();
@@ -77,7 +82,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($check->rowCount() > 0) throw new Exception("SKU $sku sudah ada!");
 
                 $initial_stock = (int)($_POST['initial_stock'] ?? 0);
+                $wh_id = $_POST['warehouse_id'] ?? null;
                 $sn_string = $_POST['sn_list_text'] ?? ''; // SN dipisah koma
+
+                // Validasi Stok Awal
+                if ($initial_stock > 0 && empty($wh_id)) {
+                    throw new Exception("Jika mengisi Stok Awal, Gudang Penempatan harus dipilih.");
+                }
 
                 $pdo->beginTransaction();
 
@@ -87,8 +98,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 // Handle Initial Stock & SN
                 if ($initial_stock > 0) {
-                    $wh_id = $pdo->query("SELECT id FROM warehouses LIMIT 1")->fetchColumn(); // Default Gudang Pertama
-                    
                     // Create Transaction
                     $ref = "INIT/" . date('ymd') . "/" . rand(100,999);
                     $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'IN', ?, ?, ?, ?, 'Saldo Awal', ?)")
@@ -150,21 +159,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
 
                 foreach ($import_data as $row) {
-                    // Mapping Columns from Excel Keys (Nama, SKU, SN, Beli (HPP), Gudang, Jual, Stok, Sat)
-                    // Use keys exactly as they appear in the JSON (from Excel header row)
-                    
-                    // Flexible key matching (case insensitive)
+                    // Mapping Columns from Excel Keys
                     $r = array_change_key_case($row, CASE_LOWER);
                     
-                    // Extract fields
+                    // Extract fields & sanitize numbers
                     $sku = trim($r['sku'] ?? $r['kode'] ?? '');
                     if(empty($sku)) continue;
 
                     $name = trim($r['nama'] ?? $r['nama barang'] ?? 'Barang Tanpa Nama');
                     $sn_raw = $r['sn'] ?? '';
-                    $buy = isset($r['beli (hpp)']) ? $r['beli (hpp)'] : ($r['beli'] ?? 0);
-                    $sell = isset($r['jual']) ? $r['jual'] : ($r['harga jual'] ?? 0);
-                    $stock = (int)($r['stok'] ?? 0);
+                    
+                    $buy = cleanNumber($r['beli (hpp)'] ?? $r['beli'] ?? 0);
+                    $sell = cleanNumber($r['jual'] ?? $r['harga jual'] ?? 0);
+                    $stock = (int)cleanNumber($r['stok'] ?? 0);
+                    
                     $unit = trim($r['sat'] ?? $r['satuan'] ?? 'Pcs');
                     $wh_name = trim($r['gudang'] ?? '');
 
@@ -208,7 +216,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $sns = array_slice($sns, 0, $stock);
 
                             foreach($sns as $sn) {
-                                // Try insert SN (ignore duplicate error inside loop to safe process)
                                 try {
                                     $stmtSn->execute([$new_id, $sn, $wh_id, $trx_id]);
                                 } catch(Exception $ex) {} 
@@ -235,8 +242,8 @@ $search = $_GET['q'] ?? '';
 $cat_filter = $_GET['category'] ?? 'ALL';
 $sort_by = $_GET['sort'] ?? 'newest';
 
-// Master Data
-$accounts_cat = $pdo->query("SELECT DISTINCT category FROM products ORDER BY category")->fetchAll(PDO::FETCH_COLUMN);
+// Master Data for Filter (Distinct existing categories)
+$existing_cats = $pdo->query("SELECT DISTINCT category FROM products ORDER BY category")->fetchAll(PDO::FETCH_COLUMN);
 
 // Query Utama
 $sql = "SELECT p.*,
@@ -260,18 +267,17 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $products = $stmt->fetchAll();
 
-// Prepare Data for Export (Full SN) & Display (Truncated SN)
-$export_data = []; // Clean data for Excel
+// Prepare Data for Export & Display
+$export_data = [];
 $total_asset_group = 0;
 
 foreach($products as &$p) {
-    // 1. Get All SN for Export (Comma separated)
+    // 1. Get SN
     $sn_stmt_all = $pdo->prepare("SELECT serial_number FROM product_serials WHERE product_id=? AND status='AVAILABLE' ORDER BY serial_number ASC");
     $sn_stmt_all->execute([$p['id']]);
     $all_sns = $sn_stmt_all->fetchAll(PDO::FETCH_COLUMN);
     $full_sn_text = implode(', ', $all_sns);
 
-    // 2. Display SN (Truncated)
     $count_sn = count($all_sns);
     $p['sn_text'] = '';
     if ($count_sn > 0) {
@@ -282,25 +288,24 @@ foreach($products as &$p) {
         $p['sn_text'] = '-';
     }
 
-    // 3. Get Warehouse Name
+    // 2. Get Warehouse
     $wh_stmt = $pdo->prepare("SELECT w.name FROM inventory_transactions i JOIN warehouses w ON i.warehouse_id=w.id WHERE i.product_id=? ORDER BY i.date DESC LIMIT 1");
     $wh_stmt->execute([$p['id']]);
     $last_wh = $wh_stmt->fetchColumn() ?: '-';
     $p['last_wh'] = $last_wh;
 
-    // 4. Populate Export Row
+    // 3. Export Data
     $export_data[] = [
         'Nama' => $p['name'],
         'SKU' => $p['sku'],
-        'SN' => $full_sn_text,
         'Beli (HPP)' => $p['buy_price'],
         'Gudang' => $last_wh,
         'Jual' => $p['sell_price'],
         'Stok' => $p['stock'],
-        'Sat' => $p['unit']
+        'Sat' => $p['unit'],
+        'SN' => $full_sn_text
     ];
 
-    // Hitung aset
     $total_asset_group += ($p['stock'] * $p['buy_price']);
 }
 unset($p);
@@ -360,7 +365,7 @@ if (isset($_GET['edit_id'])) {
             <label class="block text-xs font-bold text-gray-600 mb-1">Kategori</label>
             <select name="category" class="w-full border p-2 rounded text-sm bg-white">
                 <option value="ALL">-- Semua --</option>
-                <?php foreach($accounts_cat as $c): ?>
+                <?php foreach($existing_cats as $c): ?>
                     <option value="<?= $c ?>" <?= $cat_filter==$c?'selected':'' ?>>
                         <?= $c ?>
                     </option>
@@ -447,7 +452,7 @@ if (isset($_GET['edit_id'])) {
 
                 <div class="grid grid-cols-2 gap-2 mb-3">
                     <div>
-                        <label class="block text-xs font-bold text-gray-700 mb-1">Harga Beli</label>
+                        <label class="block text-xs font-bold text-gray-700 mb-1">Harga Beli (HPP)</label>
                         <input type="text" name="buy_price" value="<?= isset($edit_item['buy_price']) ? number_format($edit_item['buy_price'],0,',','.') : '' ?>" onkeyup="formatRupiah(this)" class="w-full border p-2 rounded text-sm text-right font-mono" placeholder="0">
                     </div>
                     <div>
@@ -459,12 +464,17 @@ if (isset($_GET['edit_id'])) {
                 <div class="grid grid-cols-2 gap-2 mb-3">
                     <div>
                         <label class="block text-xs font-bold text-gray-700 mb-1">Kategori (Akun)</label>
-                        <input type="text" name="category" list="cat_list" value="<?= $edit_item['category']??'3003' ?>" class="w-full border p-2 rounded text-sm">
-                        <datalist id="cat_list">
-                            <?php foreach($accounts_cat as $c): ?>
-                                <option value="<?= $c ?>">
-                            <?php endforeach; ?>
-                        </datalist>
+                        <?php if($edit_item): ?>
+                            <!-- Saat Edit, Text Input biasa atau Readonly jika mau -->
+                            <input type="text" name="category" value="<?= $edit_item['category'] ?>" class="w-full border p-2 rounded text-sm bg-gray-100" readonly title="Tidak bisa ubah kategori saat edit">
+                        <?php else: ?>
+                            <!-- Saat Baru, Dropdown Akun -->
+                            <select name="category" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-blue-500">
+                                <?php foreach($category_accounts as $acc): ?>
+                                    <option value="<?= $acc['code'] ?>"><?= $acc['code'] ?> - <?= $acc['name'] ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
                     </div>
                     <div>
                         <label class="block text-xs font-bold text-gray-700 mb-1">Satuan</label>
@@ -472,11 +482,20 @@ if (isset($_GET['edit_id'])) {
                     </div>
                 </div>
 
-                <div class="mb-3">
-                    <label class="block text-xs font-bold text-gray-700 mb-1">Stok Awal (Item Baru)</label>
-                    <input type="number" name="initial_stock" id="init_qty" value="<?= $edit_item['stock']??0 ?>" class="w-full border p-2 rounded text-sm text-center font-bold" <?= $edit_item ? 'disabled bg-gray-100' : '' ?> onkeyup="toggleSnInput()">
+                <div class="mb-3 bg-gray-50 p-3 rounded border border-gray-200">
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Stok Awal (Khusus Baru)</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <input type="number" name="initial_stock" id="init_qty" value="<?= $edit_item['stock']??0 ?>" class="w-full border p-2 rounded text-sm text-center font-bold" <?= $edit_item ? 'disabled bg-gray-200' : '' ?> onkeyup="toggleSnInput()">
+                        
+                        <select name="warehouse_id" id="init_wh" class="w-full border p-2 rounded text-sm text-gray-700" <?= $edit_item ? 'disabled' : '' ?>>
+                            <option value="">-- Lokasi --</option>
+                            <?php foreach($warehouses as $w): ?>
+                                <option value="<?= $w['id'] ?>"><?= $w['name'] ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
                     <?php if($edit_item): ?>
-                        <p class="text-[9px] text-red-500 mt-1">*Stok diedit via Barang Masuk/Keluar</p>
+                        <p class="text-[9px] text-red-500 mt-1">*Stok hanya bisa diedit via Transaksi Masuk/Keluar</p>
                     <?php endif; ?>
                 </div>
 
@@ -638,6 +657,7 @@ if (isset($_GET['edit_id'])) {
         </div>
         
         <form id="form_import" method="POST">
+            <?= csrf_field() ?> <!-- Fix: Added CSRF Token -->
             <input type="hidden" name="import_products" value="1">
             <input type="hidden" name="import_json" id="import_json_data">
             
@@ -724,8 +744,19 @@ function formatRupiah(input) {
 function toggleSnInput() {
     const qty = document.getElementById('init_qty').value;
     const snArea = document.getElementById('sn_area');
-    if(qty > 0) snArea.classList.remove('hidden');
-    else snArea.classList.add('hidden');
+    // Enable/Disable Warehouse selection based on qty
+    const whSelect = document.getElementById('init_wh');
+    
+    if(qty > 0) {
+        snArea.classList.remove('hidden');
+        if(whSelect) whSelect.removeAttribute('disabled');
+    } else {
+        snArea.classList.add('hidden');
+        if(whSelect) {
+            whSelect.setAttribute('disabled', 'disabled');
+            whSelect.value = "";
+        }
+    }
 }
 
 function printLabelDirect(sku, name) {
@@ -757,12 +788,12 @@ function exportToExcel() {
     const wscols = [
         {wch:30}, // Nama
         {wch:15}, // SKU
-        {wch:30}, // SN
         {wch:15}, // Beli
         {wch:20}, // Gudang
         {wch:15}, // Jual
         {wch:10}, // Stok
-        {wch:10}  // Sat
+        {wch:10}, // Sat
+        {wch:30}  // SN
     ];
     ws['!cols'] = wscols;
 

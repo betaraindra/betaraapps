@@ -124,6 +124,9 @@ $is_menu_admin_open = in_array($page, $menu_admin_pages);
                 <a href="?page=barang_keluar" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'barang_keluar' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
                     <i class="fas fa-dolly mr-3 w-6 text-center"></i> Barang Keluar
                 </a>
+                <a href="?page=input_aktivitas" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'input_aktivitas' ? 'bg-slate-900 text-white' : 'text-slate-300' ?>">
+                    <i class="fas fa-tools mr-3 w-6 text-center"></i> Input Aktivitas / Pemakaian
+                </a>
                 <?php endif; ?>
 
                 <!-- COLLAPSIBLE: DATA KEUANGAN & INVENTORI -->

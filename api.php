@@ -1,6 +1,9 @@
 <?php
 require_once 'config.php';
 
+// Pastikan output selalu JSON
+header('Content-Type: application/json');
+
 if (!isLoggedIn()) {
     http_response_code(403);
     echo json_encode(['error' => 'Unauthorized']);
@@ -93,18 +96,36 @@ if ($action === 'get_next_trx_number') {
 
 // === GENERATE RANDOM SKU (AUTO BARCODE) ===
 if ($action === 'generate_sku') {
-    $found = true;
-    $sku = '';
-    // Loop sampai nemu yang belum ada di DB
-    while($found) {
-        // Format: 899 + 9 digit random (Format umum Indonesia)
-        $sku = '899' . str_pad((string)mt_rand(0, 999999999), 9, '0', STR_PAD_LEFT);
-        $stmt = $pdo->prepare("SELECT id FROM products WHERE sku = ?");
-        $stmt->execute([$sku]);
-        if($stmt->rowCount() == 0) {
-            $found = false;
+    try {
+        $found = true;
+        $sku = '';
+        $attempts = 0;
+        $max_attempts = 100; // Mencegah infinite loop (Error 500 timeout)
+
+        // Loop sampai nemu yang belum ada di DB atau limit tercapai
+        while($found && $attempts < $max_attempts) {
+            // Format: 899 + 9 digit random (Format umum Indonesia)
+            $rand = mt_rand(0, 999999999);
+            $sku = '899' . str_pad((string)$rand, 9, '0', STR_PAD_LEFT);
+            
+            $stmt = $pdo->prepare("SELECT id FROM products WHERE sku = ?");
+            $stmt->execute([$sku]);
+            
+            if($stmt->rowCount() == 0) {
+                $found = false; // Unik, keluar loop
+            }
+            $attempts++;
         }
+
+        if ($found) {
+            throw new Exception("Gagal membuat SKU unik. Silakan coba lagi.");
+        }
+
+        echo json_encode(['sku' => $sku]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => $e->getMessage()]);
     }
-    echo json_encode(['sku' => $sku]);
     exit;
 }
+?>

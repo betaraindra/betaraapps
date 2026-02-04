@@ -36,6 +36,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
             // Generate Auto Reference jika kosong (Satu Ref untuk semua item di sesi ini)
             if(empty($act_ref)) $act_ref = "ACT/" . date('ymd') . "/" . rand(100,999);
             
+            // Ambil ID Akun "Pengeluaran Wilayah (2009)"
+            // Jika tidak ada, fallback ke Pengeluaran Material (2105) atau Operasional (2002)
+            $accStmt = $pdo->query("SELECT id FROM accounts WHERE code = '2009' LIMIT 1");
+            $accId = $accStmt->fetchColumn();
+            if (!$accId) {
+                $accId = $pdo->query("SELECT id FROM accounts WHERE code = '2105' LIMIT 1")->fetchColumn();
+            }
+
             $success_count = 0;
 
             foreach ($cart_items as $item) {
@@ -43,9 +51,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                 $qty = (float)$item['qty'];
                 $notes_item = isset($item['notes']) ? trim($item['notes']) : '';
 
-                // Validasi Stok Per Item
+                // Validasi Stok Per Item & Ambil Harga Beli (HPP)
                 $stmtCheck = $pdo->prepare("
-                    SELECT p.name, 
+                    SELECT p.name, p.buy_price,
                            (COALESCE(SUM(CASE WHEN i.type = 'IN' THEN i.quantity ELSE 0 END), 0) -
                             COALESCE(SUM(CASE WHEN i.type = 'OUT' THEN i.quantity ELSE 0 END), 0)) as current_stock
                     FROM products p
@@ -65,21 +73,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                 }
 
                 // Format Catatan: Gabungan Deskripsi Utama + Note per Item
-                // PREFIX "Aktivitas:" PENTING UNTUK FILTER TAB AKTIVITAS
                 $final_notes = "Aktivitas: " . $act_desc_main;
                 if (!empty($notes_item)) {
                     $final_notes .= " (" . $notes_item . ")";
                 }
                 
-                // Simpan Transaksi OUT
+                // 1. Simpan Transaksi OUT (Inventori)
                 $stmtIns = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
                 $stmtIns->execute([$act_date, $prod_id, $id, $qty, $act_ref, $final_notes, $_SESSION['user_id']]);
                 
+                // 2. Simpan Transaksi Keuangan (Expense) -> Mengurangi Nilai Aset Wilayah
+                // Nilai = Qty * Harga Beli
+                $total_value = $qty * $stockData['buy_price'];
+                
+                if ($accId && $total_value > 0) {
+                    // Tag Wilayah wajib ada agar masuk filter Laporan Wilayah
+                    $fin_desc = "[PEMAKAIAN] {$stockData['name']} ($qty) - $act_desc_main [Wilayah: {$warehouse['name']}]";
+                    
+                    $stmtFin = $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, 'EXPENSE', ?, ?, ?, ?)");
+                    $stmtFin->execute([$act_date, $accId, $total_value, $fin_desc, $_SESSION['user_id']]);
+                }
+
                 $success_count++;
             }
 
             $pdo->commit();
-            $_SESSION['flash'] = ['type'=>'success', 'message'=>"$success_count item aktivitas berhasil dicatat. Stok diperbarui."];
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>"$success_count item aktivitas berhasil dicatat. Stok & Keuangan diperbarui."];
 
         } catch (Exception $e) {
             $pdo->rollBack();
@@ -177,11 +196,12 @@ if ($tab === 'history') {
 // --- 3. KEUANGAN WILAYAH ---
 if ($tab === 'finance') {
     $wh_name_clean = trim($warehouse['name']);
+    // Menambahkan filter untuk akun 2105 (Material) juga agar muncul
     $sql_fin = "SELECT f.*, a.code, a.name as acc_name, u.username
                 FROM finance_transactions f
                 JOIN accounts a ON f.account_id = a.id
                 JOIN users u ON f.user_id = u.id
-                WHERE (a.code = '1004' OR a.code = '2009')
+                WHERE (a.code = '1004' OR a.code = '2009' OR a.code = '2105')
                 AND f.date BETWEEN ? AND ?
                 AND (f.description LIKE ? OR f.description LIKE ?)
                 ORDER BY f.date DESC";

@@ -31,7 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->beginTransaction();
         try {
             // 1. Cek Apakah Produk Sudah Ada
-            $stmt = $pdo->prepare("SELECT id, name, stock, buy_price, category, has_serial_number FROM products WHERE sku = ?");
+            $stmt = $pdo->prepare("SELECT id, name, stock, buy_price, sell_price, category, has_serial_number FROM products WHERE sku = ?");
             $stmt->execute([$sku]);
             $product = $stmt->fetch();
             
@@ -40,18 +40,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $product_category_code = ''; // Untuk Akun Keuangan
             
             if ($product) {
-                // Produk Lama: Update Stok & Harga Beli Terakhir
+                // Produk Lama: Update Stok, Harga Beli, DAN Harga Jual
                 $product_id = $product['id'];
                 $product_category_code = $product['category'];
                 
                 // Gunakan cleanNumber untuk membersihkan format Rp (titik/koma)
                 $input_buy_price = !empty($_POST['buy_price']) ? cleanNumber($_POST['buy_price']) : 0;
+                $input_sell_price = !empty($_POST['sell_price']) ? cleanNumber($_POST['sell_price']) : 0;
                 
-                // Jika user input harga beli baru, pakai itu. Jika tidak, pakai harga lama.
+                // Jika user input harga baru, pakai itu. Jika tidak, pakai harga lama.
                 $current_buy_price = ($input_buy_price > 0) ? $input_buy_price : $product['buy_price'];
+                $current_sell_price = ($input_sell_price > 0) ? $input_sell_price : $product['sell_price'];
                 
-                $pdo->prepare("UPDATE products SET stock = stock + ?, buy_price = ? WHERE id = ?")
-                    ->execute([$qty, $current_buy_price, $product_id]);
+                $pdo->prepare("UPDATE products SET stock = stock + ?, buy_price = ?, sell_price = ? WHERE id = ?")
+                    ->execute([$qty, $current_buy_price, $current_sell_price, $product_id]);
                     
             } else {
                 // Produk Baru: Insert
@@ -67,11 +69,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Gunakan cleanNumber untuk input harga
                 $current_buy_price = cleanNumber($_POST['buy_price'] ?? 0);
                 $sell = cleanNumber($_POST['sell_price'] ?? 0);
-                
-                // Set has_serial_number for new product if checkbox checked (handled in UI via new fields logic, but let's assume new product logic handles it via `new_has_sn` if implemented, or simplify)
-                // For now, new product from quick entry assumes NO SN unless specific.
-                // Let's rely on `has_sn_flag` hidden input which we might need to toggle for new products if we add checkbox there.
-                // But typically quick add is simple. Let's assume 0 for quick add unless we add input.
                 
                 $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock) VALUES (?, ?, ?, ?, ?, ?, ?)");
                 $stmt->execute([$sku, $name, $cat, $unit, $current_buy_price, $sell, $qty]);
@@ -250,27 +247,30 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 <div class="flex gap-2">
                     <input type="text" name="sku" id="sku_input" class="w-full border-2 border-green-600 p-3 rounded font-mono font-bold text-lg focus:ring-4 focus:ring-green-200 focus:outline-none transition-all uppercase" placeholder="SCAN BARCODE..." onchange="checkSku()" onkeydown="if(event.key === 'Enter'){ checkSku(); event.preventDefault(); }" required autofocus>
                     
-                    <button type="button" onclick="generateNewSku()" class="bg-yellow-500 text-white px-3 rounded hover:bg-yellow-600 font-bold whitespace-nowrap text-sm" title="Generate SKU Baru"><i class="fas fa-plus"></i> SKU Baru</button>
+                    <!-- Added ID "btn_gen_sku" for JS selector robustness -->
+                    <button type="button" id="btn_gen_sku" onclick="generateNewSku()" class="bg-yellow-500 text-white px-3 rounded hover:bg-yellow-600 font-bold whitespace-nowrap text-sm" title="Generate SKU Baru"><i class="fas fa-plus"></i> SKU Baru</button>
                 </div>
                 <p id="sku_status" class="text-xs mt-1 min-h-[1.25rem] font-medium transition-all"></p>
             </div>
 
-            <!-- Form Tambahan untuk Barang Baru (Hidden by default) -->
+            <!-- DETAIL SECTION: Info Barang (Baru/Lama) & Harga -->
             <div id="detail_section" class="hidden mb-6 p-5 border bg-green-50 border-green-200 rounded-lg transition-all duration-300">
-                <div id="new_fields" class="hidden mb-4 border-b pb-4 border-green-200">
-                    <div class="flex items-center gap-2 mb-3 bg-orange-100 text-orange-800 p-2 rounded border border-orange-200">
+                
+                <!-- NEW FIELDS (Dipakai untuk Input Baru ATAU Display Info Lama) -->
+                <div id="new_fields" class="mb-4 border-b pb-4 border-green-200">
+                    <div id="info_banner" class="flex items-center gap-2 mb-3 bg-orange-100 text-orange-800 p-2 rounded border border-orange-200">
                         <i class="fas fa-plus-circle text-lg"></i>
                         <span class="font-bold text-sm">Barang Baru! Silakan lengkapi data master barang.</span>
                     </div>
                     
                     <div class="mb-3">
-                        <label class="block text-xs text-gray-600 font-bold mb-1">Nama Barang Baru <span class="text-red-500">*</span></label>
+                        <label class="block text-xs text-gray-600 font-bold mb-1">Nama Barang <span class="text-red-500">*</span></label>
                         <input type="text" name="new_name" id="new_name" placeholder="Masukkan Nama Barang" class="w-full border p-2 rounded focus:ring-1 focus:ring-green-500 bg-white">
                     </div>
                     <div class="grid grid-cols-2 gap-4">
                         <div>
                             <label class="block text-xs text-gray-600 font-bold mb-1">Kategori (Akun) <span class="text-red-500">*</span></label>
-                            <select name="new_category" class="w-full border p-2 rounded focus:ring-1 focus:ring-green-500 bg-white">
+                            <select name="new_category" id="new_category" class="w-full border p-2 rounded focus:ring-1 focus:ring-green-500 bg-white">
                                 <option value="" selected disabled>-- Pilih Kategori --</option>
                                 <?php foreach($category_accounts as $acc): ?>
                                     <option value="<?= $acc['code'] ?>">
@@ -281,7 +281,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                         </div>
                         <div>
                             <label class="block text-xs text-gray-600 font-bold mb-1">Satuan</label>
-                            <input type="text" name="new_unit" placeholder="Pcs/Pack/Kg" class="w-full border p-2 rounded focus:ring-1 focus:ring-green-500 bg-white">
+                            <input type="text" name="new_unit" id="new_unit" placeholder="Pcs/Pack/Kg" class="w-full border p-2 rounded focus:ring-1 focus:ring-green-500 bg-white">
                         </div>
                     </div>
                     
@@ -437,8 +437,14 @@ async function checkSku() {
 
     const statusEl = document.getElementById('sku_status');
     const detailSec = document.getElementById('detail_section');
-    const newFields = document.getElementById('new_fields');
+    const newFields = document.getElementById('new_fields'); // Container form baru
     const hasSnInput = document.getElementById('has_sn_flag');
+    
+    // UI Elements for Data
+    const infoBanner = document.getElementById('info_banner');
+    const inpName = document.getElementById('new_name');
+    const inpCat = document.getElementById('new_category');
+    const inpUnit = document.getElementById('new_unit');
     
     statusEl.innerHTML = '<span class="text-blue-500"><i class="fas fa-spinner fa-spin"></i> Mencari data...</span>';
 
@@ -457,12 +463,31 @@ async function checkSku() {
         }
 
         detailSec.classList.remove('hidden');
+        newFields.classList.remove('hidden'); // Always show new_fields now, but manipulate content
 
         if (data && data.id) {
-            // Produk Ada
+            // --- PRODUK DITEMUKAN ---
             let snText = data.has_serial_number == 1 ? ' [WAJIB SN]' : '';
             statusEl.innerHTML = `<span class="text-green-600 font-bold"><i class="fas fa-check-circle"></i> Ditemukan: ${data.name} (Stok: ${data.stock})${snText}</span>`;
-            newFields.classList.add('hidden');
+            
+            // Setup Info Banner
+            infoBanner.className = "flex items-center gap-2 mb-3 bg-blue-100 text-blue-800 p-2 rounded border border-blue-200";
+            infoBanner.innerHTML = `<i class="fas fa-info-circle text-lg"></i><span class="font-bold text-sm">Data Barang Ditemukan. Detail terkunci (readonly).</span>`;
+
+            // Fill & Lock Master Data
+            inpName.value = data.name;
+            inpName.setAttribute('readonly', 'readonly');
+            inpName.classList.add('bg-gray-100', 'cursor-not-allowed');
+
+            inpCat.value = data.category;
+            // Select doesn't support readonly in the same way, disable it but ensure value sends? 
+            // Disabled inputs are not sent. However, PHP checks logic based on DB existence for existing items.
+            inpCat.setAttribute('disabled', 'disabled');
+            inpCat.classList.add('bg-gray-100', 'cursor-not-allowed');
+
+            inpUnit.value = data.unit;
+            inpUnit.setAttribute('readonly', 'readonly');
+            inpUnit.classList.add('bg-gray-100', 'cursor-not-allowed');
             
             // Set SN Flag
             hasSnInput.value = data.has_serial_number;
@@ -477,9 +502,26 @@ async function checkSku() {
             // Re-render inputs in case quantity was already filled
             renderSnInputs();
         } else {
-            // Produk Baru
+            // --- PRODUK BARU ---
             statusEl.innerHTML = '<span class="text-orange-600 font-bold"><i class="fas fa-plus-circle"></i> Produk Baru. Silakan lengkapi data.</span>';
-            newFields.classList.remove('hidden');
+            
+            // Setup Info Banner
+            infoBanner.className = "flex items-center gap-2 mb-3 bg-orange-100 text-orange-800 p-2 rounded border border-orange-200";
+            infoBanner.innerHTML = `<i class="fas fa-plus-circle text-lg"></i><span class="font-bold text-sm">Barang Baru! Silakan lengkapi data master barang.</span>`;
+
+            // Unlock Inputs & Clear
+            inpName.value = '';
+            inpName.removeAttribute('readonly');
+            inpName.classList.remove('bg-gray-100', 'cursor-not-allowed');
+
+            inpCat.value = '';
+            inpCat.removeAttribute('disabled');
+            inpCat.classList.remove('bg-gray-100', 'cursor-not-allowed');
+
+            inpUnit.value = '';
+            inpUnit.removeAttribute('readonly');
+            inpUnit.classList.remove('bg-gray-100', 'cursor-not-allowed');
+
             document.getElementById('new_name').focus();
             hasSnInput.value = 0; // Default new product no SN unless explicit (currently no checkbox for new)
             renderSnInputs();
@@ -531,19 +573,37 @@ function renderSnInputs() {
 }
 
 async function generateNewSku() {
-    const btn = document.querySelector('button[onclick="generateNewSku()"]');
+    const btn = document.getElementById('btn_gen_sku');
+    if (!btn) return alert("Tombol tidak ditemukan!");
+    
     const oldHtml = btn.innerHTML;
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    btn.disabled = true;
     
     try {
         const res = await fetch('api.php?action=generate_sku');
-        const data = await res.json();
-        if(data.sku) {
+        const text = await res.text();
+        let data;
+        
+        try {
+            data = JSON.parse(text);
+        } catch (e) {
+            throw new Error("Respon server error: " + text.substring(0, 100));
+        }
+
+        if (res.ok && data.sku) {
             document.getElementById('sku_input').value = data.sku;
             checkSku();
+        } else {
+            throw new Error(data.error || "Gagal generate SKU");
         }
-    } catch(e) { alert("Gagal generate SKU: " + e.message); }
-    btn.innerHTML = oldHtml;
+    } catch(e) {
+        alert("Gagal generate SKU: " + e.message);
+        console.error(e);
+    } finally {
+        btn.innerHTML = oldHtml;
+        btn.disabled = false;
+    }
 }
 
 // --- PRINT LABEL BARU ---

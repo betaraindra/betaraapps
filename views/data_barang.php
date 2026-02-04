@@ -122,6 +122,110 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo "<script>window.location='?page=data_barang';</script>";
         exit;
     }
+
+    // 3. IMPORT FROM EXCEL
+    if (isset($_POST['import_products'])) {
+        $import_data = json_decode($_POST['import_json'], true);
+        $imported = 0;
+        $updated = 0;
+        $errors = 0;
+
+        if (is_array($import_data)) {
+            $pdo->beginTransaction();
+            try {
+                // Pre-fetch warehouse map (Name -> ID)
+                $whMap = [];
+                $whStmt = $pdo->query("SELECT id, name FROM warehouses");
+                while($w = $whStmt->fetch()) {
+                    $whMap[strtoupper(trim($w['name']))] = $w['id'];
+                }
+                // Default Warehouse (First one)
+                $defaultWhId = $pdo->query("SELECT id FROM warehouses LIMIT 1")->fetchColumn();
+
+                // Prepared Statements
+                $stmtCheck = $pdo->prepare("SELECT id, stock FROM products WHERE sku = ?");
+                $stmtUpdate = $pdo->prepare("UPDATE products SET name=?, buy_price=?, sell_price=?, unit=? WHERE id=?");
+                $stmtInsert = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, has_serial_number) VALUES (?, ?, ?, ?, ?, ?, ?, 1)");
+                $stmtTrx = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'IN', ?, ?, ?, ?, 'Import Awal', ?)");
+                $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+
+                foreach ($import_data as $row) {
+                    // Mapping Columns from Excel Keys (Nama, SKU, SN, Beli (HPP), Gudang, Jual, Stok, Sat)
+                    // Use keys exactly as they appear in the JSON (from Excel header row)
+                    
+                    // Flexible key matching (case insensitive)
+                    $r = array_change_key_case($row, CASE_LOWER);
+                    
+                    // Extract fields
+                    $sku = trim($r['sku'] ?? $r['kode'] ?? '');
+                    if(empty($sku)) continue;
+
+                    $name = trim($r['nama'] ?? $r['nama barang'] ?? 'Barang Tanpa Nama');
+                    $sn_raw = $r['sn'] ?? '';
+                    $buy = isset($r['beli (hpp)']) ? $r['beli (hpp)'] : ($r['beli'] ?? 0);
+                    $sell = isset($r['jual']) ? $r['jual'] : ($r['harga jual'] ?? 0);
+                    $stock = (int)($r['stok'] ?? 0);
+                    $unit = trim($r['sat'] ?? $r['satuan'] ?? 'Pcs');
+                    $wh_name = trim($r['gudang'] ?? '');
+
+                    // Resolve Warehouse
+                    $wh_id = $defaultWhId;
+                    if (!empty($wh_name) && isset($whMap[strtoupper($wh_name)])) {
+                        $wh_id = $whMap[strtoupper($wh_name)];
+                    }
+
+                    // Check Existing
+                    $stmtCheck->execute([$sku]);
+                    $exists = $stmtCheck->fetch();
+
+                    if ($exists) {
+                        // UPDATE (Only details, NOT Stock to prevent history corruption)
+                        $stmtUpdate->execute([$name, $buy, $sell, $unit, $exists['id']]);
+                        $updated++;
+                    } else {
+                        // INSERT NEW
+                        $stmtInsert->execute([$sku, $name, '3003', $unit, $buy, $sell, $stock]);
+                        $new_id = $pdo->lastInsertId();
+                        $imported++;
+
+                        // Handle Initial Stock for New Item
+                        if ($stock > 0) {
+                            $ref = "IMP/" . date('ymd') . "/" . rand(1000,9999);
+                            $stmtTrx->execute([$new_id, $wh_id, $stock, $ref, $_SESSION['user_id']]);
+                            $trx_id = $pdo->lastInsertId();
+
+                            // Handle SNs
+                            $sns = [];
+                            if (!empty($sn_raw)) {
+                                $sns = array_filter(array_map('trim', explode(',', $sn_raw)));
+                            }
+                            // Generate missing SNs
+                            $needed = $stock - count($sns);
+                            for($i=0; $i<$needed; $i++) {
+                                $sns[] = "SN" . time() . rand(1000,9999);
+                            }
+                            // Slice if too many
+                            $sns = array_slice($sns, 0, $stock);
+
+                            foreach($sns as $sn) {
+                                // Try insert SN (ignore duplicate error inside loop to safe process)
+                                try {
+                                    $stmtSn->execute([$new_id, $sn, $wh_id, $trx_id]);
+                                } catch(Exception $ex) {} 
+                            }
+                        }
+                    }
+                }
+                $pdo->commit();
+                $_SESSION['flash'] = ['type'=>'success', 'message'=>"Import Selesai: $imported Baru, $updated Diupdate."];
+            } catch (Exception $e) {
+                $pdo->rollBack();
+                $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal Import: ' . $e->getMessage()];
+            }
+        }
+        echo "<script>window.location='?page=data_barang';</script>";
+        exit;
+    }
 }
 
 // --- FILTER & QUERY DATA ---
@@ -156,23 +260,45 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $products = $stmt->fetchAll();
 
-// Add SN Data & Calculate Total Asset
+// Prepare Data for Export (Full SN) & Display (Truncated SN)
+$export_data = []; // Clean data for Excel
 $total_asset_group = 0;
-foreach($products as &$p) {
-    // Ambil sampel SN
-    $sn_stmt = $pdo->prepare("SELECT serial_number FROM product_serials WHERE product_id=? AND status='AVAILABLE' LIMIT 3");
-    $sn_stmt->execute([$p['id']]);
-    $sns = $sn_stmt->fetchAll(PDO::FETCH_COLUMN);
-    $p['sn_text'] = implode(', ', $sns);
-    
-    $cnt = $pdo->query("SELECT COUNT(*) FROM product_serials WHERE product_id={$p['id']} AND status='AVAILABLE'")->fetchColumn();
-    if($cnt > 3) $p['sn_text'] .= " ... (+$cnt)";
-    if(empty($p['sn_text'])) $p['sn_text'] = '-';
 
-    // Cari gudang
+foreach($products as &$p) {
+    // 1. Get All SN for Export (Comma separated)
+    $sn_stmt_all = $pdo->prepare("SELECT serial_number FROM product_serials WHERE product_id=? AND status='AVAILABLE' ORDER BY serial_number ASC");
+    $sn_stmt_all->execute([$p['id']]);
+    $all_sns = $sn_stmt_all->fetchAll(PDO::FETCH_COLUMN);
+    $full_sn_text = implode(', ', $all_sns);
+
+    // 2. Display SN (Truncated)
+    $count_sn = count($all_sns);
+    $p['sn_text'] = '';
+    if ($count_sn > 0) {
+        $slice = array_slice($all_sns, 0, 3);
+        $p['sn_text'] = implode(', ', $slice);
+        if ($count_sn > 3) $p['sn_text'] .= " ... (+$count_sn)";
+    } else {
+        $p['sn_text'] = '-';
+    }
+
+    // 3. Get Warehouse Name
     $wh_stmt = $pdo->prepare("SELECT w.name FROM inventory_transactions i JOIN warehouses w ON i.warehouse_id=w.id WHERE i.product_id=? ORDER BY i.date DESC LIMIT 1");
     $wh_stmt->execute([$p['id']]);
-    $p['last_wh'] = $wh_stmt->fetchColumn() ?: '-';
+    $last_wh = $wh_stmt->fetchColumn() ?: '-';
+    $p['last_wh'] = $last_wh;
+
+    // 4. Populate Export Row
+    $export_data[] = [
+        'Nama' => $p['name'],
+        'SKU' => $p['sku'],
+        'SN' => $full_sn_text,
+        'Beli (HPP)' => $p['buy_price'],
+        'Gudang' => $last_wh,
+        'Jual' => $p['sell_price'],
+        'Stok' => $p['stock'],
+        'Sat' => $p['unit']
+    ];
 
     // Hitung aset
     $total_asset_group += ($p['stock'] * $p['buy_price']);
@@ -235,7 +361,9 @@ if (isset($_GET['edit_id'])) {
             <select name="category" class="w-full border p-2 rounded text-sm bg-white">
                 <option value="ALL">-- Semua --</option>
                 <?php foreach($accounts_cat as $c): ?>
-                    <option value="<?= $c ?>" <?= $cat_filter==$c?'selected':'' ?>><?= $c ?></option>
+                    <option value="<?= $c ?>" <?= $cat_filter==$c?'selected':'' ?>>
+                        <?= $c ?>
+                    </option>
                 <?php endforeach; ?>
             </select>
         </div>
@@ -397,8 +525,8 @@ if (isset($_GET['edit_id'])) {
                             <th class="p-2 border border-gray-300 text-right">Jual</th>
                             <th class="p-2 border border-gray-300 w-16">Stok</th>
                             <th class="p-2 border border-gray-300 w-10">Sat</th>
+                            <th class="p-2 border border-gray-300">Catatan / Ket</th>
                             <th class="p-2 border border-gray-300 w-20">Update</th>
-                            <th class="p-2 border border-gray-300">Ket</th>
                             <th class="p-2 border border-gray-300 text-center w-24">Ref / Cetak</th>
                             <th class="p-2 border border-gray-300 text-center w-20">Aksi</th>
                         </tr>
@@ -443,13 +571,13 @@ if (isset($_GET['edit_id'])) {
                             <!-- Sat -->
                             <td class="p-2 border text-center"><?= htmlspecialchars($p['unit']) ?></td>
                             
+                            <!-- Catatan/Ket (Category) MOVED HERE -->
+                            <td class="p-2 border text-[10px] text-gray-500 text-center"><?= htmlspecialchars($p['category']) ?></td>
+                            
                             <!-- Update -->
                             <td class="p-2 border text-center text-[9px] text-gray-500">
                                 <?= $p['last_update'] ? date('d/m/y', strtotime($p['last_update'])) : '-' ?>
                             </td>
-                            
-                            <!-- Ket -->
-                            <td class="p-2 border text-[10px] text-gray-500 text-center"><?= htmlspecialchars($p['category']) ?></td>
                             
                             <!-- Ref / Cetak -->
                             <td class="p-2 border text-center">
@@ -495,8 +623,33 @@ if (isset($_GET['edit_id'])) {
 <div id="importModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
     <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
         <button onclick="document.getElementById('importModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
-        <h3 class="text-xl font-bold mb-4 border-b pb-2 text-green-700">Import Data Barang</h3>
-        <p class="text-center text-gray-500 py-4">Fitur Import tersedia di menu pengaturan.</p>
+        <h3 class="text-xl font-bold mb-4 border-b pb-2 text-green-700 flex items-center gap-2">
+            <i class="fas fa-file-excel"></i> Import Data Barang
+        </h3>
+        <div class="text-sm text-gray-600 mb-4 bg-yellow-50 p-3 rounded border border-yellow-200">
+            <p class="font-bold mb-1">Panduan Import:</p>
+            <ul class="list-disc ml-4">
+                <li>Gunakan <b>Export Excel</b> untuk mendapatkan template.</li>
+                <li>Kolom Wajib: <b>Nama, SKU, Stok, Beli (HPP)</b>.</li>
+                <li>Kolom <b>SN</b> pisahkan dengan koma (cth: SN1, SN2).</li>
+                <li>Data SKU yang sama akan <b>diupdate</b> (Nama/Harga).</li>
+                <li>Stok hanya diisi untuk <b>Barang Baru</b>.</li>
+            </ul>
+        </div>
+        
+        <form id="form_import" method="POST">
+            <input type="hidden" name="import_products" value="1">
+            <input type="hidden" name="import_json" id="import_json_data">
+            
+            <div class="mb-4">
+                <label class="block text-sm font-bold text-gray-700 mb-2">Pilih File Excel (.xlsx)</label>
+                <input type="file" id="file_excel" accept=".xlsx, .xls" class="w-full border p-2 rounded text-sm bg-gray-50">
+            </div>
+            
+            <button type="button" onclick="processImport()" class="w-full bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 shadow">
+                Upload & Proses
+            </button>
+        </form>
     </div>
 </div>
 
@@ -590,13 +743,64 @@ function printLabelDirect(sku, name) {
     } catch(e) { alert('Gagal render barcode'); }
 }
 
-// EXPORT FUNCTION (Simple Client Side)
-const productsData = <?= json_encode($products) ?>;
+// --- IMPORT EXPORT FUNCTIONS ---
+// Data prepared in PHP
+const exportData = <?= json_encode($export_data) ?>;
+
 function exportToExcel() {
-    if(productsData.length === 0) return alert("Tidak ada data.");
-    const ws = XLSX.utils.json_to_sheet(productsData);
+    if(exportData.length === 0) return alert("Tidak ada data.");
+    
+    // Create Worksheet from Clean Data
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    
+    // Auto fit column width logic (simple)
+    const wscols = [
+        {wch:30}, // Nama
+        {wch:15}, // SKU
+        {wch:30}, // SN
+        {wch:15}, // Beli
+        {wch:20}, // Gudang
+        {wch:15}, // Jual
+        {wch:10}, // Stok
+        {wch:10}  // Sat
+    ];
+    ws['!cols'] = wscols;
+
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Data Barang");
-    XLSX.writeFile(wb, "Data_Barang_Export_" + new Date().toISOString().slice(0,10) + ".xlsx");
+    
+    XLSX.writeFile(wb, "Data_Barang_Master_" + new Date().toISOString().slice(0,10) + ".xlsx");
+}
+
+function processImport() {
+    const fileInput = document.getElementById('file_excel');
+    if(!fileInput.files.length) return alert("Pilih file excel dulu!");
+    
+    const file = fileInput.files[0];
+    const reader = new FileReader();
+    
+    reader.onload = function(e) {
+        const data = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(data, {type: 'array'});
+        // Get First Sheet
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        
+        // Convert to JSON
+        const jsonData = XLSX.utils.sheet_to_json(worksheet);
+        
+        if (jsonData.length === 0) {
+            alert("File kosong atau format salah.");
+            return;
+        }
+
+        // Put JSON into hidden input
+        document.getElementById('import_json_data').value = JSON.stringify(jsonData);
+        
+        // Submit Form
+        document.getElementById('form_import').submit();
+    };
+    
+    reader.readAsArrayBuffer(file);
 }
 </script>

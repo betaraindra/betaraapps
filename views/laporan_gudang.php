@@ -230,79 +230,82 @@ if ($warehouse_filter !== 'ALL') {
         <p class="text-xs text-gray-500">Periode: <?= date('d/m/Y', strtotime($start)) ?> - <?= date('d/m/Y', strtotime($end)) ?></p>
     </div>
 
-    <table class="w-full text-xs border text-left border-collapse border-gray-400">
-        <?php if(empty($grouped_data)): ?>
-            <tr><td class="p-4 text-center text-gray-500 border border-gray-300">Tidak ada data transaksi sesuai filter.</td></tr>
-        <?php else: ?>
-            
-            <?php foreach($grouped_data as $key => $group): ?>
-                <!-- Header Periode -->
-                <tr class="bg-red-300 print:bg-red-300">
-                    <td colspan="7" class="border border-gray-400 p-2 font-bold text-red-900">
-                        Periode <?= $group['label'] ?>
-                    </td>
-                    <td colspan="5" class="border border-gray-400 p-2 font-bold text-red-900 text-right">
-                        Total Nilai Material: <?= formatRupiah($group['total']) ?>
-                    </td>
-                </tr>
-
-                <!-- Header Kolom -->
-                <tr class="bg-yellow-400 print:bg-yellow-400 font-bold text-center text-gray-900">
-                    <th class="border border-gray-500 p-2 w-10">Gbr</th>
-                    <th class="border border-gray-500 p-2">SKU (Barcode)</th>
-                    <th class="border border-gray-500 p-2">Tanggal</th>
-                    <th class="border border-gray-500 p-2">Reference</th>
-                    <th class="border border-gray-500 p-2">Nama Barang</th>
-                    <th class="border border-gray-500 p-2">Gudang</th>
-                    <th class="border border-gray-500 p-2 w-16">Qty</th>
-                    <th class="border border-gray-500 p-2 w-10">Sat</th>
-                    <th class="border border-gray-500 p-2">Ket</th>
-                    <th class="border border-gray-500 p-2">User</th>
-                    <th class="border border-gray-500 p-2 w-16 no-print">Cetak</th>
-                </tr>
-
-                <!-- Data Rows -->
-                <?php foreach($group['items'] as $item): ?>
-                <tr class="hover:bg-gray-50">
-                    <td class="border border-gray-400 p-1 text-center">
-                        <?php if($item['image_url']): ?>
-                            <img src="<?= $item['image_url'] ?>" class="w-6 h-6 object-cover mx-auto">
-                        <?php endif; ?>
-                    </td>
-                    <td class="border border-gray-400 p-2 font-mono text-center text-[10px]"><?= $item['sku'] ?></td>
-                    <td class="border border-gray-400 p-2 text-center whitespace-nowrap"><?= date('d/m/Y', strtotime($item['date'])) ?></td>
-                    <td class="border border-gray-400 p-2 text-center uppercase font-bold text-blue-800"><?= $item['reference'] ?></td>
-                    <td class="border border-gray-400 p-2 font-bold"><?= $item['prod_name'] ?></td>
-                    <td class="border border-gray-400 p-2 text-center text-[10px]"><?= $item['wh_name'] ?></td>
-                    <td class="border border-gray-400 p-2 text-center font-bold">
-                        <span class="<?= $item['type']=='IN' ? 'text-green-600' : 'text-red-600' ?>">
-                            <?= $item['type']=='IN' ? '+' : '-' ?><?= $item['quantity'] ?>
-                        </span>
-                    </td>
-                    <td class="border border-gray-400 p-2 text-center"><?= $item['unit'] ?></td>
-                    <td class="border border-gray-400 p-2 text-gray-600 italic"><?= $item['notes'] ?></td>
-                    <td class="border border-gray-400 p-2 text-center text-[9px] text-gray-500">
-                        <?php 
-                            // Ambil username user
-                            $u = $pdo->prepare("SELECT username FROM users WHERE id=?");
-                            $u->execute([$item['user_id']]);
-                            echo $u->fetchColumn();
-                        ?>
-                    </td>
-                    <td class="border border-gray-400 p-2 text-center no-print">
-                        <a href="?page=cetak_surat_jalan&id=<?= $item['id'] ?>" target="_blank" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-1 rounded text-[10px] flex items-center justify-center gap-1" title="Cetak Surat Jalan">
-                            <i class="fas fa-print"></i> SJ
-                        </a>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
+    <!-- UPDATE: WRAPPER SCROLLABLE UNTUK MOBILE -->
+    <div class="overflow-x-auto">
+        <table class="w-full text-xs border text-left border-collapse border-gray-400 min-w-[1000px]">
+            <?php if(empty($grouped_data)): ?>
+                <tr><td class="p-4 text-center text-gray-500 border border-gray-300">Tidak ada data transaksi sesuai filter.</td></tr>
+            <?php else: ?>
                 
-                <!-- Spacer -->
-                <tr class="h-4 border-none"><td colspan="12" class="border-none"></td></tr>
+                <?php foreach($grouped_data as $key => $group): ?>
+                    <!-- Header Periode -->
+                    <tr class="bg-red-300 print:bg-red-300">
+                        <td colspan="7" class="border border-gray-400 p-2 font-bold text-red-900">
+                            Periode <?= $group['label'] ?>
+                        </td>
+                        <td colspan="5" class="border border-gray-400 p-2 font-bold text-red-900 text-right">
+                            Total Nilai Material: <?= formatRupiah($group['total']) ?>
+                        </td>
+                    </tr>
 
-            <?php endforeach; ?>
-        <?php endif; ?>
-    </table>
+                    <!-- Header Kolom -->
+                    <tr class="bg-yellow-400 print:bg-yellow-400 font-bold text-center text-gray-900">
+                        <th class="border border-gray-500 p-2 w-10">Gbr</th>
+                        <th class="border border-gray-500 p-2">SKU (Barcode)</th>
+                        <th class="border border-gray-500 p-2">Tanggal</th>
+                        <th class="border border-gray-500 p-2">Reference</th>
+                        <th class="border border-gray-500 p-2">Nama Barang</th>
+                        <th class="border border-gray-500 p-2">Gudang</th>
+                        <th class="border border-gray-500 p-2 w-16">Qty</th>
+                        <th class="border border-gray-500 p-2 w-10">Sat</th>
+                        <th class="border border-gray-500 p-2">Ket</th>
+                        <th class="border border-gray-500 p-2">User</th>
+                        <th class="border border-gray-500 p-2 w-16 no-print">Cetak</th>
+                    </tr>
+
+                    <!-- Data Rows -->
+                    <?php foreach($group['items'] as $item): ?>
+                    <tr class="hover:bg-gray-50">
+                        <td class="border border-gray-400 p-1 text-center">
+                            <?php if($item['image_url']): ?>
+                                <img src="<?= $item['image_url'] ?>" class="w-6 h-6 object-cover mx-auto">
+                            <?php endif; ?>
+                        </td>
+                        <td class="border border-gray-400 p-2 font-mono text-center text-[10px]"><?= $item['sku'] ?></td>
+                        <td class="border border-gray-400 p-2 text-center whitespace-nowrap"><?= date('d/m/Y', strtotime($item['date'])) ?></td>
+                        <td class="border border-gray-400 p-2 text-center uppercase font-bold text-blue-800"><?= $item['reference'] ?></td>
+                        <td class="border border-gray-400 p-2 font-bold"><?= $item['prod_name'] ?></td>
+                        <td class="border border-gray-400 p-2 text-center text-[10px]"><?= $item['wh_name'] ?></td>
+                        <td class="border border-gray-400 p-2 text-center font-bold">
+                            <span class="<?= $item['type']=='IN' ? 'text-green-600' : 'text-red-600' ?>">
+                                <?= $item['type']=='IN' ? '+' : '-' ?><?= $item['quantity'] ?>
+                            </span>
+                        </td>
+                        <td class="border border-gray-400 p-2 text-center"><?= $item['unit'] ?></td>
+                        <td class="border border-gray-400 p-2 text-gray-600 italic"><?= $item['notes'] ?></td>
+                        <td class="border border-gray-400 p-2 text-center text-[9px] text-gray-500">
+                            <?php 
+                                // Ambil username user
+                                $u = $pdo->prepare("SELECT username FROM users WHERE id=?");
+                                $u->execute([$item['user_id']]);
+                                echo $u->fetchColumn();
+                            ?>
+                        </td>
+                        <td class="border border-gray-400 p-2 text-center no-print">
+                            <a href="?page=cetak_surat_jalan&id=<?= $item['id'] ?>" target="_blank" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-1 rounded text-[10px] flex items-center justify-center gap-1" title="Cetak Surat Jalan">
+                                <i class="fas fa-print"></i> SJ
+                            </a>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
+                    
+                    <!-- Spacer -->
+                    <tr class="h-4 border-none"><td colspan="12" class="border-none"></td></tr>
+
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </table>
+    </div>
 </div>
 
 <script>

@@ -56,7 +56,7 @@ if (in_array($page, $standalone_pages)) {
 // --- LOGIC MENU ACTIVE STATE ---
 // Menentukan menu mana yang terbuka otomatis berdasarkan halaman aktif
 // UPDATE: lokasi_gudang dan akun_kategori dipindah ke admin pages
-$menu_data_pages = ['data_barang', 'data_keuangan', 'data_transaksi'];
+$menu_data_pages = ['data_wilayah', 'detail_gudang', 'data_barang', 'data_keuangan', 'data_transaksi'];
 $menu_laporan_pages = ['laporan_gudang', 'laporan_aset', 'laporan_keuangan', 'laporan_internal'];
 $menu_admin_pages = ['lokasi_gudang', 'akun_kategori', 'manajemen_user', 'system_logs', 'pengaturan', 'update_system'];
 
@@ -136,14 +136,21 @@ $is_menu_admin_open = in_array($page, $menu_admin_pages);
                 </button>
                 <div id="menu-data" class="<?= $is_menu_data_open ? '' : 'hidden' ?> space-y-1 mt-1 pl-2 border-l-2 border-slate-700 ml-2">
                     <?php if ($access_inventory): ?>
-                        <a href="?page=data_barang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_barang' ? 'text-white' : 'text-slate-300' ?>">Data Barang</a>
-                        <!-- Lokasi Gudang dipindah ke Admin -->
+                        <a href="?page=data_wilayah" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= ($page == 'data_wilayah' || $page == 'detail_gudang') ? 'text-white' : 'text-slate-300' ?>">
+                            <i class="fas fa-map-marked-alt w-5 text-center mr-1"></i> Data Wilayah (Gudang)
+                        </a>
+                        <a href="?page=data_barang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_barang' ? 'text-white' : 'text-slate-300' ?>">
+                            <i class="fas fa-box w-5 text-center mr-1"></i> Data Barang
+                        </a>
                     <?php endif; ?>
                     <?php if ($access_finance): ?>
-                        <a href="?page=data_keuangan" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_keuangan' ? 'text-white' : 'text-slate-300' ?>">Data Keuangan</a>
-                        <!-- Akun Kategori dipindah ke Admin -->
+                        <a href="?page=data_keuangan" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_keuangan' ? 'text-white' : 'text-slate-300' ?>">
+                            <i class="fas fa-file-invoice-dollar w-5 text-center mr-1"></i> Data Keuangan
+                        </a>
                     <?php endif; ?>
-                    <a href="?page=data_transaksi" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_transaksi' ? 'text-white' : 'text-slate-300' ?>">Semua Transaksi</a>
+                    <a href="?page=data_transaksi" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'data_transaksi' ? 'text-white' : 'text-slate-300' ?>">
+                        <i class="fas fa-list-alt w-5 text-center mr-1"></i> Semua Transaksi
+                    </a>
                 </div>
 
                 <!-- COLLAPSIBLE: LAPORAN -->
@@ -170,7 +177,7 @@ $is_menu_admin_open = in_array($page, $menu_admin_pages);
                 <div id="menu-admin" class="<?= $is_menu_admin_open ? '' : 'hidden' ?> space-y-1 mt-1 pl-2 border-l-2 border-slate-700 ml-2">
                     <!-- PINDAHAN DARI DATA: Lokasi Gudang -->
                     <?php if ($access_inventory): ?>
-                        <a href="?page=lokasi_gudang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'lokasi_gudang' ? 'text-white' : 'text-slate-300' ?>">Lokasi Gudang</a>
+                        <a href="?page=lokasi_gudang" class="group flex items-center px-2 py-2 text-sm font-medium rounded-md hover:bg-slate-700 <?= $page == 'lokasi_gudang' ? 'text-white' : 'text-slate-300' ?>">Master Lokasi Gudang</a>
                     <?php endif; ?>
                     
                     <!-- PINDAHAN DARI DATA: Akun & Kategori -->

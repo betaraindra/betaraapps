@@ -266,10 +266,12 @@ if ($tab === 'activity') {
 <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
     <div>
         <div class="flex items-center gap-2">
-            <a href="?page=lokasi_gudang" class="text-gray-500 hover:text-gray-700"><i class="fas fa-arrow-left"></i></a>
-            <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-warehouse text-blue-600"></i> <?= h($warehouse['name']) ?></h2>
+            <a href="?page=data_wilayah&start=<?=$start_date?>&end=<?=$end_date?>" class="text-gray-500 hover:text-gray-700 bg-white p-2 rounded shadow-sm border border-gray-200">
+                <i class="fas fa-arrow-left"></i> Kembali
+            </a>
+            <h2 class="text-2xl font-bold text-gray-800 ml-2"><i class="fas fa-warehouse text-blue-600"></i> <?= h($warehouse['name']) ?></h2>
         </div>
-        <p class="text-gray-500 text-sm ml-6"><i class="fas fa-map-marker-alt"></i> <?= h($warehouse['location']) ?></p>
+        <p class="text-gray-500 text-sm ml-14"><i class="fas fa-map-marker-alt"></i> <?= h($warehouse['location']) ?></p>
     </div>
     
     <div class="flex gap-4 items-center">
@@ -279,8 +281,8 @@ if ($tab === 'activity') {
         </button>
 
         <?php if($tab === 'stock'): ?>
-        <div class="bg-blue-100 text-blue-800 px-4 py-2 rounded text-center">
-            <div class="text-xs font-bold uppercase">Nilai Aset</div>
+        <div class="bg-blue-100 text-blue-800 px-4 py-2 rounded text-center border border-blue-200">
+            <div class="text-xs font-bold uppercase">Nilai Aset Fisik</div>
             <div class="font-bold text-lg"><?= formatRupiah($total_asset_value) ?></div>
         </div>
         <?php endif; ?>
@@ -327,13 +329,13 @@ if ($tab === 'activity') {
        class="flex-1 py-3 text-center text-sm font-bold border-b-2 hover:bg-gray-50 whitespace-nowrap px-4 <?= $tab=='activity' ? 'border-purple-600 text-purple-600 bg-purple-50' : 'border-transparent text-gray-500' ?>">
        <i class="fas fa-tools mr-2"></i> Aktivitas/Pemakaian
     </a>
-    <a href="?page=detail_gudang&id=<?= $id ?>&tab=history&start=<?= $start_date ?>&end=<?= $end_date ?>&q=<?= h($q) ?>" 
-       class="flex-1 py-3 text-center text-sm font-bold border-b-2 hover:bg-gray-50 whitespace-nowrap px-4 <?= $tab=='history' ? 'border-orange-600 text-orange-600 bg-orange-50' : 'border-transparent text-gray-500' ?>">
-       <i class="fas fa-history mr-2"></i> Riwayat Mutasi
-    </a>
     <a href="?page=detail_gudang&id=<?= $id ?>&tab=finance&start=<?= $start_date ?>&end=<?= $end_date ?>&q=<?= h($q) ?>" 
        class="flex-1 py-3 text-center text-sm font-bold border-b-2 hover:bg-gray-50 whitespace-nowrap px-4 <?= $tab=='finance' ? 'border-green-600 text-green-600 bg-green-50' : 'border-transparent text-gray-500' ?>">
        <i class="fas fa-money-bill-wave mr-2"></i> Keuangan
+    </a>
+    <a href="?page=detail_gudang&id=<?= $id ?>&tab=history&start=<?= $start_date ?>&end=<?= $end_date ?>&q=<?= h($q) ?>" 
+       class="flex-1 py-3 text-center text-sm font-bold border-b-2 hover:bg-gray-50 whitespace-nowrap px-4 <?= $tab=='history' ? 'border-orange-600 text-orange-600 bg-orange-50' : 'border-transparent text-gray-500' ?>">
+       <i class="fas fa-history mr-2"></i> Riwayat Mutasi Lengkap
     </a>
 </div>
 

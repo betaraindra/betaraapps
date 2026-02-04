@@ -14,14 +14,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->beginTransaction();
         try {
             foreach($data as $row) {
+                // Mapping Kolom (Support Format Baru & Lama)
                 $sku = trim(strval($row['SKU'] ?? $row['sku'] ?? ''));
-                $name = trim(strval($row['Nama Barang'] ?? $row['nama barang'] ?? $row['Nama'] ?? ''));
-                $cat = trim(strval($row['Kategori'] ?? $row['kategori'] ?? 'Umum'));
-                $unit = trim(strval($row['Satuan'] ?? $row['satuan'] ?? 'Pcs'));
+                $name = trim(strval($row['Nama'] ?? $row['Nama Barang'] ?? $row['nama'] ?? '')); // Format Baru: Nama
                 
-                $buyRaw = $row['Harga Beli'] ?? $row['harga beli'] ?? 0;
-                $sellRaw = $row['Harga Jual'] ?? $row['harga jual'] ?? 0;
+                // Kategori mungkin tidak ada di format baru, default 'Umum'
+                $cat = trim(strval($row['Kategori'] ?? $row['kategori'] ?? 'Umum')); 
+                
+                $unit = trim(strval($row['Sat'] ?? $row['Satuan'] ?? 'Pcs')); // Format Baru: Sat
+                
+                // Mapping Harga
+                $buyRaw = $row['Beli (HPP)'] ?? $row['Harga Beli'] ?? 0; // Format Baru: Beli (HPP)
+                $sellRaw = $row['Jual'] ?? $row['Harga Jual'] ?? 0;      // Format Baru: Jual
                 $stockRaw = $row['Stok'] ?? $row['stok'] ?? 0;
+
+                // Mapping SN
+                $snRaw = $row['SN'] ?? $row['Wajib SN'] ?? '';
+                $has_sn = (strtoupper($snRaw) === 'YA' || $snRaw == '1') ? 1 : 0;
 
                 $buy = cleanNumber($buyRaw);
                 $sell = cleanNumber($sellRaw);
@@ -34,12 +43,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $existing = $check->fetch();
 
                 if($existing) {
-                    $stmt = $pdo->prepare("UPDATE products SET name=?, category=?, unit=?, buy_price=?, sell_price=?, stock=? WHERE id=?");
-                    $stmt->execute([$name, $cat, $unit, $buy, $sell, $stock, $existing['id']]);
+                    $stmt = $pdo->prepare("UPDATE products SET name=?, category=?, unit=?, buy_price=?, sell_price=?, stock=?, has_serial_number=? WHERE id=?");
+                    $stmt->execute([$name, $cat, $unit, $buy, $sell, $stock, $has_sn, $existing['id']]);
                     $count_update++;
                 } else {
-                    $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock) VALUES (?, ?, ?, ?, ?, ?, ?)");
-                    $stmt->execute([$sku, $name, $cat, $unit, $buy, $sell, $stock]);
+                    $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, has_serial_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmt->execute([$sku, $name, $cat, $unit, $buy, $sell, $stock, $has_sn]);
                     $count_insert++;
                 }
             }
@@ -302,17 +311,21 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $products = $stmt->fetchAll();
 
+// --- EXPORT DATA PREPARATION (SESUAI REQUEST: Gbr, Nama, SKU, SN, Beli (HPP), Gudang, Jual, Stok, Sat, Update, Ket) ---
 $export_data_js = [];
 foreach($products as $p) {
     $export_data_js[] = [
+        'Gbr' => $p['image_url'], // URL Gambar
+        'Nama' => $p['name'],
         'SKU' => $p['sku'],
-        'Nama Barang' => $p['name'],
-        'Kategori' => $p['category'],
-        'Satuan' => $p['unit'],
-        'Harga Beli' => (float)$p['buy_price'],
-        'Harga Jual' => (float)$p['sell_price'],
+        'SN' => $p['has_serial_number'] ? 'YA' : 'TIDAK',
+        'Beli (HPP)' => (float)$p['buy_price'],
+        'Gudang' => $p['warehouse_name'] ?? '-',
+        'Jual' => (float)$p['sell_price'],
         'Stok' => (int)$p['stock'],
-        'Wajib SN' => $p['has_serial_number'] ? 'YA' : 'TIDAK'
+        'Sat' => $p['unit'],
+        'Update' => $p['trx_date'],
+        'Ket' => $p['trx_notes']
     ];
 }
 
@@ -633,6 +646,9 @@ foreach($products as $p) {
     <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
         <button onclick="document.getElementById('importModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
         <h3 class="text-xl font-bold mb-4 border-b pb-2 text-green-700">Import Data Barang</h3>
+        <p class="text-xs text-gray-500 mb-4 bg-gray-100 p-2 rounded">
+            Pastikan format Excel (.xlsx) memiliki kolom: <b>Nama, SKU, Beli (HPP), Jual, Stok, Sat</b>.
+        </p>
         <button onclick="document.getElementById('file_excel').click()" class="w-full bg-green-600 text-white py-3 rounded font-bold hover:bg-green-700 shadow gap-2 flex justify-center items-center"><i class="fas fa-upload"></i> Pilih File Excel (.xlsx)</button>
     </div>
 </div>

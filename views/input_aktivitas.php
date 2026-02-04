@@ -1,23 +1,62 @@
 <?php
 checkRole(['SUPER_ADMIN', 'ADMIN_GUDANG', 'MANAGER', 'SVP']);
 
-// --- LOGIKA SIMPAN AKTIVITAS ---
+// --- 1. HANDLE HAPUS RIWAYAT (ROLLBACK) ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_id'])) {
+    validate_csrf();
+    $del_id = $_POST['delete_id'];
+    
+    $pdo->beginTransaction();
+    try {
+        // Ambil data transaksi lama
+        $stmt = $pdo->prepare("SELECT type, product_id, quantity, reference FROM inventory_transactions WHERE id=?");
+        $stmt->execute([$del_id]);
+        $trx = $stmt->fetch();
+        
+        if ($trx) {
+            // Rollback Stok
+            $operator = ($trx['type'] == 'OUT') ? '+' : '-'; // Jika dulunya OUT, sekarang tambah stok (balikin)
+            $pdo->prepare("UPDATE products SET stock = stock $operator ? WHERE id=?")->execute([$trx['quantity'], $trx['product_id']]);
+            
+            // Hapus Transaksi Inventori
+            $pdo->prepare("DELETE FROM inventory_transactions WHERE id=?")->execute([$del_id]);
+            
+            // Reset SN jika perlu (Simple logic: jika hapus transaksi OUT, SN jadi Available. Jika hapus IN, SN jadi Sold/Deleted?)
+            // Untuk keamanan, fitur hapus di sini hanya mengembalikan stok global. SN perlu penyesuaian manual jika kompleks.
+            if ($trx['type'] == 'OUT') {
+                $pdo->prepare("UPDATE product_serials SET status='AVAILABLE', out_transaction_id=NULL WHERE out_transaction_id=?")->execute([$del_id]);
+            }
+            
+            logActivity($pdo, 'DELETE_ACTIVITY', "Hapus Aktivitas {$trx['reference']}");
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>'Data aktivitas dihapus & stok dikembalikan.'];
+        }
+        $pdo->commit();
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal hapus: '.$e->getMessage()];
+    }
+    echo "<script>window.location='?page=input_aktivitas';</script>";
+    exit;
+}
+
+// --- 2. HANDLE SIMPAN AKTIVITAS (PEMAKAIAN / PENGEMBALIAN) ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
     validate_csrf();
     
     $cart_json = $_POST['cart_json'];
     $cart = json_decode($cart_json, true);
     
+    $mode = $_POST['activity_mode']; // 'OUT' (Pemakaian) atau 'IN' (Pengembalian)
     $date = $_POST['date'];
-    $wh_id = $_POST['warehouse_id']; // Gudang Asal (Wajib)
-    $ref = $_POST['reference']; // ID Pelanggan / No Tiket / Ref Project
-    $desc_main = trim($_POST['description']); // Keterangan Aktivitas
+    $wh_id = $_POST['warehouse_id']; 
+    $ref = $_POST['reference'];
+    $desc_main = trim($_POST['description']);
     
     // Validasi
     if (empty($wh_id)) {
         $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gudang harus dipilih.'];
     } elseif (empty($desc_main)) {
-        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Keterangan Aktivitas wajib diisi.'];
+        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Keterangan wajib diisi.'];
     } elseif (empty($cart) || !is_array($cart)) {
         $_SESSION['flash'] = ['type'=>'error', 'message'=>'Keranjang barang kosong!'];
     } else {
@@ -28,72 +67,115 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
             $stmtWh->execute([$wh_id]);
             $wh_name = $stmtWh->fetchColumn();
             
-            // Ambil Akun Biaya (Prioritas: 2009 Pengeluaran Wilayah, Fallback: 2105 Material)
-            $accStmt = $pdo->query("SELECT id FROM accounts WHERE code = '2009' LIMIT 1");
-            $accId = $accStmt->fetchColumn();
-            if (!$accId) {
-                $accId = $pdo->query("SELECT id FROM accounts WHERE code = '2105' LIMIT 1")->fetchColumn();
+            // Tentukan Akun Keuangan
+            $accId = null;
+            $finType = '';
+            
+            if ($mode == 'OUT') {
+                // PEMAKAIAN -> EXPENSE (Beban)
+                $accStmt = $pdo->query("SELECT id FROM accounts WHERE code = '2009' LIMIT 1"); // Pengeluaran Wilayah
+                $accId = $accStmt->fetchColumn();
+                if (!$accId) $accId = $pdo->query("SELECT id FROM accounts WHERE code = '2105' LIMIT 1")->fetchColumn(); // Material
+                $finType = 'EXPENSE';
+            } else {
+                // PENGEMBALIAN -> INCOME (Recovery Asset/Pemasukan Wilayah)
+                // Kita gunakan akun 1004 (Pemasukan Wilayah) atau 1003 (Lain-lain) untuk menyeimbangkan
+                $accStmt = $pdo->query("SELECT id FROM accounts WHERE code = '1004' LIMIT 1");
+                $accId = $accStmt->fetchColumn();
+                if (!$accId) $accId = $pdo->query("SELECT id FROM accounts WHERE code = '1003' LIMIT 1")->fetchColumn();
+                $finType = 'INCOME';
             }
 
             $count = 0;
             foreach ($cart as $item) {
-                // 1. Cek Stok & Data Produk
+                // Cek Produk
                 $stmt = $pdo->prepare("SELECT id, stock, buy_price, name, has_serial_number FROM products WHERE sku = ?");
                 $stmt->execute([$item['sku']]);
                 $prod = $stmt->fetch();
                 
-                if (!$prod) throw new Exception("Produk dengan SKU {$item['sku']} tidak ditemukan.");
+                if (!$prod) throw new Exception("Produk SKU {$item['sku']} tidak ditemukan.");
                 
-                // Validasi SN
-                if ($prod['has_serial_number'] == 1) {
-                    if (empty($item['sns']) || count($item['sns']) != $item['qty']) {
-                        throw new Exception("Produk {$prod['name']} wajib Serial Number sejumlah Qty.");
+                // --- LOGIKA PEMAKAIAN (OUT) ---
+                if ($mode == 'OUT') {
+                    // Cek SN & Stok
+                    if ($prod['has_serial_number'] == 1) {
+                        if (empty($item['sns']) || count($item['sns']) != $item['qty']) {
+                            throw new Exception("Produk {$prod['name']} wajib SN sesuai Qty.");
+                        }
                     }
-                }
+                    if ($prod['stock'] < $item['qty']) {
+                        throw new Exception("Stok {$item['name']} tidak cukup! Sisa: {$prod['stock']}");
+                    }
 
-                if ($prod['stock'] < $item['qty']) {
-                    throw new Exception("Stok {$item['name']} tidak mencukupi! (Global Sisa: {$prod['stock']})");
-                }
+                    // Kurangi Stok
+                    $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$item['qty'], $prod['id']]);
+                    
+                    // Catat Transaksi OUT
+                    $notes = "Aktivitas: " . $desc_main . ($item['notes'] ? " ({$item['notes']})" : "");
+                    if(!empty($item['sns'])) $notes .= " [SN: " . implode(', ', $item['sns']) . "]";
+                    
+                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)")
+                        ->execute([$date, $prod['id'], $wh_id, $item['qty'], $ref, $notes, $_SESSION['user_id']]);
+                    $trx_id = $pdo->lastInsertId();
+
+                    // Update SN jadi SOLD
+                    if ($prod['has_serial_number'] == 1 && !empty($item['sns'])) {
+                        $snStmt = $pdo->prepare("UPDATE product_serials SET status = 'SOLD', out_transaction_id = ? WHERE product_id = ? AND serial_number = ? AND status = 'AVAILABLE'");
+                        foreach ($item['sns'] as $sn) {
+                            $snStmt->execute([$trx_id, $prod['id'], $sn]);
+                            if ($snStmt->rowCount() == 0) throw new Exception("SN $sn tidak tersedia/salah.");
+                        }
+                    }
+                } 
                 
-                // 2. Kurangi Stok Global
-                $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$item['qty'], $prod['id']]);
-                
-                // 3. Catat Transaksi INVENTORI (OUT)
-                $notes_out = "Aktivitas: " . $desc_main;
-                if(!empty($item['notes'])) $notes_out .= " (" . $item['notes'] . ")";
-                if(!empty($item['sns'])) $notes_out .= " [SN: " . implode(', ', $item['sns']) . "]";
+                // --- LOGIKA PENGEMBALIAN (IN) ---
+                else {
+                    // Tambah Stok
+                    $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?")->execute([$item['qty'], $prod['id']]);
+                    
+                    // Catat Transaksi IN
+                    $notes = "Pengembalian: " . $desc_main . ($item['notes'] ? " ({$item['notes']})" : "");
+                    if(!empty($item['sns'])) $notes .= " [SN: " . implode(', ', $item['sns']) . "]";
 
-                $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)")
-                    ->execute([$date, $prod['id'], $wh_id, $item['qty'], $ref, $notes_out, $_SESSION['user_id']]);
-                $trx_out_id = $pdo->lastInsertId();
+                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'IN', ?, ?, ?, ?, ?, ?)")
+                        ->execute([$date, $prod['id'], $wh_id, $item['qty'], $ref, $notes, $_SESSION['user_id']]);
+                    $trx_id = $pdo->lastInsertId();
 
-                // 4. Update Status SN (Jika Ada)
-                if ($prod['has_serial_number'] == 1 && !empty($item['sns'])) {
-                    $snStmt = $pdo->prepare("UPDATE product_serials SET status = 'SOLD', out_transaction_id = ? WHERE product_id = ? AND serial_number = ? AND status = 'AVAILABLE'");
-                    foreach ($item['sns'] as $sn) {
-                        $snStmt->execute([$trx_out_id, $prod['id'], $sn]);
-                        if ($snStmt->rowCount() == 0) {
-                            $chk = $pdo->query("SELECT status FROM product_serials WHERE serial_number='$sn'")->fetchColumn();
-                            throw new Exception("SN $sn tidak valid/tersedia (Status: $chk).");
+                    // Update SN jadi AVAILABLE
+                    if ($prod['has_serial_number'] == 1 && !empty($item['sns'])) {
+                        // Cek apakah SN ada? Jika ada update, jika tidak insert (kalau barang lama banget)
+                        $checkSn = $pdo->prepare("SELECT id FROM product_serials WHERE product_id=? AND serial_number=?");
+                        $stmtUpdate = $pdo->prepare("UPDATE product_serials SET status = 'AVAILABLE', warehouse_id = ?, in_transaction_id = ? WHERE id = ?");
+                        $stmtInsert = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+
+                        foreach ($item['sns'] as $sn) {
+                            $checkSn->execute([$prod['id'], $sn]);
+                            $existingSn = $checkSn->fetch();
+                            
+                            if ($existingSn) {
+                                $stmtUpdate->execute([$wh_id, $trx_id, $existingSn['id']]);
+                            } else {
+                                $stmtInsert->execute([$prod['id'], $sn, $wh_id, $trx_id]);
+                            }
                         }
                     }
                 }
-                
-                // 5. Catat Transaksi KEUANGAN (EXPENSE)
-                // Menggunakan Harga Beli (HPP) sebagai nilai beban
+
+                // --- CATAT KEUANGAN (AUTO) ---
                 $total_value = $item['qty'] * $prod['buy_price'];
-                
                 if ($accId && $total_value > 0) {
-                    $desc_fin = "[AKTIVITAS] {$prod['name']} ({$item['qty']}) - $desc_main [Wilayah: $wh_name]";
-                    $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, 'EXPENSE', ?, ?, ?, ?)")
-                        ->execute([$date, $accId, $total_value, $desc_fin, $_SESSION['user_id']]);
+                    $prefix = ($mode == 'OUT') ? "[PEMAKAIAN]" : "[PENGEMBALIAN]";
+                    $fin_desc = "$prefix {$prod['name']} ({$item['qty']}) - $desc_main [Wilayah: $wh_name]";
+                    
+                    $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, ?, ?, ?, ?, ?)")
+                        ->execute([$date, $finType, $accId, $total_value, $fin_desc, $_SESSION['user_id']]);
                 }
 
                 $count++;
             }
             
             $pdo->commit();
-            $_SESSION['flash'] = ['type'=>'success', 'message'=>"$count item aktivitas berhasil diproses. Stok & Biaya tercatat."];
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>"$count item berhasil diproses ($mode)."];
             echo "<script>window.location='?page=input_aktivitas';</script>";
             exit;
             
@@ -104,19 +186,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
     }
 }
 
+// --- 3. LOAD DATA UNTUK TABEL LIST ---
+$start_date = $_GET['start'] ?? date('Y-m-01');
+$end_date = $_GET['end'] ?? date('Y-m-d');
+$search_q = $_GET['q'] ?? '';
+
+// Pagination
+$page_num = isset($_GET['p']) ? (int)$_GET['p'] : 1;
+$limit = 20;
+$offset = ($page_num - 1) * $limit;
+
+// Query List Aktivitas (Notes contains 'Aktivitas:' or 'Pengembalian:')
+$sql_list = "SELECT i.*, p.name as prod_name, p.sku, w.name as wh_name, u.username 
+             FROM inventory_transactions i 
+             JOIN products p ON i.product_id = p.id 
+             JOIN warehouses w ON i.warehouse_id = w.id
+             JOIN users u ON i.user_id = u.id
+             WHERE (i.notes LIKE 'Aktivitas:%' OR i.notes LIKE 'Pengembalian:%')
+             AND i.date BETWEEN ? AND ?
+             AND (p.name LIKE ? OR i.reference LIKE ? OR i.notes LIKE ?)
+             ORDER BY i.date DESC, i.created_at DESC
+             LIMIT $limit OFFSET $offset";
+
+$stmt_list = $pdo->prepare($sql_list);
+$stmt_list->execute([$start_date, $end_date, "%$search_q%", "%$search_q%", "%$search_q%"]);
+$activities_data = $stmt_list->fetchAll();
+
+// Count for Pagination
+$sql_count = "SELECT COUNT(*) FROM inventory_transactions i 
+              JOIN products p ON i.product_id = p.id 
+              WHERE (i.notes LIKE 'Aktivitas:%' OR i.notes LIKE 'Pengembalian:%')
+              AND i.date BETWEEN ? AND ?
+              AND (p.name LIKE ? OR i.reference LIKE ? OR i.notes LIKE ?)";
+$stmt_count = $pdo->prepare($sql_count);
+$stmt_count->execute([$start_date, $end_date, "%$search_q%", "%$search_q%", "%$search_q%"]);
+$total_rows = $stmt_count->fetchColumn();
+$total_pages = ceil($total_rows / $limit);
+
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
 $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
 ?>
 
 <!-- UI HALAMAN -->
 <div class="space-y-6">
+    
+    <!-- FORM INPUT SECTION -->
     <div class="bg-white p-6 rounded-lg shadow border-l-4 border-purple-600">
         <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 border-b pb-4 gap-4">
             <div>
                 <h3 class="font-bold text-xl text-purple-700 flex items-center gap-2">
-                    <i class="fas fa-tools"></i> Input Aktivitas / Pemakaian
+                    <i class="fas fa-tools"></i> Input Aktivitas & Pengembalian
                 </h3>
-                <p class="text-sm text-gray-500 mt-1">Gunakan fitur ini untuk mencatat barang yang digunakan untuk operasional (Bukan dijual).</p>
+                <p class="text-sm text-gray-500 mt-1">Catat pemakaian barang operasional atau pengembalian (berhenti berlangganan).</p>
             </div>
             
             <div class="flex gap-2 flex-wrap">
@@ -150,6 +271,24 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
             <input type="hidden" name="save_activity" value="1">
             <input type="hidden" name="cart_json" id="cart_json">
 
+            <!-- MODE SELECTOR -->
+            <div class="mb-4">
+                <div class="flex rounded-md shadow-sm" role="group">
+                    <label class="flex-1 cursor-pointer">
+                        <input type="radio" name="activity_mode" value="OUT" class="peer sr-only" checked onchange="toggleMode('OUT')">
+                        <div class="px-4 py-2 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100 peer-checked:bg-purple-600 peer-checked:text-white peer-checked:font-bold text-center transition">
+                            <i class="fas fa-minus-circle mr-2"></i> Pemakaian (Keluar)
+                        </div>
+                    </label>
+                    <label class="flex-1 cursor-pointer">
+                        <input type="radio" name="activity_mode" value="IN" class="peer sr-only" onchange="toggleMode('IN')">
+                        <div class="px-4 py-2 bg-white border border-gray-200 rounded-r-lg hover:bg-gray-100 peer-checked:bg-teal-600 peer-checked:text-white peer-checked:font-bold text-center transition">
+                            <i class="fas fa-undo mr-2"></i> Pengembalian (Masuk)
+                        </div>
+                    </label>
+                </div>
+            </div>
+
             <!-- HEADER INPUT -->
             <div class="bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6">
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -159,8 +298,8 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                     </div>
                     <div>
                         <label class="block text-xs font-bold text-gray-600 mb-1">Lokasi Gudang / Wilayah <span class="text-red-500">*</span></label>
-                        <select name="warehouse_id" id="warehouse_id" class="w-full border p-2 rounded text-sm bg-white font-bold text-purple-700" required>
-                            <option value="" selected disabled>-- Pilih Gudang Asal Barang --</option>
+                        <select name="warehouse_id" id="warehouse_id" class="w-full border p-2 rounded text-sm bg-white font-bold text-gray-800" required>
+                            <option value="" selected disabled>-- Pilih Gudang --</option>
                             <?php foreach($warehouses as $w): ?>
                                 <option value="<?= $w['id'] ?>"><?= $w['name'] ?></option>
                             <?php endforeach; ?>
@@ -174,20 +313,20 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                         </div>
                     </div>
                     <div>
-                        <label class="block text-xs font-bold text-gray-600 mb-1">Keterangan Aktivitas <span class="text-red-500">*</span></label>
-                        <input type="text" name="description" class="w-full border p-2 rounded text-sm" placeholder="Contoh: Instalasi Modem di Rumah Bpk. Budi" required>
+                        <label class="block text-xs font-bold text-gray-600 mb-1">Keterangan <span class="text-red-500">*</span></label>
+                        <input type="text" name="description" id="desc_input" class="w-full border p-2 rounded text-sm" placeholder="Contoh: Instalasi Modem" required>
                     </div>
                 </div>
             </div>
 
             <!-- ITEM INPUT -->
-            <div class="bg-blue-50 p-4 rounded-lg border border-blue-200 mb-6">
-                <h4 class="font-bold text-blue-800 mb-3 text-sm border-b border-blue-200 pb-1">Input Barang</h4>
+            <div id="item_input_container" class="bg-purple-50 p-4 rounded-lg border border-purple-200 mb-6 transition-colors duration-300">
+                <h4 class="font-bold text-purple-800 mb-3 text-sm border-b border-purple-200 pb-1" id="item_title">Input Barang Pemakaian</h4>
                 <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
                     <div class="md:col-span-4">
                         <label class="block text-xs font-bold text-gray-600 mb-1">SKU / SN Barcode</label>
                         <div class="flex gap-1">
-                            <input type="text" id="sku_input" class="w-full border-2 border-blue-500 p-2 rounded font-mono font-bold text-lg uppercase" placeholder="SCAN..." onchange="checkSku()" onkeydown="if(event.key === 'Enter'){ checkSku(); event.preventDefault(); }">
+                            <input type="text" id="sku_input" class="w-full border-2 border-purple-500 p-2 rounded font-mono font-bold text-lg uppercase transition-colors" placeholder="SCAN..." onchange="checkSku()" onkeydown="if(event.key === 'Enter'){ checkSku(); event.preventDefault(); }">
                             <button type="button" onclick="checkSku()" class="bg-blue-600 text-white px-3 rounded hover:bg-blue-700"><i class="fas fa-search"></i></button>
                         </div>
                         <span id="sku_status" class="text-[10px] block mt-1 font-bold"></span>
@@ -199,20 +338,20 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                     </div>
 
                     <div class="md:col-span-4">
-                        <label class="block text-xs font-bold text-gray-600 mb-1">Catatan Item (Opsional)</label>
+                        <label class="block text-xs font-bold text-gray-600 mb-1">Catatan Item</label>
                         <input type="text" id="notes_input" class="w-full border p-2 rounded" placeholder="Keterangan per barang..." onkeydown="if(event.key === 'Enter'){ addToCart(); event.preventDefault(); }">
                     </div>
 
                     <div class="md:col-span-2">
-                        <button type="button" onclick="addToCart()" class="w-full bg-orange-500 text-white py-2 rounded font-bold hover:bg-orange-600 shadow flex justify-center items-center gap-2">
+                        <button type="button" onclick="addToCart()" id="btn_add" class="w-full bg-orange-500 text-white py-2 rounded font-bold hover:bg-orange-600 shadow flex justify-center items-center gap-2">
                             <i class="fas fa-plus"></i> Tambah
                         </button>
                     </div>
                 </div>
                 
                 <!-- SN INPUT AREA -->
-                <div id="sn_out_container" class="hidden mt-4 bg-purple-100 p-3 rounded border border-purple-200">
-                    <h5 class="text-xs font-bold text-purple-800 mb-2">Scan Serial Number (Wajib)</h5>
+                <div id="sn_out_container" class="hidden mt-4 bg-white bg-opacity-60 p-3 rounded border border-gray-300">
+                    <h5 class="text-xs font-bold text-gray-800 mb-2">Scan Serial Number (Wajib)</h5>
                     <div id="sn_out_inputs" class="grid grid-cols-2 md:grid-cols-4 gap-2"></div>
                 </div>
 
@@ -223,7 +362,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
 
             <!-- CART TABLE -->
             <div class="mb-6">
-                <h4 class="font-bold text-gray-800 mb-2">Keranjang Pemakaian <span id="cart_count" class="bg-purple-600 text-white text-xs px-2 rounded-full">0</span></h4>
+                <h4 class="font-bold text-gray-800 mb-2">Keranjang <span id="cart_count" class="bg-gray-600 text-white text-xs px-2 rounded-full">0</span></h4>
                 <div class="border rounded-lg overflow-hidden bg-white shadow-sm">
                     <table class="w-full text-sm text-left">
                         <thead class="bg-gray-100 text-gray-700 border-b">
@@ -243,10 +382,94 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 </div>
             </div>
             
-            <button type="submit" id="btn_process" class="w-full bg-purple-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-purple-700 shadow-lg disabled:bg-gray-400 flex justify-center items-center gap-2">
-                <i class="fas fa-save"></i> Simpan Aktivitas
+            <button type="submit" id="btn_process" class="w-full bg-purple-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-purple-700 shadow-lg disabled:bg-gray-400 flex justify-center items-center gap-2 transition-colors duration-300">
+                <i class="fas fa-save"></i> Simpan Aktivitas (Keluar)
             </button>
         </form>
+    </div>
+
+    <!-- TABEL DATA AKTIVITAS (HISTORI) -->
+    <div class="bg-white p-6 rounded-lg shadow mt-8">
+        <div class="flex flex-col md:flex-row justify-between items-center mb-4 border-b pb-4 gap-4">
+            <h3 class="font-bold text-lg text-gray-800"><i class="fas fa-history text-blue-600"></i> Riwayat Data Aktivitas</h3>
+            
+            <!-- FILTER TABEL -->
+            <form method="GET" class="flex flex-wrap gap-2 items-center">
+                <input type="hidden" name="page" value="input_aktivitas">
+                <input type="text" name="q" value="<?= htmlspecialchars($search_q) ?>" placeholder="Cari..." class="border p-1 rounded text-sm w-32">
+                <input type="date" name="start" value="<?= $start_date ?>" class="border p-1 rounded text-sm">
+                <input type="date" name="end" value="<?= $end_date ?>" class="border p-1 rounded text-sm">
+                <button class="bg-blue-600 text-white px-3 py-1 rounded text-sm"><i class="fas fa-search"></i></button>
+            </form>
+        </div>
+
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm text-left border-collapse">
+                <thead class="bg-gray-100 text-gray-700">
+                    <tr>
+                        <th class="p-3 border-b">Tanggal</th>
+                        <th class="p-3 border-b">Tipe</th>
+                        <th class="p-3 border-b">Ref / Ket</th>
+                        <th class="p-3 border-b">Barang</th>
+                        <th class="p-3 border-b text-right">Qty</th>
+                        <th class="p-3 border-b">Gudang</th>
+                        <th class="p-3 border-b text-center">User</th>
+                        <th class="p-3 border-b text-center">Aksi</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y">
+                    <?php if(empty($activities_data)): ?>
+                        <tr><td colspan="8" class="p-4 text-center text-gray-400">Belum ada data aktivitas sesuai filter.</td></tr>
+                    <?php else: ?>
+                        <?php foreach($activities_data as $row): 
+                            $is_return = strpos($row['notes'], 'Pengembalian:') !== false || $row['type'] == 'IN';
+                            $row_class = $is_return ? 'bg-teal-50' : 'hover:bg-gray-50';
+                            $badge = $is_return ? '<span class="bg-teal-100 text-teal-800 px-2 py-1 rounded text-xs font-bold">RETUR</span>' : '<span class="bg-purple-100 text-purple-800 px-2 py-1 rounded text-xs font-bold">PAKAI</span>';
+                        ?>
+                        <tr class="<?= $row_class ?>">
+                            <td class="p-3 whitespace-nowrap"><?= date('d/m/y', strtotime($row['date'])) ?></td>
+                            <td class="p-3 text-center"><?= $badge ?></td>
+                            <td class="p-3">
+                                <div class="font-bold text-xs text-blue-700"><?= h($row['reference']) ?></div>
+                                <div class="text-xs text-gray-500 italic truncate max-w-xs"><?= h($row['notes']) ?></div>
+                            </td>
+                            <td class="p-3">
+                                <div class="font-bold"><?= h($row['prod_name']) ?></div>
+                                <div class="text-xs font-mono"><?= h($row['sku']) ?></div>
+                            </td>
+                            <td class="p-3 text-right font-bold <?= $is_return?'text-green-600':'text-red-600' ?>">
+                                <?= $is_return ? '+' : '-' ?><?= number_format($row['quantity']) ?>
+                            </td>
+                            <td class="p-3 text-xs text-gray-600"><?= h($row['wh_name']) ?></td>
+                            <td class="p-3 text-center text-xs"><?= h($row['username']) ?></td>
+                            <td class="p-3 text-center">
+                                <form method="POST" onsubmit="return confirm('Hapus aktivitas ini? Stok akan dikembalikan.')" class="inline">
+                                    <?= csrf_field() ?>
+                                    <input type="hidden" name="delete_id" value="<?= $row['id'] ?>">
+                                    <button class="text-red-400 hover:text-red-600 p-1" title="Hapus / Rollback"><i class="fas fa-trash"></i></button>
+                                </form>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- PAGINATION -->
+        <?php if($total_pages > 1): ?>
+        <div class="flex justify-between items-center mt-4 pt-4 border-t">
+            <span class="text-xs text-gray-500">Halaman <?= $page_num ?> dari <?= $total_pages ?></span>
+            <div class="flex gap-1">
+                <?php if($page_num > 1): ?>
+                    <a href="?page=input_aktivitas&p=<?= $page_num-1 ?>&q=<?=h($search_q)?>&start=<?=$start_date?>&end=<?=$end_date?>" class="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 text-xs">Prev</a>
+                <?php endif; ?>
+                <?php if($page_num < $total_pages): ?>
+                    <a href="?page=input_aktivitas&p=<?= $page_num+1 ?>&q=<?=h($search_q)?>&start=<?=$start_date?>&end=<?=$end_date?>" class="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 text-xs">Next</a>
+                <?php endif; ?>
+            </div>
+        </div>
+        <?php endif; ?>
     </div>
 </div>
 
@@ -255,14 +478,74 @@ let html5QrCode;
 let audioCtx = null;
 let isFlashOn = false;
 let cart = [];
+let currentMode = 'OUT'; // Default
 const APP_NAME_PREFIX = "<?= $app_ref_prefix ?>";
+
+// --- MODE TOGGLE ---
+function toggleMode(mode) {
+    currentMode = mode;
+    const container = document.getElementById('item_input_container');
+    const title = document.getElementById('item_title');
+    const skuInput = document.getElementById('sku_input');
+    const btn = document.getElementById('btn_process');
+    const descInput = document.getElementById('desc_input');
+    const whSelect = document.getElementById('warehouse_id');
+
+    if (mode === 'IN') {
+        // STYLE RETURN (TEAL/GREEN)
+        container.classList.remove('bg-purple-50', 'border-purple-200');
+        container.classList.add('bg-teal-50', 'border-teal-200');
+        title.innerText = "Input Barang Pengembalian (Return)";
+        title.classList.remove('text-purple-800', 'border-purple-200');
+        title.classList.add('text-teal-800', 'border-teal-200');
+        
+        skuInput.classList.remove('border-purple-500');
+        skuInput.classList.add('border-teal-500');
+        
+        btn.classList.remove('bg-purple-600', 'hover:bg-purple-700');
+        btn.classList.add('bg-teal-600', 'hover:bg-teal-700');
+        btn.innerHTML = '<i class="fas fa-undo"></i> Simpan Pengembalian (Masuk)';
+        
+        descInput.placeholder = "Contoh: Berhenti Berlangganan ID 123";
+    } else {
+        // STYLE OUT (PURPLE)
+        container.classList.remove('bg-teal-50', 'border-teal-200');
+        container.classList.add('bg-purple-50', 'border-purple-200');
+        title.innerText = "Input Barang Pemakaian";
+        title.classList.remove('text-teal-800', 'border-teal-200');
+        title.classList.add('text-purple-800', 'border-purple-200');
+        
+        skuInput.classList.remove('border-teal-500');
+        skuInput.classList.add('border-purple-500');
+        
+        btn.classList.remove('bg-teal-600', 'hover:bg-teal-700');
+        btn.classList.add('bg-purple-600', 'hover:bg-purple-700');
+        btn.innerHTML = '<i class="fas fa-save"></i> Simpan Aktivitas (Keluar)';
+        
+        descInput.placeholder = "Contoh: Instalasi Modem di Rumah Bpk. Budi";
+    }
+    
+    // Clear cart when switching mode to avoid confusion
+    if(cart.length > 0) {
+        if(confirm("Ganti mode akan mengosongkan keranjang saat ini. Lanjutkan?")) {
+            cart = [];
+            renderCart();
+        } else {
+            // Revert radio button
+            document.querySelector(`input[name="activity_mode"][value="${mode === 'OUT' ? 'IN' : 'OUT'}"]`).checked = true;
+            toggleMode(mode === 'OUT' ? 'IN' : 'OUT'); // Switch back logic style
+        }
+    }
+}
 
 // --- GENERATE REFERENCE ---
 async function generateReference() {
     const d = new Date();
     const dateStr = d.getDate().toString().padStart(2, '0') + (d.getMonth()+1).toString().padStart(2, '0');
     const rand = Math.floor(100 + Math.random() * 900);
-    document.getElementById('reference_input').value = `ACT/${dateStr}/${rand}`;
+    // Prefix beda dikit biar keren
+    const prefix = currentMode === 'IN' ? 'RET' : 'ACT';
+    document.getElementById('reference_input').value = `${prefix}/${dateStr}/${rand}`;
 }
 
 // --- SCANNER & CART LOGIC (REUSED FROM BARANG_KELUAR) ---
@@ -350,7 +633,9 @@ function addToCart() {
     
     if(!n) return alert("Scan item first"); 
     if(!q || q<=0) return alert("Qty invalid"); 
-    if(q>st) return alert("Stok kurang!"); 
+    
+    // Only check stock shortage if mode is OUT
+    if(currentMode === 'OUT' && q > st) return alert("Stok kurang!"); 
     
     let sns = [];
     if(hasSn) {
@@ -366,7 +651,7 @@ function addToCart() {
 
     const exist = cart.findIndex(x => x.sku === s); 
     if(exist > -1) { 
-        if((cart[exist].qty + q) > st) return alert("Total stok kurang!"); 
+        if(currentMode === 'OUT' && (cart[exist].qty + q) > st) return alert("Total stok kurang!"); 
         cart[exist].qty += q;
         if(hasSn) cart[exist].sns = cart[exist].sns.concat(sns);
     } else { 
@@ -419,7 +704,12 @@ function validateCart() {
     const wh = document.getElementById('warehouse_id').value;
     if(cart.length===0) { alert('Keranjang kosong'); return false; }
     if(!wh) { alert('Pilih Lokasi Gudang!'); return false; }
-    return confirm("Simpan aktivitas? Stok dan Biaya akan tercatat."); 
+    
+    const msg = currentMode === 'OUT' 
+        ? "Simpan aktivitas? Stok berkurang & Biaya tercatat." 
+        : "Simpan pengembalian? Stok bertambah & Aset pulih.";
+    
+    return confirm(msg); 
 }
 
 document.addEventListener('DOMContentLoaded', generateReference);

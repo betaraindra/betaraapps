@@ -185,7 +185,14 @@ $total_wilayah_rev = 0;
 $total_wilayah_exp = 0;
 
 if ($view_type == 'WILAYAH') {
+    $filter_wh_id = $_GET['filter_warehouse_id'] ?? 'ALL'; // Filter Tambahan
+
     foreach ($all_warehouses as $wh) {
+        // Jika Filter Aktif dan ID tidak sama, skip
+        if ($filter_wh_id !== 'ALL' && $wh['id'] != $filter_wh_id) {
+            continue;
+        }
+
         $wh_name = $wh['name'];
         // Cari transaksi yang tag [Wilayah: NamaGudang]
         // Note: Ini bergantung pada konvensi penamaan di deskripsi transaksi
@@ -469,6 +476,9 @@ if ($view_type == 'CUSTOM') {
                     <label class="block text-xs font-bold text-gray-600 mb-1">Cari (Keyword)</label>
                     <input type="text" name="q" value="<?= htmlspecialchars($_GET['q']??'') ?>" class="border p-2 rounded text-sm w-full" placeholder="Ket/Akun...">
                 </div>
+                <?php endif; ?>
+
+                <?php if($view_type == 'ALL_TRANSAKSI' || $view_type == 'WILAYAH'): ?>
                 <div>
                     <label class="block text-xs font-bold text-gray-600 mb-1">Filter Wilayah</label>
                     <select name="filter_warehouse_id" class="border p-2 rounded text-sm w-full bg-white">
@@ -478,6 +488,9 @@ if ($view_type == 'CUSTOM') {
                         <?php endforeach; ?>
                     </select>
                 </div>
+                <?php endif; ?>
+
+                <?php if($view_type == 'ALL_TRANSAKSI'): ?>
                 <div>
                     <label class="block text-xs font-bold text-gray-600 mb-1">Filter Akun</label>
                     <select name="account_id" class="border p-2 rounded text-sm w-full bg-white">

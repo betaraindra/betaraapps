@@ -7,7 +7,6 @@ $config = [];
 while ($row = $config_query->fetch()) $config[$row['setting_key']] = $row['setting_value'];
 
 // --- GET MASTER DATA FOR FILTER ---
-// UPDATED: Ambil daftar kategori unik dari produk JOIN ke tabel accounts untuk label Kode + Nama
 $categories_data = $pdo->query("
     SELECT DISTINCT p.category AS code, a.name 
     FROM products p 
@@ -26,8 +25,8 @@ $params = [];
 
 // --- LOGIC QUERY DATA ---
 if ($warehouse_filter === 'ALL') {
-    // Jika SEMUA GUDANG, ambil stok global dari tabel products
-    // JOIN accounts untuk ambil nama akun kategori
+    // JIKA SEMUA GUDANG: Gunakan stok global dari tabel products
+    // Ini memastikan data hasil import (yang langsung update p.stock) terbaca
     $sql = "SELECT p.id, p.sku, p.name, p.category, p.unit, p.buy_price, p.sell_price, p.image_url, p.stock,
             a.name as acc_name
             FROM products p 
@@ -40,18 +39,16 @@ if ($warehouse_filter === 'ALL') {
     }
 
     if (!empty($search_query)) {
-        $sql .= " AND (p.name LIKE ? OR p.sku LIKE ? OR EXISTS (SELECT 1 FROM product_serials ps WHERE ps.product_id = p.id AND ps.serial_number LIKE ?))";
-        $params[] = "%$search_query%";
+        $sql .= " AND (p.name LIKE ? OR p.sku LIKE ?)";
         $params[] = "%$search_query%";
         $params[] = "%$search_query%";
     }
 
     $sql .= " ORDER BY p.name ASC";
-
-    $current_warehouse_name = "Semua Gudang";
+    $current_warehouse_name = "Semua Gudang (Global)";
 
 } else {
-    // Jika GUDANG SPESIFIK, hitung stok berdasarkan riwayat transaksi
+    // JIKA PER GUDANG: Hitung berdasarkan mutasi
     $sql = "SELECT p.id, p.sku, p.name, p.category, p.unit, p.buy_price, p.sell_price, p.image_url,
             a.name as acc_name,
             (
@@ -71,8 +68,7 @@ if ($warehouse_filter === 'ALL') {
     }
 
     if (!empty($search_query)) {
-        $sql .= " AND (p.name LIKE ? OR p.sku LIKE ? OR EXISTS (SELECT 1 FROM product_serials ps WHERE ps.product_id = p.id AND ps.serial_number LIKE ?))";
-        $params[] = "%$search_query%";
+        $sql .= " AND (p.name LIKE ? OR p.sku LIKE ?)";
         $params[] = "%$search_query%";
         $params[] = "%$search_query%";
     }
@@ -80,7 +76,7 @@ if ($warehouse_filter === 'ALL') {
     // Filter hanya barang yang ada stoknya di gudang tersebut
     $sql .= " HAVING stock > 0 ORDER BY name ASC";
 
-    // Ambil nama gudang untuk judul laporan
+    // Ambil nama gudang
     $stmt_wh = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
     $stmt_wh->execute([$warehouse_filter]);
     $current_warehouse_name = $stmt_wh->fetchColumn() ?: "Gudang Tidak Dikenal";
@@ -90,9 +86,9 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $products = $stmt->fetchAll();
 
-// --- FETCH SN FOR ALL PRODUCTS (NEW LOGIC FOR REPORT) ---
+// --- FETCH SN FOR REPORT ---
 foreach($products as &$prod_row) {
-    // Ambil SN yang AVAILABLE sesuai filter gudang jika ada
+    // Ambil SN yang AVAILABLE
     $sn_sql = "SELECT serial_number FROM product_serials WHERE product_id = ? AND status = 'AVAILABLE'";
     $sn_params = [$prod_row['id']];
 
@@ -101,15 +97,16 @@ foreach($products as &$prod_row) {
         $sn_params[] = $warehouse_filter;
     }
     
-    $sn_sql .= " ORDER BY serial_number ASC";
+    $sn_sql .= " ORDER BY serial_number ASC LIMIT 10"; // Limit agar tidak terlalu panjang
 
     $stmt_sn_list = $pdo->prepare($sn_sql);
     $stmt_sn_list->execute($sn_params);
     $sn_arr = $stmt_sn_list->fetchAll(PDO::FETCH_COLUMN);
     
     $prod_row['sn_string'] = !empty($sn_arr) ? implode(', ', $sn_arr) : '-';
+    if(count($sn_arr) >= 10) $prod_row['sn_string'] .= '...';
 }
-unset($prod_row); // break reference
+unset($prod_row); 
 
 // --- SUMMARY CALCULATION ---
 $total_asset_value = 0;
@@ -128,16 +125,9 @@ foreach($products as $p) {
 <!-- STYLE KHUSUS PRINT & PDF -->
 <style>
     @media print {
-        /* Hide browser headers */
         @page { size: landscape; margin: 0mm; } 
-        body { margin: 10mm; }
-
-        body { background: white; font-family: sans-serif; color: black; font-size: 10pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-        
-        /* HIDE UI ELEMENTS */
+        body { margin: 10mm; background: white; font-family: sans-serif; color: black; font-size: 10pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         .no-print, aside, header, nav { display: none !important; }
-        
-        /* RESET CONTAINER */
         .main-content, #report_content { margin: 0; padding: 0; box-shadow: none; border: none; width: 100%; max-width: none; }
         
         /* KOP SURAT */
@@ -151,21 +141,14 @@ foreach($products as $p) {
             border-bottom: 4px double #000;
             width: 100%;
         }
-        .kop-logo, .kop-spacer { width: 120px; display: flex; justify-content: center; align-items: center; }
         .kop-logo img { max-height: 90px; max-width: 100%; }
         .kop-text { flex-grow: 1; text-align: center; }
         .kop-company { font-size: 20pt; font-weight: 900; text-transform: uppercase; margin: 0; line-height: 1.1; color: #000; }
-        .kop-address { font-size: 10pt; margin: 5px 0 0 0; line-height: 1.3; }
-        .kop-npwp { font-size: 10pt; font-weight: bold; margin-top: 3px; }
-
-        /* TABLE STYLES */
+        
         table { border-collapse: collapse; width: 100%; margin-top: 10px; }
         th, td { border: 1px solid #000 !important; padding: 6px; font-size: 9pt; }
         th { background-color: #f3f4f6 !important; text-align: center; }
-        .bg-blue-50, .bg-blue-100 { background-color: transparent !important; }
         .text-right { text-align: right; }
-        .text-center { text-align: center; }
-        .break-sn { word-break: break-all; font-size: 8pt; }
     }
     .header-print { display: none; }
 </style>
@@ -189,6 +172,7 @@ foreach($products as $p) {
     <div class="bg-white p-4 rounded shadow border-l-4 border-blue-500">
         <p class="text-gray-500 text-sm font-bold">Total Nilai Aset</p>
         <p class="text-2xl font-bold text-blue-600"><?= formatRupiah($total_asset_value) ?></p>
+        <p class="text-xs text-gray-400 mt-1">*Berdasarkan Harga Beli (HPP)</p>
     </div>
     <div class="bg-white p-4 rounded shadow border-l-4 border-green-500">
         <p class="text-gray-500 text-sm font-bold">Total Stok Fisik</p>
@@ -207,7 +191,7 @@ foreach($products as $p) {
         
         <div class="md:col-span-1">
             <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang</label>
-            <input type="text" name="q" value="<?= htmlspecialchars($search_query) ?>" class="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500" placeholder="Nama / SKU / SN...">
+            <input type="text" name="q" value="<?= htmlspecialchars($search_query) ?>" class="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500" placeholder="Nama / SKU ...">
         </div>
 
         <div>
@@ -227,11 +211,7 @@ foreach($products as $p) {
             <select name="category" class="w-full border p-2 rounded text-sm bg-gray-50">
                 <option value="ALL">-- Semua Kategori --</option>
                 <?php foreach($categories_data as $cat): 
-                    // Tampilkan Kode Akun - Nama Akun (Contoh: 3003 - Persediaan Barang)
-                    $label = $cat['code'];
-                    if (!empty($cat['name'])) {
-                        $label .= " - " . $cat['name'];
-                    }
+                    $label = $cat['code'] . (!empty($cat['name']) ? " - " . $cat['name'] : "");
                 ?>
                     <option value="<?= $cat['code'] ?>" <?= $category_filter == $cat['code'] ? 'selected' : '' ?>>
                         <?= $label ?>
@@ -251,7 +231,7 @@ foreach($products as $p) {
 <!-- REPORT CONTENT -->
 <div id="report_content" class="bg-white p-8 rounded shadow">
     
-    <!-- PRINT HEADER (KOP SURAT) -->
+    <!-- PRINT HEADER -->
     <div class="header-print">
         <div class="kop-container">
             <div class="kop-logo">
@@ -274,23 +254,20 @@ foreach($products as $p) {
         </div>
     </div>
 
-    <!-- UPDATE: WRAPPER SCROLLABLE UNTUK MOBILE -->
+    <!-- TABLE DATA -->
     <div class="overflow-x-auto">
         <table class="w-full text-sm text-left border-collapse border border-gray-300 min-w-[1000px]">
             <thead class="bg-gray-100 text-gray-700">
                 <tr>
                     <th class="p-2 border border-gray-300 text-center w-10">No</th>
-                    <th class="p-2 border border-gray-300 text-center w-14">Gbr</th>
-                    <th class="p-2 border border-gray-300">Wilayah / Gudang</th>
-                    <th class="p-2 border border-gray-300">Kode Barang (SKU)</th>
+                    <th class="p-2 border border-gray-300">Kode (SKU)</th>
                     <th class="p-2 border border-gray-300">Nama Barang</th>
-                    <th class="p-2 border border-gray-300">Kategori (Akun)</th>
-                    <th class="p-2 border border-gray-300 w-48">SN Barang</th>
+                    <th class="p-2 border border-gray-300">Kategori</th>
+                    <th class="p-2 border border-gray-300 w-48">Contoh SN</th>
                     <th class="p-2 border border-gray-300 text-right">Stok</th>
-                    <th class="p-2 border border-gray-300 text-center">Satuan</th>
-                    <th class="p-2 border border-gray-300 text-right">Harga Beli</th>
-                    <th class="p-2 border border-gray-300 text-right">Harga Jual</th>
-                    <th class="p-2 border border-gray-300 text-right font-bold bg-blue-50">Total Aset</th>
+                    <th class="p-2 border border-gray-300 text-center">Sat</th>
+                    <th class="p-2 border border-gray-300 text-right">Harga Beli (HPP)</th>
+                    <th class="p-2 border border-gray-300 text-right">Nilai Aset</th>
                 </tr>
             </thead>
             <tbody>
@@ -298,43 +275,33 @@ foreach($products as $p) {
                 $no = 1;
                 foreach($products as $p): 
                     $subtotal = $p['stock'] * $p['buy_price'];
-                    // Format label kategori di tabel
                     $cat_label = !empty($p['acc_name']) ? "{$p['category']} - {$p['acc_name']}" : $p['category'];
                 ?>
                 <tr class="hover:bg-gray-50">
                     <td class="p-2 border border-gray-300 text-center"><?= $no++ ?></td>
-                    <td class="p-2 border border-gray-300 text-center">
-                        <?php if($p['image_url']): ?>
-                            <img src="<?= h($p['image_url']) ?>" class="w-8 h-8 object-cover mx-auto border border-gray-200">
-                        <?php endif; ?>
-                    </td>
-                    <td class="p-2 border border-gray-300 font-bold text-blue-800"><?= htmlspecialchars($current_warehouse_name) ?></td>
                     <td class="p-2 border border-gray-300 font-mono"><?= $p['sku'] ?></td>
                     <td class="p-2 border border-gray-300 font-medium"><?= $p['name'] ?></td>
                     <td class="p-2 border border-gray-300 text-gray-600"><?= $cat_label ?></td>
-                    
-                    <td class="p-2 border border-gray-300 text-xs font-mono break-all bg-gray-50">
-                        <div class="max-h-16 overflow-y-auto break-sn"><?= h($p['sn_string']) ?></div>
+                    <td class="p-2 border border-gray-300 text-xs font-mono bg-gray-50 text-gray-500">
+                        <?= h($p['sn_string']) ?>
                     </td>
-
                     <td class="p-2 border border-gray-300 text-right font-bold"><?= number_format($p['stock']) ?></td>
                     <td class="p-2 border border-gray-300 text-center text-xs"><?= $p['unit'] ?></td>
                     <td class="p-2 border border-gray-300 text-right"><?= formatRupiah($p['buy_price']) ?></td>
-                    <td class="p-2 border border-gray-300 text-right"><?= formatRupiah($p['sell_price']) ?></td>
                     <td class="p-2 border border-gray-300 text-right font-bold bg-blue-50 text-blue-800">
                         <?= formatRupiah($subtotal) ?>
                     </td>
                 </tr>
                 <?php endforeach; ?>
                 <?php if(empty($products)): ?>
-                    <tr><td colspan="12" class="p-4 text-center text-gray-500">Tidak ada stok barang di lokasi ini.</td></tr>
+                    <tr><td colspan="9" class="p-4 text-center text-gray-500">Tidak ada stok barang di lokasi ini.</td></tr>
                 <?php endif; ?>
             </tbody>
             <tfoot class="bg-gray-100 font-bold border-t-2 border-gray-400">
                 <tr>
-                    <td colspan="7" class="p-3 text-right border border-gray-300">TOTAL KESELURUHAN</td>
+                    <td colspan="5" class="p-3 text-right border border-gray-300">TOTAL</td>
                     <td class="p-3 text-right text-blue-700 border border-gray-300"><?= number_format($total_qty) ?></td>
-                    <td colspan="3" class="border border-gray-300"></td>
+                    <td colspan="2" class="border border-gray-300"></td>
                     <td class="p-3 text-right text-lg text-blue-800 bg-blue-100 border border-gray-300">
                         <?= formatRupiah($total_asset_value) ?>
                     </td>
@@ -356,11 +323,8 @@ foreach($products as $p) {
 function savePDF() {
     const element = document.getElementById('report_content');
     const header = document.querySelector('.header-print');
-    const footer = document.querySelector('.mt-8.flex.justify-end'); 
     
-    // Tampilkan elemen cetak untuk PDF
     if(header) header.style.display = 'block';
-    if(footer) footer.style.display = 'flex';
 
     const opt = {
         margin:       10,
@@ -370,17 +334,8 @@ function savePDF() {
         jsPDF:        { unit: 'mm', format: 'a4', orientation: 'landscape' }
     };
 
-    const btn = event.currentTarget;
-    const oldText = btn.innerHTML;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Proses...';
-    btn.disabled = true;
-
     html2pdf().set(opt).from(element).save().then(() => {
-        btn.innerHTML = oldText;
-        btn.disabled = false;
-        // Kembalikan ke kondisi hidden
         if(header) header.style.display = '';
-        if(footer) footer.style.display = '';
     });
 }
 </script>

@@ -22,11 +22,20 @@ $current_title = $report_titles[$report_type] ?? 'LAPORAN KEUANGAN';
 
 // --- LOGIC: STANDARD REPORTS ---
 
-// 1. REVENUE (1xxx)
-$revenue = $pdo->query("SELECT SUM(f.amount) FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='INCOME' AND a.code LIKE '1%' AND f.date BETWEEN '$start' AND '$end'")->fetchColumn() ?: 0;
+// 1. REVENUE (PENDAPATAN)
+// Ambil SEMUA transaksi tipe INCOME (agar data import tanpa kode 1xxx tetap masuk)
+// Kecuali kategori Modal/Ekuitas (5xxx) jika ada transaksi INCOME disana (Investasi)
+$revenue = $pdo->query("
+    SELECT SUM(f.amount) 
+    FROM finance_transactions f 
+    JOIN accounts a ON f.account_id=a.id 
+    WHERE f.type='INCOME' 
+    AND a.type != 'EQUITY' 
+    AND f.date BETWEEN '$start' AND '$end'
+")->fetchColumn() ?: 0;
 
-// 2. COGS / HPP (VIRTUAL FROM INVENTORY)
-// HPP dihitung dari Barang Keluar (Quantity * Buy Price) pada periode ini
+// 2. COGS / HPP (HARGA POKOK PENJUALAN)
+// A. HPP VIRTUAL (Dari Mutasi Barang Keluar)
 $cogs_inv = $pdo->query("
     SELECT SUM(i.quantity * p.buy_price) 
     FROM inventory_transactions i 
@@ -35,59 +44,84 @@ $cogs_inv = $pdo->query("
     AND i.date BETWEEN '$start' AND '$end'
 ")->fetchColumn() ?: 0;
 
-// HPP Manual (Akun 2001)
-$cogs_manual = $pdo->query("SELECT SUM(f.amount) FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='EXPENSE' AND a.code='2001' AND f.date BETWEEN '$start' AND '$end'")->fetchColumn() ?: 0;
-
-$cogs = $cogs_inv + $cogs_manual;
-
-// 3. OPEX (Operating Expenses)
-// Ambil semua akun 2xxx KECUALI 2001 (HPP).
-// Akun 2005 (Material Non Asset) TETAP MASUK sini karena expense.
-// Akun 3xxx (Persediaan) TIDAK BOLEH MASUK sini.
-$opex = $pdo->query("
+// B. HPP MANUAL / IMPORT (Akun 2001)
+// Ambil transaksi EXPENSE yang akunnya spesifik HPP
+$cogs_manual = $pdo->query("
     SELECT SUM(f.amount) 
     FROM finance_transactions f 
     JOIN accounts a ON f.account_id=a.id 
     WHERE f.type='EXPENSE' 
-    AND a.code LIKE '2%' 
-    AND a.code != '2001' 
+    AND (a.code='2001' OR a.name LIKE '%HPP%' OR a.name LIKE '%Harga Pokok%') 
     AND f.date BETWEEN '$start' AND '$end'
 ")->fetchColumn() ?: 0;
 
-// 4. ASSET PURCHASE (Belanja Modal/Stok)
-// Khusus Akun 3xxx (misal 3003 Persediaan) yang transaksinya EXPENSE (Uang Keluar beli stok)
+$cogs = $cogs_inv + $cogs_manual;
+
+// 3. ASSET PURCHASE (Belanja Modal/Stok)
+// Transaksi pembelian stok/aset (Akun 3xxx) yang bersifat EXPENSE (Uang Keluar)
+// Ini TIDAK mengurangi Laba Rugi (karena jadi Aset), tapi mengurangi Kas.
 $asset_purchase = $pdo->query("
     SELECT SUM(f.amount) 
     FROM finance_transactions f 
     JOIN accounts a ON f.account_id=a.id 
     WHERE f.type='EXPENSE' 
-    AND a.code LIKE '3%' 
+    AND (a.code LIKE '3%' OR a.type = 'ASSET')
     AND f.date BETWEEN '$start' AND '$end'
 ")->fetchColumn() ?: 0;
 
+// 4. OPEX (Operating Expenses / Beban Operasional)
+// Semua EXPENSE dikurangi:
+// - HPP Manual (supaya tidak double)
+// - Pembelian Aset (supaya tidak jadi beban)
+// - Prive/Dividen (Equity)
+$total_expense_trx = $pdo->query("
+    SELECT SUM(f.amount) 
+    FROM finance_transactions f 
+    JOIN accounts a ON f.account_id=a.id 
+    WHERE f.type='EXPENSE' 
+    AND f.date BETWEEN '$start' AND '$end'
+")->fetchColumn() ?: 0;
+
+$equity_out = $pdo->query("
+    SELECT SUM(f.amount) 
+    FROM finance_transactions f 
+    JOIN accounts a ON f.account_id=a.id 
+    WHERE f.type='EXPENSE' AND a.type='EQUITY'
+    AND f.date BETWEEN '$start' AND '$end'
+")->fetchColumn() ?: 0;
+
+// Rumus OPEX Bersih
+$opex = $total_expense_trx - $cogs_manual - $asset_purchase - $equity_out;
+
 // ARUS KAS PENDANAAN (MODAL)
 $capital_in = $pdo->query("SELECT SUM(f.amount) FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='INCOME' AND a.type='EQUITY' AND f.date BETWEEN '$start' AND '$end'")->fetchColumn() ?: 0;
-$capital_out = $pdo->query("SELECT SUM(f.amount) FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='EXPENSE' AND a.type='EQUITY' AND f.date BETWEEN '$start' AND '$end'")->fetchColumn() ?: 0;
 
+// PERHITUNGAN LABA
 $gross_profit = $revenue - $cogs;
-$net_profit_period = $gross_profit - $opex; // Asset Purchase TIDAK mengurangi ini
+$net_profit_period = $gross_profit - $opex; 
 
-// Data Historis
+// --- DATA NERACA (SALDO AKHIR) ---
 $initial_capital = $config['initial_capital'] ?? 0;
-$rev_before = $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='INCOME' AND date < '$start'")->fetchColumn() ?: 0;
-$exp_before = $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='EXPENSE' AND date < '$start'")->fetchColumn() ?: 0;
-$retained_earnings_before = $rev_before - $exp_before;
-$retained_earnings_total = $retained_earnings_before + $net_profit_period;
 
-// Cash Balance (Actual Cash)
-// Kas Akhir = Modal + Semua Masuk - Semua Keluar (Termasuk beli aset)
+// Kas Akhir = Modal Awal + Total Masuk (Semua Waktu) - Total Keluar (Semua Waktu)
 $total_rev_all = $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='INCOME' AND date <= '$end'")->fetchColumn() ?: 0;
 $total_exp_all = $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE type='EXPENSE' AND date <= '$end'")->fetchColumn() ?: 0;
 $cash_balance = $initial_capital + $total_rev_all - $total_exp_all;
 
-// Inventory Value (Nilai Aset Barang sekarang)
+// Inventory Value (Nilai Aset Barang saat ini)
+// Menggunakan buy_price (HPP)
 $inventory_value = $pdo->query("SELECT SUM(stock * buy_price) FROM products")->fetchColumn() ?: 0;
-$liabilities = 0; 
+
+// Laba Ditahan (Retained Earnings) = Total Aset - Modal Disetor - Kewajiban
+// Aset = Kas + Stok
+// Equity = Modal + Laba
+$total_assets = $cash_balance + $inventory_value;
+$retained_earnings_total = $total_assets - $initial_capital;
+
+// Breakdown Laba Ditahan Historis vs Periode Ini
+// Ini hanya estimasi untuk laporan perubahan modal
+$retained_earnings_before = $retained_earnings_total - $net_profit_period;
+
 ?>
 
 <!-- Load Library PDF -->
@@ -206,7 +240,7 @@ $liabilities = 0;
                 </div>
                 
                 <?php 
-                $rev_det = $pdo->query("SELECT a.name, SUM(f.amount) as total FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='INCOME' AND a.code LIKE '1%' AND f.date BETWEEN '$start' AND '$end' GROUP BY a.name");
+                $rev_det = $pdo->query("SELECT a.name, SUM(f.amount) as total FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='INCOME' AND a.type != 'EQUITY' AND f.date BETWEEN '$start' AND '$end' GROUP BY a.name");
                 while($r = $rev_det->fetch()): ?>
                     <div class="flex justify-between pl-4 text-gray-500 italic print:text-black">
                         <span>- <?= $r['name'] ?></span>
@@ -215,7 +249,7 @@ $liabilities = 0;
                 <?php endwhile; ?>
 
                 <div class="flex justify-between text-red-600 pl-4 print:text-black mt-2">
-                    <span>(-) Harga Pokok Penjualan (HPP) - <i>Calculated</i></span>
+                    <span>(-) Harga Pokok Penjualan (HPP)</span>
                     <span>(<?= formatRupiah($cogs) ?>)</span>
                 </div>
                 
@@ -224,16 +258,15 @@ $liabilities = 0;
                     <span><?= formatRupiah($gross_profit) ?></span>
                 </div>
 
-                <div class="mt-4 font-bold text-gray-700 print:text-black">BEBAN OPERASIONAL (EXPENSE)</div>
+                <div class="mt-4 font-bold text-gray-700 print:text-black">BEBAN OPERASIONAL (OPEX)</div>
                 <?php 
-                // Breakdown OPEX (Exclude 2001 & 3xxx)
+                // Breakdown OPEX (Exclude HPP codes and Asset codes)
                 $opex_det = $pdo->query("
                     SELECT a.name, a.code, SUM(f.amount) as total 
                     FROM finance_transactions f 
                     JOIN accounts a ON f.account_id=a.id 
                     WHERE f.type='EXPENSE' 
-                    AND a.code LIKE '2%' 
-                    AND a.code != '2001' 
+                    AND a.code != '2001' AND a.type != 'ASSET' AND a.type != 'EQUITY'
                     AND f.date BETWEEN '$start' AND '$end' 
                     GROUP BY a.name, a.code
                 ");
@@ -250,7 +283,7 @@ $liabilities = 0;
                 </div>
                 
                 <div class="mt-2 text-xs italic text-gray-500 print:text-black">
-                    * Catatan: HPP dihitung dari nilai modal barang yang keluar (terjual) pada periode ini.
+                    * Catatan: HPP dihitung dari gabungan transaksi keuangan manual dan mutasi barang keluar otomatis.
                 </div>
             </div>
         </div>
@@ -266,7 +299,7 @@ $liabilities = 0;
                     <span><?= formatRupiah($initial_capital) ?></span>
                 </div>
                 <div class="flex justify-between">
-                    <span>Laba Ditahan (Sebelumnya)</span>
+                    <span>Laba Ditahan (Hingga Awal Periode)</span>
                     <span><?= formatRupiah($retained_earnings_before) ?></span>
                 </div>
                 <div class="flex justify-between font-bold text-blue-600 print:text-black border-b border-gray-300 pb-1 print:border-black">
@@ -280,12 +313,12 @@ $liabilities = 0;
                 </div>
                 <div class="flex justify-between font-bold text-red-600 print:text-black border-b border-gray-300 pb-1">
                     <span>(-) Prive / Dividen (Penarikan)</span>
-                    <span>(<?= formatRupiah($capital_out) ?>)</span>
+                    <span>(<?= formatRupiah($equity_out) ?>)</span>
                 </div>
 
                 <div class="flex justify-between font-bold text-lg pt-2 bg-gray-50 p-2 print:bg-transparent">
                     <span>MODAL AKHIR (EKUITAS)</span>
-                    <span><?= formatRupiah($initial_capital + $retained_earnings_total + $capital_in - $capital_out) ?></span>
+                    <span><?= formatRupiah($initial_capital + $retained_earnings_total + $capital_in - $equity_out) ?></span>
                 </div>
             </div>
         </div>
@@ -307,7 +340,7 @@ $liabilities = 0;
                             <span class="font-mono"><?= formatRupiah($cash_balance) ?></span>
                         </div>
                         <div class="flex justify-between pl-4">
-                            <span>Nilai Persediaan (Stok)</span>
+                            <span>Nilai Persediaan (Stok Barang)</span>
                             <span class="font-mono"><?= formatRupiah($inventory_value) ?></span>
                         </div>
                         <div class="flex justify-between font-bold border-t-2 border-black pt-2 mt-4 bg-gray-50 p-1 print:bg-transparent">
@@ -323,16 +356,16 @@ $liabilities = 0;
                     <div class="space-y-2 text-sm print:text-base">
                         <div class="font-bold text-gray-700 print:text-black">Ekuitas</div>
                         <div class="flex justify-between pl-4">
-                            <span>Modal Disetor & Tambahan</span>
-                            <span class="font-mono"><?= formatRupiah($initial_capital + $capital_in - $capital_out) ?></span>
+                            <span>Modal Disetor</span>
+                            <span class="font-mono"><?= formatRupiah($initial_capital + $capital_in - $equity_out) ?></span>
                         </div>
                         <div class="flex justify-between pl-4">
-                            <span>Laba Ditahan</span>
+                            <span>Laba Ditahan & Berjalan</span>
                             <span class="font-mono"><?= formatRupiah($retained_earnings_total) ?></span>
                         </div>
                         <div class="flex justify-between font-bold border-t-2 border-black pt-2 mt-4 bg-gray-50 p-1 print:bg-transparent">
                             <span>TOTAL PASIVA</span>
-                            <span><?= formatRupiah($liabilities + $initial_capital + $retained_earnings_total + $capital_in - $capital_out) ?></span>
+                            <span><?= formatRupiah($initial_capital + $capital_in - $equity_out + $retained_earnings_total) ?></span>
                         </div>
                     </div>
                 </div>
@@ -352,8 +385,8 @@ $liabilities = 0;
                     <span><?= formatRupiah($revenue) ?></span>
                 </div>
                 <div class="flex justify-between pl-4 text-red-600 print:text-black">
-                    <span>Pembayaran Operasional</span>
-                    <span>(<?= formatRupiah($opex) ?>)</span>
+                    <span>Pembayaran Operasional (Beban)</span>
+                    <span>(<?= formatRupiah($opex + $cogs_manual) ?>)</span>
                 </div>
                 <div class="flex justify-between pl-4 text-red-600 print:text-black font-bold">
                     <span>Pembelian Aset / Stok (Out)</span>
@@ -361,7 +394,7 @@ $liabilities = 0;
                 </div>
                 <div class="flex justify-between font-bold border-t border-gray-300 ml-4">
                     <span>Kas Bersih dari Operasional</span>
-                    <span><?= formatRupiah($revenue - $opex - $asset_purchase) ?></span>
+                    <span><?= formatRupiah($revenue - ($opex + $cogs_manual) - $asset_purchase) ?></span>
                 </div>
 
                 <!-- ARUS KAS PENDANAAN -->
@@ -372,11 +405,11 @@ $liabilities = 0;
                 </div>
                 <div class="flex justify-between pl-4 text-red-600 print:text-black">
                     <span>Prive / Dividen</span>
-                    <span>(<?= formatRupiah($capital_out) ?>)</span>
+                    <span>(<?= formatRupiah($equity_out) ?>)</span>
                 </div>
                 <div class="flex justify-between font-bold border-t border-gray-300 ml-4">
                     <span>Kas Bersih dari Pendanaan</span>
-                    <span><?= formatRupiah($capital_in - $capital_out) ?></span>
+                    <span><?= formatRupiah($capital_in - $equity_out) ?></span>
                 </div>
 
                 <!-- TOTAL -->

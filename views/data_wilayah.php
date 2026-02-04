@@ -73,6 +73,31 @@ foreach ($warehouses as $wh) {
         'activity_count' => $activity_count
     ];
 }
+
+// 3. QUERY TOP 10 MATERIAL / BARANG (GLOBAL MOVEMENT)
+// Menampilkan pergerakan barang dalam rentang tanggal yang dipilih
+$sql_top_items = "
+    SELECT 
+        p.name as prod_name,
+        p.unit,
+        p.stock as current_stock,
+        COALESCE(SUM(CASE WHEN i.type = 'IN' THEN i.quantity ELSE 0 END), 0) as total_in,
+        COALESCE(SUM(CASE WHEN i.type = 'OUT' THEN i.quantity ELSE 0 END), 0) as total_out,
+        COALESCE(SUM(CASE 
+            WHEN i.type = 'OUT' AND (i.notes LIKE 'Aktivitas:%' OR i.notes LIKE '%[PEMAKAIAN]%') 
+            THEN i.quantity 
+            ELSE 0 
+        END), 0) as total_used_activity
+    FROM products p
+    LEFT JOIN inventory_transactions i ON p.id = i.product_id AND i.date BETWEEN ? AND ?
+    GROUP BY p.id, p.name, p.unit, p.stock
+    HAVING (total_in > 0 OR total_out > 0)
+    ORDER BY total_used_activity DESC, total_out DESC
+    LIMIT 10
+";
+$stmt_top = $pdo->prepare($sql_top_items);
+$stmt_top->execute([$start_date, $end_date]);
+$top_items = $stmt_top->fetchAll();
 ?>
 
 <div class="space-y-6">
@@ -167,5 +192,71 @@ foreach ($warehouses as $wh) {
                 <p class="text-gray-500">Belum ada data wilayah. Silakan tambahkan lokasi gudang terlebih dahulu di menu Pengaturan.</p>
             </div>
         <?php endif; ?>
+    </div>
+
+    <!-- TOP 10 MATERIAL MOVEMENT -->
+    <div class="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+        <div class="p-4 border-b border-gray-200 bg-gray-50">
+            <h3 class="font-bold text-gray-800 flex items-center gap-2">
+                <i class="fas fa-cubes text-purple-600"></i> Top 10 Penggunaan Material & Stok
+            </h3>
+            <p class="text-xs text-gray-500 mt-1">
+                Menampilkan akumulasi pergerakan barang (Global) berdasarkan filter tanggal: 
+                <b><?= date('d/m/Y', strtotime($start_date)) ?> - <?= date('d/m/Y', strtotime($end_date)) ?></b>
+            </p>
+        </div>
+        
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm text-left border-collapse">
+                <thead class="bg-gray-100 text-gray-700 uppercase text-xs">
+                    <tr>
+                        <th class="p-3 border-b text-center w-10">No</th>
+                        <th class="p-3 border-b">Nama Barang</th>
+                        <th class="p-3 border-b text-center">Satuan</th>
+                        <th class="p-3 border-b text-right text-green-700">Total Masuk</th>
+                        <th class="p-3 border-b text-right text-red-700">Total Keluar</th>
+                        <th class="p-3 border-b text-right bg-purple-50 text-purple-800 border-purple-100">Stok Terpakai<br>(Aktivitas)</th>
+                        <th class="p-3 border-b text-right bg-blue-50 text-blue-800 border-blue-100">Stok Akhir<br>(Saat Ini)</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y">
+                    <?php if(empty($top_items)): ?>
+                        <tr>
+                            <td colspan="7" class="p-6 text-center text-gray-400 italic">
+                                Belum ada pergerakan material pada periode ini.
+                            </td>
+                        </tr>
+                    <?php else: ?>
+                        <?php 
+                        $no = 1;
+                        foreach($top_items as $item): ?>
+                        <tr class="hover:bg-gray-50">
+                            <td class="p-3 text-center"><?= $no++ ?></td>
+                            <td class="p-3 font-medium text-gray-800"><?= htmlspecialchars($item['prod_name']) ?></td>
+                            <td class="p-3 text-center text-xs text-gray-500"><?= htmlspecialchars($item['unit']) ?></td>
+                            
+                            <td class="p-3 text-right font-bold text-green-600">
+                                <?= $item['total_in'] > 0 ? '+'.number_format($item['total_in']) : '-' ?>
+                            </td>
+                            
+                            <td class="p-3 text-right font-bold text-red-600">
+                                <?= $item['total_out'] > 0 ? '-'.number_format($item['total_out']) : '-' ?>
+                            </td>
+                            
+                            <!-- Kolom Terpakai Aktivitas (Highlight) -->
+                            <td class="p-3 text-right font-bold bg-purple-50 text-purple-700 border-l border-r border-purple-100">
+                                <?= $item['total_used_activity'] > 0 ? number_format($item['total_used_activity']) : '0' ?>
+                            </td>
+                            
+                            <!-- Kolom Stok Akhir / Saat Ini -->
+                            <td class="p-3 text-right font-bold bg-blue-50 text-blue-800 border-l border-blue-100 text-base">
+                                <?= number_format($item['current_stock']) ?>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>

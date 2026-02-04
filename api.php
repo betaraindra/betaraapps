@@ -48,6 +48,34 @@ try {
 
 $action = $_GET['action'] ?? '';
 
+// === GET PRODUCTS AVAILABLE IN SPECIFIC WAREHOUSE ===
+if ($action === 'get_warehouse_stock') {
+    $wh_id = $_GET['warehouse_id'] ?? 0;
+    
+    if (empty($wh_id)) {
+        echo json_encode([]);
+        exit;
+    }
+
+    // Hitung stok berdasarkan transaksi IN - OUT di gudang tersebut
+    $sql = "SELECT p.sku, p.name, p.unit,
+            (COALESCE(SUM(CASE WHEN t.type = 'IN' THEN t.quantity ELSE 0 END), 0) -
+             COALESCE(SUM(CASE WHEN t.type = 'OUT' THEN t.quantity ELSE 0 END), 0)) as current_qty
+            FROM products p
+            JOIN inventory_transactions t ON p.id = t.product_id
+            WHERE t.warehouse_id = ?
+            GROUP BY p.id
+            HAVING current_qty > 0
+            ORDER BY p.name ASC";
+            
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([$wh_id]);
+    $products = $stmt->fetchAll();
+    
+    echo json_encode($products);
+    exit;
+}
+
 // === PRODUCT SEARCH ===
 if ($action === 'search_product') {
     $keyword = $_GET['q'] ?? '';

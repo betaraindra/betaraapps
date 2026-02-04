@@ -81,8 +81,6 @@ $total_in = 0;
 $total_out = 0;
 
 if ($view === 'CASHFLOW') {
-    // Re-query specifically for Cashflow to ensure correct filtering if needed, or reuse logic
-    // For simplicity, reusing similar query structure
     $sql = "SELECT f.*, a.name as acc_name, a.code as acc_code 
             FROM finance_transactions f
             JOIN accounts a ON f.account_id = a.id
@@ -115,7 +113,6 @@ if ($view === 'CASHFLOW') {
 // B. VIEW ANGGARAN
 $realisasi_anggaran = 0;
 if ($view === 'ANGGARAN') {
-    // Calculate Expense
     $sql = "SELECT SUM(amount) FROM finance_transactions WHERE type='EXPENSE' AND date BETWEEN ? AND ?";
     $params = [$start, $end];
     if ($f_wilayah !== 'ALL') {
@@ -190,7 +187,7 @@ if ($view === 'ARUS_KAS') {
 
 // D. VIEW CUSTOM (NEW)
 $custom_trx_grouped = [];
-$custom_stats = ['money_in'=>0, 'money_out'=>0, 'goods_in'=>0, 'goods_out'=>0];
+$custom_stats = ['money_in'=>0, 'money_out'=>0, 'goods_in'=>0, 'goods_out'=>0, 'goods_in_val'=>0, 'goods_out_val'=>0];
 
 if ($view === 'CUSTOM') {
     // Custom Filter Inputs
@@ -262,24 +259,40 @@ if ($view === 'CUSTOM') {
         else $custom_stats['money_out'] += $row['amount'];
     }
 
-    // 2. Inventory Stats Query (Separate, approximate matching filters)
-    $inv_sql = "SELECT type, SUM(quantity) as qty FROM inventory_transactions WHERE date BETWEEN ? AND ?";
+    // 2. Inventory Stats Query (With Valuation)
+    // Menghitung nilai barang berdasarkan Harga Beli (HPP)
+    $inv_sql = "
+        SELECT i.type, 
+               SUM(i.quantity) as qty,
+               SUM(i.quantity * p.buy_price) as val 
+        FROM inventory_transactions i
+        JOIN products p ON i.product_id = p.id
+        WHERE i.date BETWEEN ? AND ?
+    ";
     $inv_params = [$start, $end];
+    
     if ($c_wh !== 'ALL') {
-        $inv_sql .= " AND warehouse_id = ?";
+        $inv_sql .= " AND i.warehouse_id = ?";
         $inv_params[] = $c_wh;
     }
     if ($c_user !== 'ALL') {
-        $inv_sql .= " AND user_id = ?";
+        $inv_sql .= " AND i.user_id = ?";
         $inv_params[] = $c_user;
     }
-    // Note: Account & Keyword filter ignored for inventory stats for simplicity/relevance
-    $inv_sql .= " GROUP BY type";
+    
+    $inv_sql .= " GROUP BY i.type";
+    
     $stmt_inv = $pdo->prepare($inv_sql);
     $stmt_inv->execute($inv_params);
     while($row = $stmt_inv->fetch()) {
-        if($row['type'] == 'IN') $custom_stats['goods_in'] = $row['qty'];
-        if($row['type'] == 'OUT') $custom_stats['goods_out'] = $row['qty'];
+        if($row['type'] == 'IN') {
+            $custom_stats['goods_in'] = $row['qty'];
+            $custom_stats['goods_in_val'] = $row['val'];
+        }
+        if($row['type'] == 'OUT') {
+            $custom_stats['goods_out'] = $row['qty'];
+            $custom_stats['goods_out_val'] = $row['val'];
+        }
     }
 }
 ?>
@@ -498,23 +511,25 @@ if ($view === 'CUSTOM') {
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
             <!-- Uang Masuk -->
             <div class="bg-green-50 border border-green-200 p-4 rounded shadow-sm">
-                <div class="text-xs text-green-700 font-bold">Total Uang Masuk</div>
+                <div class="text-xs text-green-700 font-bold uppercase">Total Uang Masuk</div>
                 <div class="text-lg font-bold text-green-900"><?= formatRupiah($custom_stats['money_in']) ?></div>
             </div>
             <!-- Uang Keluar -->
             <div class="bg-red-50 border border-red-200 p-4 rounded shadow-sm">
-                <div class="text-xs text-red-700 font-bold">Total Uang Keluar</div>
+                <div class="text-xs text-red-700 font-bold uppercase">Total Uang Keluar</div>
                 <div class="text-lg font-bold text-red-900"><?= formatRupiah($custom_stats['money_out']) ?></div>
             </div>
             <!-- Barang Masuk -->
             <div class="bg-blue-50 border border-blue-200 p-4 rounded shadow-sm">
-                <div class="text-xs text-blue-700 font-bold">Total Barang Masuk</div>
+                <div class="text-xs text-blue-700 font-bold uppercase">Total Barang Masuk</div>
                 <div class="text-lg font-bold text-blue-900"><?= number_format($custom_stats['goods_in']) ?> Unit</div>
+                <div class="text-xs text-blue-600 mt-1 font-bold">Valuasi: <?= formatRupiah($custom_stats['goods_in_val']) ?></div>
             </div>
             <!-- Barang Keluar -->
             <div class="bg-orange-50 border border-orange-200 p-4 rounded shadow-sm">
-                <div class="text-xs text-orange-700 font-bold">Total Barang Keluar</div>
+                <div class="text-xs text-orange-700 font-bold uppercase">Total Barang Keluar</div>
                 <div class="text-lg font-bold text-orange-900"><?= number_format($custom_stats['goods_out']) ?> Unit</div>
+                <div class="text-xs text-orange-600 mt-1 font-bold">Valuasi: <?= formatRupiah($custom_stats['goods_out_val']) ?></div>
             </div>
         </div>
 

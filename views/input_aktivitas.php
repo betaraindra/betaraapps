@@ -66,21 +66,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
             $stmtWh->execute([$wh_id]);
             $wh_name = $stmtWh->fetchColumn();
             
-            // Tentukan Akun Keuangan
+            // Tentukan Akun Keuangan (Hanya untuk referensi, tidak dicatat)
             $accId = null;
             $finType = '';
             
             if ($mode == 'OUT') {
                 // PEMAKAIAN -> EXPENSE (Beban)
-                $accStmt = $pdo->query("SELECT id FROM accounts WHERE code = '2009' LIMIT 1"); // Pengeluaran Wilayah
+                $accStmt = $pdo->query("SELECT id FROM accounts WHERE code = '2105' LIMIT 1");
                 $accId = $accStmt->fetchColumn();
-                if (!$accId) $accId = $pdo->query("SELECT id FROM accounts WHERE code = '2105' LIMIT 1")->fetchColumn(); // Material
                 $finType = 'EXPENSE';
             } else {
-                // PENGEMBALIAN -> INCOME (Recovery Asset/Pemasukan Wilayah)
+                // PENGEMBALIAN -> INCOME
                 $accStmt = $pdo->query("SELECT id FROM accounts WHERE code = '1004' LIMIT 1");
                 $accId = $accStmt->fetchColumn();
-                if (!$accId) $accId = $pdo->query("SELECT id FROM accounts WHERE code = '1003' LIMIT 1")->fetchColumn();
                 $finType = 'INCOME';
             }
 
@@ -158,21 +156,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                     }
                 }
 
-                // --- CATAT KEUANGAN (AUTO) ---
-                $total_value = $item['qty'] * $prod['buy_price'];
-                if ($accId && $total_value > 0) {
-                    $prefix = ($mode == 'OUT') ? "[PEMAKAIAN]" : "[PENGEMBALIAN]";
-                    $fin_desc = "$prefix {$prod['name']} ({$item['qty']}) - $desc_main [Wilayah: $wh_name]";
-                    
-                    $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, ?, ?, ?, ?, ?)")
-                        ->execute([$date, $finType, $accId, $total_value, $fin_desc, $_SESSION['user_id']]);
-                }
+                // --- NOTE: TRANSAKSI KEUANGAN DITIADAKAN ---
+                // Sesuai permintaan, input aktivitas tidak mencatat ke finance_transactions
+                // karena hanya mutasi stok/pemakaian internal yang tidak melibatkan kas keluar saat ini.
+                // Laporan Keuangan akan menghitung HPP secara virtual dari log inventory OUT.
 
                 $count++;
             }
             
             $pdo->commit();
-            $_SESSION['flash'] = ['type'=>'success', 'message'=>"$count item berhasil diproses ($mode)."];
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>"$count item berhasil diproses ($mode). Stok diperbarui."];
             echo "<script>window.location='?page=input_aktivitas';</script>";
             exit;
             
@@ -234,7 +227,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 <h3 class="font-bold text-xl text-purple-700 flex items-center gap-2">
                     <i class="fas fa-tools"></i> Input Aktivitas & Pengembalian
                 </h3>
-                <p class="text-sm text-gray-500 mt-1">Catat pemakaian barang operasional atau pengembalian (berhenti berlangganan).</p>
+                <p class="text-sm text-gray-500 mt-1">Catat pemakaian barang operasional atau pengembalian (Stok Only).</p>
             </div>
             
             <div class="flex gap-2 flex-wrap">
@@ -301,6 +294,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                                 <option value="<?= $w['id'] ?>"><?= $w['name'] ?></option>
                             <?php endforeach; ?>
                         </select>
+                        <p class="text-[10px] text-blue-600 mt-1 italic"><i class="fas fa-info-circle"></i> Memilih gudang akan memuat daftar barang yang tersedia.</p>
                     </div>
                     <div>
                         <label class="block text-xs font-bold text-gray-600 mb-1">ID Pelanggan / No. Tiket / Ref</label>
@@ -319,6 +313,15 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
             <!-- ITEM INPUT -->
             <div id="item_input_container" class="bg-purple-50 p-4 rounded-lg border border-purple-200 mb-6 transition-colors duration-300">
                 <h4 class="font-bold text-purple-800 mb-3 text-sm border-b border-purple-200 pb-1" id="item_title">Input Barang Pemakaian</h4>
+                
+                <!-- DROPDOWN MANUAL SELECT -->
+                <div class="mb-4 bg-white p-2 rounded border border-purple-100 shadow-sm">
+                    <label class="block text-xs font-bold text-gray-500 mb-1">Pilih Manual dari Stok Gudang Ini</label>
+                    <select id="manual_select" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-purple-500" disabled onchange="selectManualItem(this)">
+                        <option value="">-- Pilih Gudang Terlebih Dahulu --</option>
+                    </select>
+                </div>
+
                 <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
                     <div class="md:col-span-4">
                         <label class="block text-xs font-bold text-gray-600 mb-1">SKU / SN Barcode</label>
@@ -347,102 +350,84 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 </div>
                 
                 <!-- SN INPUT AREA -->
-                <div id="sn_out_container" class="hidden mt-4 bg-white bg-opacity-60 p-3 rounded border border-gray-300">
-                    <h5 class="text-xs font-bold text-gray-800 mb-2">Scan Serial Number (Wajib)</h5>
-                    <div id="sn_out_inputs" class="grid grid-cols-2 md:grid-cols-4 gap-2"></div>
+                <div id="sn_out_container" class="hidden mt-4 p-3 bg-white rounded border border-gray-300">
+                    <label class="block text-xs font-bold text-gray-700 mb-2">Input Serial Number (Wajib)</label>
+                    <div id="sn_inputs" class="grid grid-cols-2 md:grid-cols-4 gap-2"></div>
                 </div>
-
-                <input type="hidden" id="h_name"><input type="hidden" id="h_stock">
-                <input type="hidden" id="h_scanned_sn" value="">
             </div>
 
             <!-- CART TABLE -->
-            <div class="mb-6">
-                <h4 class="font-bold text-gray-800 mb-2">Keranjang <span id="cart_count" class="bg-gray-600 text-white text-xs px-2 rounded-full">0</span></h4>
-                <div class="border rounded-lg overflow-hidden bg-white shadow-sm">
-                    <table class="w-full text-sm text-left">
-                        <thead class="bg-gray-100 text-gray-700 border-b">
-                            <tr>
-                                <th class="p-3">SKU</th>
-                                <th class="p-3">Barang</th>
-                                <th class="p-3 text-center">Qty</th>
-                                <th class="p-3">SN</th>
-                                <th class="p-3">Ket</th>
-                                <th class="p-3 text-center"><i class="fas fa-trash"></i></th>
-                            </tr>
-                        </thead>
-                        <tbody id="cart_table_body">
-                            <tr><td colspan="6" class="p-4 text-center text-gray-400 italic">Belum ada barang.</td></tr>
-                        </tbody>
-                    </table>
-                </div>
+            <div class="bg-white border rounded-lg overflow-hidden shadow-sm mb-6">
+                <table class="w-full text-sm text-left">
+                    <thead class="bg-gray-100 text-gray-700 border-b">
+                        <tr>
+                            <th class="p-3">Barang (SKU)</th>
+                            <th class="p-3 text-center">Qty</th>
+                            <th class="p-3">SN</th>
+                            <th class="p-3">Catatan</th>
+                            <th class="p-3 text-center w-16"><i class="fas fa-trash"></i></th>
+                        </tr>
+                    </thead>
+                    <tbody id="cart_body" class="divide-y">
+                        <tr><td colspan="5" class="p-6 text-center text-gray-400 italic">Belum ada barang di daftar.</td></tr>
+                    </tbody>
+                </table>
             </div>
-            
-            <button type="submit" id="btn_process" class="w-full bg-purple-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-purple-700 shadow-lg disabled:bg-gray-400 flex justify-center items-center gap-2 transition-colors duration-300">
-                <i class="fas fa-save"></i> Simpan Aktivitas (Keluar)
+
+            <button type="submit" class="w-full bg-green-600 text-white py-4 rounded font-bold text-lg shadow hover:bg-green-700 transition transform active:scale-95 flex justify-center items-center gap-2">
+                <i class="fas fa-save"></i> Simpan Transaksi
             </button>
         </form>
     </div>
 
-    <!-- TABEL DATA AKTIVITAS (HISTORI) -->
-    <div class="bg-white p-6 rounded-lg shadow mt-8">
-        <div class="flex flex-col md:flex-row justify-between items-center mb-4 border-b pb-4 gap-4">
-            <h3 class="font-bold text-lg text-gray-800"><i class="fas fa-history text-blue-600"></i> Riwayat Data Aktivitas</h3>
-            
-            <!-- FILTER TABEL -->
-            <form method="GET" class="flex flex-wrap gap-2 items-center">
-                <input type="hidden" name="page" value="input_aktivitas">
-                <input type="text" name="q" value="<?= htmlspecialchars($search_q) ?>" placeholder="Cari..." class="border p-1 rounded text-sm w-32">
-                <input type="date" name="start" value="<?= $start_date ?>" class="border p-1 rounded text-sm">
-                <input type="date" name="end" value="<?= $end_date ?>" class="border p-1 rounded text-sm">
-                <button class="bg-blue-600 text-white px-3 py-1 rounded text-sm"><i class="fas fa-search"></i></button>
-            </form>
-        </div>
+    <!-- LIST RIWAYAT -->
+    <div class="bg-white p-6 rounded-lg shadow">
+        <h3 class="font-bold text-gray-800 mb-4 border-b pb-2">Riwayat Aktivitas Terakhir</h3>
+        
+        <!-- Filter Bar -->
+        <form method="GET" class="flex flex-wrap gap-2 mb-4">
+            <input type="hidden" name="page" value="input_aktivitas">
+            <input type="text" name="q" value="<?= htmlspecialchars($search_q) ?>" class="border p-2 rounded text-sm" placeholder="Cari...">
+            <input type="date" name="start" value="<?= $start_date ?>" class="border p-2 rounded text-sm">
+            <input type="date" name="end" value="<?= $end_date ?>" class="border p-2 rounded text-sm">
+            <button type="submit" class="bg-blue-600 text-white px-3 py-2 rounded text-sm"><i class="fas fa-filter"></i></button>
+        </form>
 
         <div class="overflow-x-auto">
             <table class="w-full text-sm text-left border-collapse">
                 <thead class="bg-gray-100 text-gray-700">
                     <tr>
                         <th class="p-3 border-b">Tanggal</th>
-                        <th class="p-3 border-b">Tipe</th>
-                        <th class="p-3 border-b">Ref / Ket</th>
+                        <th class="p-3 border-b">Ref</th>
                         <th class="p-3 border-b">Barang</th>
                         <th class="p-3 border-b text-right">Qty</th>
-                        <th class="p-3 border-b">Gudang</th>
+                        <th class="p-3 border-b">Keterangan</th>
                         <th class="p-3 border-b text-center">User</th>
                         <th class="p-3 border-b text-center">Aksi</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y">
                     <?php if(empty($activities_data)): ?>
-                        <tr><td colspan="8" class="p-4 text-center text-gray-400">Belum ada data aktivitas sesuai filter.</td></tr>
+                        <tr><td colspan="7" class="p-4 text-center text-gray-400">Belum ada data aktivitas.</td></tr>
                     <?php else: ?>
-                        <?php foreach($activities_data as $row): 
-                            $is_return = strpos($row['notes'], 'Pengembalian:') !== false || $row['type'] == 'IN';
-                            $row_class = $is_return ? 'bg-teal-50' : 'hover:bg-gray-50';
-                            $badge = $is_return ? '<span class="bg-teal-100 text-teal-800 px-2 py-1 rounded text-xs font-bold">RETUR</span>' : '<span class="bg-purple-100 text-purple-800 px-2 py-1 rounded text-xs font-bold">PAKAI</span>';
-                        ?>
-                        <tr class="<?= $row_class ?>">
-                            <td class="p-3 whitespace-nowrap"><?= date('d/m/Y', strtotime($row['date'])) ?></td>
-                            <td class="p-3 text-center"><?= $badge ?></td>
+                        <?php foreach($activities_data as $row): ?>
+                        <tr class="hover:bg-gray-50">
+                            <td class="p-3 whitespace-nowrap text-gray-600"><?= date('d/m/Y', strtotime($row['date'])) ?></td>
+                            <td class="p-3 font-mono text-xs text-blue-600 font-bold"><?= h($row['reference']) ?></td>
                             <td class="p-3">
-                                <div class="font-bold text-xs text-blue-700"><?= h($row['reference']) ?></div>
-                                <div class="text-xs text-gray-500 italic truncate max-w-xs"><?= h($row['notes']) ?></div>
+                                <div class="font-bold text-gray-800"><?= h($row['prod_name']) ?></div>
+                                <div class="text-xs text-gray-500"><?= h($row['sku']) ?></div>
                             </td>
-                            <td class="p-3">
-                                <div class="font-bold"><?= h($row['prod_name']) ?></div>
-                                <div class="text-xs font-mono"><?= h($row['sku']) ?></div>
+                            <td class="p-3 text-right font-bold <?= $row['type']=='OUT'?'text-red-600':'text-green-600' ?>">
+                                <?= $row['type']=='OUT' ? '-' : '+' ?><?= number_format($row['quantity']) ?>
                             </td>
-                            <td class="p-3 text-right font-bold <?= $is_return?'text-green-600':'text-red-600' ?>">
-                                <?= $is_return ? '+' : '-' ?><?= number_format($row['quantity']) ?>
-                            </td>
-                            <td class="p-3 text-xs text-gray-600"><?= h($row['wh_name']) ?></td>
-                            <td class="p-3 text-center text-xs"><?= h($row['username']) ?></td>
+                            <td class="p-3 text-gray-600 italic text-xs max-w-xs truncate" title="<?= h($row['notes']) ?>"><?= h($row['notes']) ?></td>
+                            <td class="p-3 text-center text-xs text-gray-500"><?= h($row['username']) ?></td>
                             <td class="p-3 text-center">
-                                <form method="POST" onsubmit="return confirm('Hapus aktivitas ini? Stok akan dikembalikan.')" class="inline">
+                                <form method="POST" onsubmit="return confirm('Hapus aktivitas ini? Stok akan dikembalikan.')">
                                     <?= csrf_field() ?>
                                     <input type="hidden" name="delete_id" value="<?= $row['id'] ?>">
-                                    <button class="text-red-400 hover:text-red-600 p-1" title="Hapus / Rollback"><i class="fas fa-trash"></i></button>
+                                    <button class="text-red-500 hover:text-red-700" title="Hapus"><i class="fas fa-trash"></i></button>
                                 </form>
                             </td>
                         </tr>
@@ -454,264 +439,275 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
 
         <!-- PAGINATION -->
         <?php if($total_pages > 1): ?>
-        <div class="flex justify-between items-center mt-4 pt-4 border-t">
-            <span class="text-xs text-gray-500">Halaman <?= $page_num ?> dari <?= $total_pages ?></span>
-            <div class="flex gap-1">
-                <?php if($page_num > 1): ?>
-                    <a href="?page=input_aktivitas&p=<?= $page_num-1 ?>&q=<?=h($search_q)?>&start=<?=$start_date?>&end=<?=$end_date?>" class="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 text-xs">Prev</a>
-                <?php endif; ?>
-                <?php if($page_num < $total_pages): ?>
-                    <a href="?page=input_aktivitas&p=<?= $page_num+1 ?>&q=<?=h($search_q)?>&start=<?=$start_date?>&end=<?=$end_date?>" class="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 text-xs">Next</a>
-                <?php endif; ?>
-            </div>
+        <div class="flex justify-center gap-2 mt-4">
+            <?php if($page_num > 1): ?>
+                <a href="?page=input_aktivitas&p=<?= $page_num - 1 ?>&start=<?= $start_date ?>&end=<?= $end_date ?>&q=<?= h($search_q) ?>" class="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-sm">Prev</a>
+            <?php endif; ?>
+            <span class="px-3 py-1 text-sm font-bold text-gray-600">Halaman <?= $page_num ?> dari <?= $total_pages ?></span>
+            <?php if($page_num < $total_pages): ?>
+                <a href="?page=input_aktivitas&p=<?= $page_num + 1 ?>&start=<?= $start_date ?>&end=<?= $end_date ?>&q=<?= h($search_q) ?>" class="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-sm">Next</a>
+            <?php endif; ?>
         </div>
         <?php endif; ?>
     </div>
 </div>
 
 <script>
+let cart = [];
 let html5QrCode;
 let audioCtx = null;
-let isFlashOn = false;
-let cart = [];
-let currentMode = 'OUT'; // Default
+let currentMode = 'OUT';
 const APP_NAME_PREFIX = "<?= $app_ref_prefix ?>";
 
-// --- MODE TOGGLE ---
+// --- INIT ---
+document.addEventListener('DOMContentLoaded', () => {
+    generateReference();
+    
+    // SETUP WAREHOUSE CHANGE LISTENER
+    document.getElementById('warehouse_id').addEventListener('change', function() {
+        loadProductsByWarehouse(this.value);
+    });
+    
+    // Load initial if value exists (e.g. back browser)
+    const initWh = document.getElementById('warehouse_id').value;
+    if(initWh) loadProductsByWarehouse(initWh);
+});
+
+// --- LOAD MANUAL DROPDOWN ---
+async function loadProductsByWarehouse(whId) {
+    const select = document.getElementById('manual_select');
+    select.disabled = true;
+    select.innerHTML = '<option>Memuat data barang...</option>';
+    
+    try {
+        const res = await fetch(`api.php?action=get_warehouse_stock&warehouse_id=${whId}`);
+        const data = await res.json();
+        
+        select.innerHTML = '<option value="">-- Cari Barang (Ketik Nama) --</option>';
+        
+        if (data.length > 0) {
+            data.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.sku;
+                opt.text = `${p.name} (Stok: ${p.current_qty} ${p.unit})`;
+                select.appendChild(opt);
+            });
+            select.disabled = false;
+        } else {
+            select.innerHTML = '<option value="">-- Tidak ada stok di gudang ini --</option>';
+        }
+    } catch(e) {
+        select.innerHTML = '<option value="">Gagal memuat data</option>';
+    }
+}
+
+function selectManualItem(select) {
+    const sku = select.value;
+    if (sku) {
+        document.getElementById('sku_input').value = sku;
+        checkSku();
+        // Reset select to default so user can re-select same item if needed (though UX wise it adds to list)
+        select.value = ""; 
+    }
+}
+
+// --- AUDIO ---
+function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); }
+function playBeep() { if (!audioCtx) return; try { const o = audioCtx.createOscillator(); const g = audioCtx.createGain(); o.connect(g); g.connect(audioCtx.destination); o.type = 'square'; o.frequency.setValueAtTime(1200, audioCtx.currentTime); g.gain.setValueAtTime(0.1, audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1); o.start(); o.stop(audioCtx.currentTime + 0.15); } catch (e) {} }
+
+// --- UI TOGGLES ---
 function toggleMode(mode) {
     currentMode = mode;
     const container = document.getElementById('item_input_container');
-    const title = document.getElementById('item_title');
     const skuInput = document.getElementById('sku_input');
-    const btn = document.getElementById('btn_process');
-    const descInput = document.getElementById('desc_input');
-    const whSelect = document.getElementById('warehouse_id');
-
+    const title = document.getElementById('item_title');
+    
     if (mode === 'IN') {
-        // STYLE RETURN (TEAL/GREEN)
+        // Mode Masuk (Pengembalian)
         container.classList.remove('bg-purple-50', 'border-purple-200');
         container.classList.add('bg-teal-50', 'border-teal-200');
-        title.innerText = "Input Barang Pengembalian (Return)";
-        title.classList.remove('text-purple-800', 'border-purple-200');
-        title.classList.add('text-teal-800', 'border-teal-200');
-        
         skuInput.classList.remove('border-purple-500');
         skuInput.classList.add('border-teal-500');
-        
-        btn.classList.remove('bg-purple-600', 'hover:bg-purple-700');
-        btn.classList.add('bg-teal-600', 'hover:bg-teal-700');
-        btn.innerHTML = '<i class="fas fa-undo"></i> Simpan Pengembalian (Masuk)';
-        
-        descInput.placeholder = "Contoh: Berhenti Berlangganan ID 123";
+        title.innerText = "Input Barang Pengembalian (Retur)";
+        title.classList.remove('text-purple-800', 'border-purple-200');
+        title.classList.add('text-teal-800', 'border-teal-200');
     } else {
-        // STYLE OUT (PURPLE)
+        // Mode Keluar (Pemakaian)
         container.classList.remove('bg-teal-50', 'border-teal-200');
         container.classList.add('bg-purple-50', 'border-purple-200');
+        skuInput.classList.remove('border-teal-500');
+        skuInput.classList.add('border-purple-500');
         title.innerText = "Input Barang Pemakaian";
         title.classList.remove('text-teal-800', 'border-teal-200');
         title.classList.add('text-purple-800', 'border-purple-200');
-        
-        skuInput.classList.remove('border-teal-500');
-        skuInput.classList.add('border-purple-500');
-        
-        btn.classList.remove('bg-teal-600', 'hover:bg-teal-700');
-        btn.classList.add('bg-purple-600', 'hover:bg-purple-700');
-        btn.innerHTML = '<i class="fas fa-save"></i> Simpan Aktivitas (Keluar)';
-        
-        descInput.placeholder = "Contoh: Instalasi Modem di Rumah Bpk. Budi";
-    }
-    
-    // Clear cart when switching mode to avoid confusion
-    if(cart.length > 0) {
-        if(confirm("Ganti mode akan mengosongkan keranjang saat ini. Lanjutkan?")) {
-            cart = [];
-            renderCart();
-        } else {
-            // Revert radio button
-            document.querySelector(`input[name="activity_mode"][value="${mode === 'OUT' ? 'IN' : 'OUT'}"]`).checked = true;
-            toggleMode(mode === 'OUT' ? 'IN' : 'OUT'); // Switch back logic style
-        }
     }
 }
 
-// --- GENERATE REFERENCE ---
-async function generateReference() {
-    const d = new Date();
-    const dateStr = d.getDate().toString().padStart(2, '0') + (d.getMonth()+1).toString().padStart(2, '0');
-    const rand = Math.floor(100 + Math.random() * 900);
-    // Prefix beda dikit biar keren
-    const prefix = currentMode === 'IN' ? 'RET' : 'ACT';
-    document.getElementById('reference_input').value = `${prefix}/${dateStr}/${rand}`;
-}
-
-// --- SCANNER & CART LOGIC (REUSED FROM BARANG_KELUAR) ---
-function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); }
-function playBeep() { if (!audioCtx) return; try { const o = audioCtx.createOscillator(); const g = audioCtx.createGain(); o.connect(g); g.connect(audioCtx.destination); o.type = 'square'; o.frequency.setValueAtTime(1200, audioCtx.currentTime); g.gain.setValueAtTime(0.1, audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1); o.start(); o.stop(audioCtx.currentTime + 0.15); } catch (e) {} }
-function activateUSB() { const i = document.getElementById('sku_input'); i.focus(); i.select(); i.classList.add('ring-4', 'ring-yellow-400'); setTimeout(() => i.classList.remove('ring-4', 'ring-yellow-400'), 1500); }
-function handleFileScan(input) { if (!input.files.length) return; const f = input.files[0]; initAudio(); const i = document.getElementById('sku_input'); const p = i.placeholder; i.value = ""; i.placeholder = "Processing..."; const h = new Html5Qrcode("reader"); h.scanFile(f, true).then(t => { playBeep(); i.value = t; i.placeholder = p; checkSku(); input.value = ''; }).catch(e => { alert("Gagal baca."); i.placeholder = p; input.value = ''; }); }
-async function initCamera() { initAudio(); document.getElementById('scanner_area').classList.remove('hidden'); try { await navigator.mediaDevices.getUserMedia({ video: true }); const d = await Html5Qrcode.getCameras(); const s = document.getElementById('camera_select'); s.innerHTML = ""; if (d && d.length) { let id = d[0].id; d.forEach(dev => { if(dev.label.toLowerCase().includes('back')) id = dev.id; const o = document.createElement("option"); o.value = dev.id; o.text = dev.label; s.appendChild(o); }); s.value = id; startScan(id); s.onchange = () => { if(html5QrCode) html5QrCode.stop().then(() => startScan(s.value)); }; } else alert("No camera"); } catch (e) { alert("Camera error"); document.getElementById('scanner_area').classList.add('hidden'); } }
-function startScan(id) { if(html5QrCode) try{html5QrCode.stop()}catch(e){} html5QrCode = new Html5Qrcode("reader"); html5QrCode.start(id, { fps: 10, qrbox: { width: 250, height: 250 } }, (t) => { document.getElementById('sku_input').value = t; playBeep(); checkSku(); stopScan(); }, () => {}).then(() => { const t = html5QrCode.getRunningTrackCameraCapabilities(); if(t && t.torchFeature().isSupported()) document.getElementById('btn_flash').classList.remove('hidden'); }); }
-function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }).catch(() => document.getElementById('scanner_area').classList.add('hidden')); }
-function toggleFlash() { if(html5QrCode) { isFlashOn = !isFlashOn; html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] }); } }
-
-async function checkSku() { 
-    const s = document.getElementById('sku_input').value.trim(); 
-    if(s.length < 3) return; 
-    const stat = document.getElementById('sku_status'); 
-    const n = document.getElementById('h_name'); 
-    const st = document.getElementById('h_stock'); 
-    const h_scanned_sn = document.getElementById('h_scanned_sn');
+// --- PRODUCT CHECK & CART ---
+async function checkSku() {
+    const sku = document.getElementById('sku_input').value.trim();
+    if (!sku) return;
     
-    stat.innerHTML = 'Searching...'; 
-    try { 
-        const r = await fetch(`api.php?action=get_product_by_sku&sku=${encodeURIComponent(s)}`); 
-        const d = await r.json(); 
-        if(d && d.id) { 
-            stat.innerHTML = `<span class="text-green-600">Found: ${d.name} (${d.stock})</span>`; 
-            n.value = d.name; 
-            st.value = d.stock; 
+    const status = document.getElementById('sku_status');
+    status.innerText = "Mencari...";
+    
+    try {
+        const res = await fetch(`api.php?action=get_product_by_sku&sku=${encodeURIComponent(sku)}`);
+        const data = await res.json();
+        
+        if (data.id) {
+            // Found
+            document.getElementById('sku_input').setAttribute('data-id', data.id);
+            document.getElementById('sku_input').setAttribute('data-name', data.name);
+            document.getElementById('sku_input').setAttribute('data-unit', data.unit);
             
-            // Cek apakah scan SN langsung?
-            if (d.scanned_sn) {
-                h_scanned_sn.value = d.scanned_sn;
-                // Jika scan SN langsung, otomatis set qty 1 dan auto add
+            // Jika scan SN, otomatis set qty 1 dan isi SN
+            if (data.scanned_sn) {
                 document.getElementById('qty_input').value = 1;
-                renderSnInputs(); 
+                document.getElementById('qty_input').disabled = true; // SN unik = 1 item
+                renderSnInputs([data.scanned_sn]);
+                status.innerHTML = `<span class="text-green-600"><i class="fas fa-check"></i> ${data.name} (SN: ${data.scanned_sn})</span>`;
             } else {
-                h_scanned_sn.value = '';
-                document.getElementById('qty_input').focus(); 
+                document.getElementById('qty_input').value = 1;
+                document.getElementById('qty_input').disabled = false;
+                renderSnInputs();
+                document.getElementById('qty_input').focus();
+                status.innerHTML = `<span class="text-green-600"><i class="fas fa-check"></i> ${data.name} (Stok: ${data.stock})</span>`;
             }
-
-            // Auto Warehouse Selection logic from prev scan
-            if(d.last_warehouse_id) {
-                const whSelect = document.getElementById('warehouse_id');
-                if(!whSelect.value) { // Only change if not selected
-                    whSelect.value = d.last_warehouse_id;
-                }
-            }
-            
-            // Auto add jika direct SN scan
-            if (d.scanned_sn) {
-                setTimeout(() => addToCart(), 200);
-            }
-
-        } else { 
-            stat.innerHTML = '<span class="text-red-600">Not Found!</span>'; 
-            n.value=''; st.value=0; h_scanned_sn.value='';
-        } 
-    } catch(e){ stat.innerText = "Error API"; } 
+        } else {
+            status.innerHTML = `<span class="text-red-600">Barang tidak ditemukan!</span>`;
+            document.getElementById('sku_input').value = '';
+        }
+    } catch (e) {
+        status.innerText = "Error API";
+    }
 }
 
-function renderSnInputs() {
+function renderSnInputs(prefill = []) {
     const qty = parseInt(document.getElementById('qty_input').value) || 0;
-    // SN ALWAYS REQUIRED
-    const hasSn = true; 
     const container = document.getElementById('sn_out_container');
-    const inputsDiv = document.getElementById('sn_out_inputs');
-    const scannedSn = document.getElementById('h_scanned_sn').value;
+    const inputsDiv = document.getElementById('sn_inputs');
     
-    if (hasSn && qty > 0) {
+    if (qty > 0) {
         container.classList.remove('hidden');
         inputsDiv.innerHTML = '';
-        for (let i = 1; i <= qty; i++) {
-            let val = (i === 1 && scannedSn) ? scannedSn : '';
-            const div = document.createElement('div');
-            div.innerHTML = `<input type="text" name="sn_out[]" value="${val}" class="w-full border p-1 rounded text-sm font-mono uppercase bg-white border-purple-400" placeholder="SN Barang" required>`;
-            inputsDiv.appendChild(div);
+        for (let i = 0; i < qty; i++) {
+            const val = prefill[i] || '';
+            const ro = val ? 'readonly bg-gray-100' : '';
+            inputsDiv.innerHTML += `<input type="text" class="border p-2 rounded text-sm sn-field ${ro}" placeholder="SN #${i+1}" value="${val}" ${ro}>`;
         }
     } else {
         container.classList.add('hidden');
-        inputsDiv.innerHTML = '';
     }
 }
 
-function addToCart() { 
-    const s = document.getElementById('sku_input').value.trim(); 
-    const n = document.getElementById('h_name').value; 
-    const st = parseFloat(document.getElementById('h_stock').value||0); 
-    const q = parseFloat(document.getElementById('qty_input').value); 
-    const nt = document.getElementById('notes_input').value; 
-    const hasSn = true; // FORCE SN
+function addToCart() {
+    const sku = document.getElementById('sku_input').value;
+    const id = document.getElementById('sku_input').getAttribute('data-id');
+    const name = document.getElementById('sku_input').getAttribute('data-name');
+    const qty = parseInt(document.getElementById('qty_input').value);
+    const notes = document.getElementById('notes_input').value;
     
-    if(!n) return alert("Scan item first"); 
-    if(!q || q<=0) return alert("Qty invalid"); 
-    
-    // Only check stock shortage if mode is OUT
-    if(currentMode === 'OUT' && q > st) return alert("Stok kurang!"); 
-    
+    if (!id || !qty || qty <= 0) {
+        alert("Pastikan barang valid dan qty > 0");
+        return;
+    }
+
+    // Collect SNs
+    const snInputs = document.querySelectorAll('.sn-field');
     let sns = [];
-    if(hasSn) {
-        const inputs = document.getElementsByName('sn_out[]');
-        if(inputs.length != q) return alert("Jumlah input SN harus sama dengan Qty");
-        for(let input of inputs) {
-            const val = input.value.trim();
-            if(!val) return alert("Semua Serial Number harus diisi!");
-            if(sns.includes(val)) return alert("SN duplikat terdeteksi: " + val);
-            sns.push(val);
-        }
+    let missingSn = false;
+    snInputs.forEach(inp => {
+        if (!inp.value.trim()) missingSn = true;
+        sns.push(inp.value.trim());
+    });
+
+    if (missingSn) {
+        alert("Serial Number wajib diisi untuk semua qty!");
+        return;
     }
 
-    const exist = cart.findIndex(x => x.sku === s); 
-    if(exist > -1) { 
-        if(currentMode === 'OUT' && (cart[exist].qty + q) > st) return alert("Total stok kurang!"); 
-        cart[exist].qty += q;
-        if(hasSn) cart[exist].sns = cart[exist].sns.concat(sns);
-    } else { 
-        cart.push({sku:s, name:n, qty:q, notes:nt, sns: sns, has_sn: hasSn}); 
-    } 
-    renderCart(); 
-    
-    document.getElementById('sku_input').value=''; 
-    document.getElementById('h_name').value=''; 
-    document.getElementById('h_stock').value=''; 
-    document.getElementById('h_scanned_sn').value='';
-    document.getElementById('qty_input').value=''; 
-    document.getElementById('notes_input').value=''; 
-    document.getElementById('sku_status').innerText=''; 
+    cart.push({
+        sku: sku,
+        id: id,
+        name: name,
+        qty: qty,
+        notes: notes,
+        sns: sns
+    });
+
+    renderCart();
+    resetInput();
+}
+
+function resetInput() {
+    document.getElementById('sku_input').value = '';
+    document.getElementById('sku_input').removeAttribute('data-id');
+    document.getElementById('qty_input').value = '';
+    document.getElementById('qty_input').disabled = false;
+    document.getElementById('notes_input').value = '';
     document.getElementById('sn_out_container').classList.add('hidden');
-    document.getElementById('sn_out_inputs').innerHTML = '';
-    document.getElementById('sku_input').focus(); 
+    document.getElementById('sku_status').innerText = '';
+    document.getElementById('sku_input').focus();
 }
 
-function renderCart() { 
-    const b = document.getElementById('cart_table_body'); 
-    b.innerHTML = ''; 
-    if(cart.length===0) { 
-        b.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-gray-400">Empty</td></tr>'; 
-        document.getElementById('btn_process').disabled = true; 
-    } else { 
-        document.getElementById('btn_process').disabled = false; 
-        cart.forEach((i,x) => { 
-            let snHtml = '-';
-            if(i.has_sn && i.sns.length > 0) snHtml = i.sns.map(s => `<span class="bg-purple-100 text-purple-800 text-[10px] px-1 rounded mr-1">${s}</span>`).join(' ');
-            const r = document.createElement('tr'); 
-            r.innerHTML = `
-                <td class="p-3 font-mono">${i.sku}</td>
-                <td class="p-3">${i.name}</td>
-                <td class="p-3 text-center font-bold">${i.qty}</td>
-                <td class="p-3">${snHtml}</td>
-                <td class="p-3 italic">${i.notes}</td>
-                <td class="p-3 text-center"><button type="button" onclick="removeFromCart(${x})" class="text-red-500"><i class="fas fa-trash"></i></button></td>
-            `; 
-            b.appendChild(r); 
-        }); 
-    } 
-    document.getElementById('cart_json').value = JSON.stringify(cart); 
-    document.getElementById('cart_count').innerText = cart.length; 
-}
-
-function removeFromCart(i) { cart.splice(i,1); renderCart(); }
-function validateCart() { 
-    const wh = document.getElementById('warehouse_id').value;
-    if(cart.length===0) { alert('Keranjang kosong'); return false; }
-    if(!wh) { alert('Pilih Lokasi Gudang!'); return false; }
+function renderCart() {
+    const tbody = document.getElementById('cart_body');
+    tbody.innerHTML = '';
     
-    const msg = currentMode === 'OUT' 
-        ? "Simpan aktivitas? Stok berkurang & Biaya tercatat." 
-        : "Simpan pengembalian? Stok bertambah & Aset pulih.";
+    if (cart.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="p-6 text-center text-gray-400 italic">Belum ada barang di daftar.</td></tr>';
+        return;
+    }
+
+    cart.forEach((item, idx) => {
+        tbody.innerHTML += `
+            <tr class="hover:bg-gray-50 border-b">
+                <td class="p-3">
+                    <div class="font-bold">${item.name}</div>
+                    <div class="text-xs text-gray-500">${item.sku}</div>
+                </td>
+                <td class="p-3 text-center font-bold">${item.qty}</td>
+                <td class="p-3 text-xs font-mono break-all max-w-xs">${item.sns.join(', ')}</td>
+                <td class="p-3 italic text-gray-600">${item.notes}</td>
+                <td class="p-3 text-center">
+                    <button type="button" onclick="removeFromCart(${idx})" class="text-red-500 hover:text-red-700"><i class="fas fa-trash"></i></button>
+                </td>
+            </tr>
+        `;
+    });
     
-    return confirm(msg); 
+    document.getElementById('cart_json').value = JSON.stringify(cart);
 }
 
-document.addEventListener('DOMContentLoaded', generateReference);
+function removeFromCart(idx) {
+    cart.splice(idx, 1);
+    renderCart();
+}
+
+function validateCart() {
+    if (cart.length === 0) {
+        alert("Keranjang kosong!");
+        return false;
+    }
+    return confirm("Simpan transaksi ini?");
+}
+
+async function generateReference() {
+    try {
+        const res = await fetch('api.php?action=get_next_trx_number&type=OUT'); // Use generic counter
+        const data = await res.json();
+        const d = new Date();
+        const ref = `${APP_NAME_PREFIX}/ACT/${d.getDate()}${d.getMonth()+1}/${d.getFullYear().toString().substr(-2)}-${data.next_no}`;
+        document.getElementById('reference_input').value = ref;
+    } catch (e) {}
+}
+
+// --- SCANNER LOGIC (Sama seperti halaman lain) ---
+function activateUSB() { const i = document.getElementById('sku_input'); i.focus(); i.select(); i.classList.add('ring-4', 'ring-purple-400'); setTimeout(() => i.classList.remove('ring-4', 'ring-purple-400'), 1000); }
+function handleFileScan(input) { if (input.files.length === 0) return; const file = input.files[0]; initAudio(); const i = document.getElementById('sku_input'); i.value = ""; i.placeholder = "Processing..."; const h = new Html5Qrcode("reader"); h.scanFile(file, true).then(d => { playBeep(); i.value = d; checkSku(); input.value = ''; }).catch(e => { alert("Gagal baca."); i.placeholder = "SCAN..."; input.value = ''; }); }
+async function initCamera() { initAudio(); document.getElementById('scanner_area').classList.remove('hidden'); try { await navigator.mediaDevices.getUserMedia({ video: true }); const d = await Html5Qrcode.getCameras(); const s = document.getElementById('camera_select'); s.innerHTML = ""; if (d && d.length) { let id = d[0].id; d.forEach(dev => { if(dev.label.toLowerCase().includes('back')) id = dev.id; const o = document.createElement("option"); o.value = dev.id; o.text = dev.label; s.appendChild(o); }); s.value = id; startScan(id); s.onchange = () => { if(html5QrCode) html5QrCode.stop().then(() => startScan(s.value)); }; } } catch (e) { alert("Error kamera"); document.getElementById('scanner_area').classList.add('hidden'); } }
+function startScan(id) { if(html5QrCode) try { html5QrCode.stop(); } catch(e) {} html5QrCode = new Html5Qrcode("reader"); html5QrCode.start(id, { fps: 10, qrbox: { width: 250, height: 250 } }, (d) => { playBeep(); document.getElementById('sku_input').value = d; checkSku(); stopScan(); }, () => {}); }
+function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }); }
+function toggleFlash() { if(html5QrCode) { isFlashOn = !isFlashOn; html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] }); } }
 </script>

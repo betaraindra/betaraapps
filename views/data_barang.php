@@ -79,6 +79,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $id = $_POST['id'] ?? '';
         $image_url = $_POST['old_image'] ?? '';
         $wh_id = $_POST['warehouse_id'] ?? ''; // Ambil Gudang ID
+        $has_sn = isset($_POST['has_serial_number']) ? 1 : 0;
 
         // SECURE FILE UPLOAD
         if (isset($_FILES['image']) && $_FILES['image']['error'] === 0) {
@@ -127,8 +128,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     throw new Exception("Stok berubah (Selisih: $stock_diff). Harap pilih Gudang/Wilayah untuk mencatat perubahan ini.");
                 }
 
-                $stmt = $pdo->prepare("UPDATE products SET sku=?, name=?, category=?, unit=?, buy_price=?, sell_price=?, stock=?, image_url=? WHERE id=?");
-                $stmt->execute([$sku, $name, $cat, $unit, $buy, $sell, $stock, $image_url, $id]);
+                $stmt = $pdo->prepare("UPDATE products SET sku=?, name=?, category=?, unit=?, buy_price=?, sell_price=?, stock=?, image_url=?, has_serial_number=? WHERE id=?");
+                $stmt->execute([$sku, $name, $cat, $unit, $buy, $sell, $stock, $image_url, $has_sn, $id]);
                 
                 // LOGIC TRANSAKSI KOREKSI (JIKA ADA PERUBAHAN STOK)
                 if ($stock_diff != 0) {
@@ -154,8 +155,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     throw new Exception("Stok awal diisi ($stock). Harap pilih Gudang/Wilayah penyimpanan.");
                 }
 
-                $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmt->execute([$sku, $name, $cat, $unit, $buy, $sell, $stock, $image_url]);
+                $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, image_url, has_serial_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute([$sku, $name, $cat, $unit, $buy, $sell, $stock, $image_url, $has_sn]);
                 $new_id = $pdo->lastInsertId();
 
                 // LOGIC TRANSAKSI STOK AWAL
@@ -275,7 +276,8 @@ foreach($products as $p) {
         'Satuan' => $p['unit'],
         'Harga Beli' => (float)$p['buy_price'],
         'Harga Jual' => (float)$p['sell_price'],
-        'Stok' => (int)$p['stock']
+        'Stok' => (int)$p['stock'],
+        'Wajib SN' => $p['has_serial_number'] ? 'YA' : 'TIDAK'
     ];
 }
 
@@ -490,6 +492,15 @@ foreach($products as $p) {
                         <p class="text-[10px] text-red-500 mt-1 font-bold">* WAJIB Pilih Gudang jika mengisi stok.</p>
                     </div>
 
+                    <!-- NEW: SERIAL NUMBER CHECKBOX -->
+                    <div class="mb-3 bg-purple-50 p-2 rounded border border-purple-200">
+                        <label class="flex items-center space-x-2 cursor-pointer">
+                            <input type="checkbox" name="has_serial_number" id="inp_has_sn" class="form-checkbox h-4 w-4 text-purple-600 rounded">
+                            <span class="text-xs font-bold text-purple-800">Barang Wajib Serial Number (SN)?</span>
+                        </label>
+                        <p class="text-[10px] text-gray-500 mt-1 ml-6">Jika dicentang, wajib input/scan SN saat barang masuk/keluar.</p>
+                    </div>
+
                     <div class="mb-3">
                         <label class="block text-xs font-bold text-gray-700 mb-1">Gambar</label>
                         <input type="file" name="image" id="inp_image" class="w-full border p-1 rounded text-xs" accept="image/png, image/jpeg">
@@ -536,6 +547,7 @@ foreach($products as $p) {
                         <th class="p-2 border">Jual</th>
                         <th class="p-2 border">Stok</th>
                         <th class="p-2 border">Sat</th>
+                        <th class="p-2 border">SN</th>
                         <th class="p-2 border">Ket</th>
                         <th class="p-2 border">Ref / Cetak</th> 
                         <th class="p-2 border no-print">Aksi</th>
@@ -555,6 +567,13 @@ foreach($products as $p) {
                         <td class="p-2 border text-right"><?= formatRupiah($p['sell_price']) ?></td>
                         <td class="p-2 border text-center font-bold"><?= h($p['stock']) ?></td>
                         <td class="p-2 border text-center"><?= h($p['unit']) ?></td>
+                        <td class="p-2 border text-center">
+                            <?php if($p['has_serial_number']): ?>
+                                <span class="bg-purple-100 text-purple-800 px-1 rounded font-bold text-[10px]">YA</span>
+                            <?php else: ?>
+                                -
+                            <?php endif; ?>
+                        </td>
                         <td class="p-2 border"><?= h($p['trx_notes']) ?></td>
                         <td class="p-2 border text-center">
                             <div class="font-mono text-xs font-bold text-blue-600 mb-1"><?= h($p['reference']) ?></div>
@@ -823,6 +842,9 @@ function editProduct(p) {
     document.getElementById('inp_stock').value = p.stock;
     document.getElementById('inp_old_image').value = p.image_url;
     
+    // SN Checkbox
+    document.getElementById('inp_has_sn').checked = (p.has_serial_number == 1);
+
     // Auto Select Warehouse from previous transaction if available
     // Agar kolom Wilayah tidak kosong saat disimpan
     document.getElementById('inp_warehouse').value = p.current_wh_id || "";
@@ -838,6 +860,7 @@ function resetForm() {
     document.getElementById('inp_id').value = '';
     document.getElementById('inp_old_image').value = '';
     document.getElementById('inp_warehouse').value = ''; // Reset Warehouse
+    document.getElementById('inp_has_sn').checked = false;
     document.getElementById('barcode_container').classList.add('hidden');
     document.getElementById('scanner_area').classList.add('hidden');
     if(html5QrCode) { try { html5QrCode.stop(); html5QrCode.clear(); } catch(e) {} }

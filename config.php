@@ -77,6 +77,34 @@ function ensureIndex($pdo, $table, $indexName, $columns) {
     } catch (Exception $e) { /* Ignore */ }
 }
 
+function ensureColumn($pdo, $table, $column, $definition) {
+    try {
+        $check = $pdo->query("SHOW COLUMNS FROM $table LIKE '$column'")->fetch();
+        if (!$check) {
+            $pdo->exec("ALTER TABLE $table ADD COLUMN $column $definition");
+        }
+    } catch (Exception $e) { error_log("Migration Col Error: " . $e->getMessage()); }
+}
+
+// --- AUTO MIGRATION SERIAL NUMBER ---
+ensureColumn($pdo, 'products', 'has_serial_number', 'TINYINT(1) DEFAULT 0');
+
+try {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS product_serials (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        product_id INT NOT NULL,
+        serial_number VARCHAR(100) NOT NULL,
+        status ENUM('AVAILABLE','SOLD','RETURNED','DEFECTIVE') DEFAULT 'AVAILABLE',
+        warehouse_id INT DEFAULT NULL,
+        in_transaction_id INT DEFAULT NULL,
+        out_transaction_id INT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_sn_product (product_id, serial_number),
+        INDEX idx_sn (serial_number),
+        INDEX idx_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+} catch (Exception $e) { error_log("Migration Table Error: " . $e->getMessage()); }
+
 ensureIndex($pdo, 'finance_transactions', 'idx_date_type', 'date, type');
 ensureIndex($pdo, 'finance_transactions', 'idx_acc_date', 'account_id, date');
 ensureIndex($pdo, 'inventory_transactions', 'idx_date_type', 'date, type');

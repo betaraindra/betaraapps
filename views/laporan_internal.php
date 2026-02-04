@@ -22,7 +22,7 @@ $titles = [
     'ARUS_KAS'      => 'Laporan Arus Kas (Rincian Akun)',
     'ANGGARAN'      => 'Laporan Realisasi Pengeluaran vs Anggaran',
     'WILAYAH'       => 'Laporan Profitabilitas per Wilayah/Gudang',
-    'CUSTOM'        => 'Laporan Custom'
+    'CUSTOM'        => 'Laporan Audit & Penelusuran (Custom)'
 ];
 $current_title = $titles[$view_type] ?? 'Laporan Internal';
 
@@ -211,13 +211,20 @@ if ($view_type == 'WILAYAH') {
     }
 }
 
-// --- 5. CUSTOM (DYNAMIC FILTER) ---
+// --- 5. CUSTOM (FILTER LENGKAP) ---
 $custom_results = [];
 if ($view_type == 'CUSTOM') {
     $c_q = $_GET['q'] ?? '';
     $c_acc = $_GET['account_id'] ?? 'ALL';
     $c_type = $_GET['type'] ?? 'ALL';
+    $c_wh = $_GET['warehouse_id'] ?? 'ALL';
+    $c_min = cleanNumber($_GET['min_amount'] ?? '');
+    $c_max = cleanNumber($_GET['max_amount'] ?? '');
     
+    // Barang Filter
+    $c_sku = trim($_GET['sku'] ?? '');
+    $c_sn = trim($_GET['sn'] ?? '');
+
     $sql = "SELECT f.*, a.code, a.name as acc_name, u.username
             FROM finance_transactions f
             JOIN accounts a ON f.account_id = a.id
@@ -225,11 +232,66 @@ if ($view_type == 'CUSTOM') {
             WHERE f.date BETWEEN ? AND ?";
     $params = [$start, $end];
 
+    // 1. Filter Standard
     if ($c_acc !== 'ALL') { $sql .= " AND f.account_id = ?"; $params[] = $c_acc; }
     if ($c_type !== 'ALL') { $sql .= " AND f.type = ?"; $params[] = $c_type; }
+    
     if (!empty($c_q)) {
         $sql .= " AND (f.description LIKE ? OR a.name LIKE ?)";
         $params[] = "%$c_q%"; $params[] = "%$c_q%";
+    }
+
+    if ($c_min > 0) { $sql .= " AND f.amount >= ?"; $params[] = $c_min; }
+    if ($c_max > 0) { $sql .= " AND f.amount <= ?"; $params[] = $c_max; }
+
+    // 2. Filter Wilayah (Tag Description)
+    if ($c_wh !== 'ALL') {
+        $stmt_wh_name = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
+        $stmt_wh_name->execute([$c_wh]);
+        $wh_target_name = $stmt_wh_name->fetchColumn();
+        if ($wh_target_name) {
+            $sql .= " AND f.description LIKE ?";
+            $params[] = "%[Wilayah: $wh_target_name]%";
+        }
+    }
+
+    // 3. Filter SKU (Cari di Description karena pattern: "SKU - REF")
+    if (!empty($c_sku)) {
+        $sql .= " AND f.description LIKE ?";
+        $params[] = "%$c_sku%";
+    }
+
+    // 4. Filter Serial Number (Complex: SN -> Inventory Ref -> Finance Desc)
+    // Mencari Transaksi Keuangan yang referensinya sama dengan transaksi SN tersebut
+    if (!empty($c_sn)) {
+        // Cari Reference dari SN di tabel Inventory/Serials
+        $stmtSnRef = $pdo->prepare("
+            SELECT DISTINCT it.reference 
+            FROM product_serials ps
+            JOIN inventory_transactions it ON (ps.in_transaction_id = it.id OR ps.out_transaction_id = it.id)
+            WHERE ps.serial_number = ?
+        ");
+        $stmtSnRef->execute([$c_sn]);
+        $refs = $stmtSnRef->fetchAll(PDO::FETCH_COLUMN);
+
+        if (!empty($refs)) {
+            $sn_clauses = [];
+            foreach ($refs as $ref) {
+                if(!empty($ref) && $ref != '-') {
+                    $sn_clauses[] = "f.description LIKE ?";
+                    $params[] = "%$ref%";
+                }
+            }
+            if(!empty($sn_clauses)) {
+                $sql .= " AND (" . implode(' OR ', $sn_clauses) . ")";
+            } else {
+                // SN ada tapi tidak ada ref valid
+                $sql .= " AND 1=0"; 
+            }
+        } else {
+            // SN tidak ditemukan di history
+            $sql .= " AND 1=0";
+        }
     }
     
     $sql .= " ORDER BY f.date DESC";
@@ -274,79 +336,179 @@ if ($view_type == 'CUSTOM') {
         <a href="?page=laporan_internal&view=ARUS_KAS" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='ARUS_KAS'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Arus Kas (Akun)</a>
         <a href="?page=laporan_internal&view=ANGGARAN" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='ANGGARAN'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Anggaran</a>
         <a href="?page=laporan_internal&view=WILAYAH" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='WILAYAH'?'bg-purple-600 text-white':'bg-purple-50 text-purple-600 hover:bg-purple-100'?>">Per Wilayah</a>
-        <a href="?page=laporan_internal&view=CUSTOM" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='CUSTOM'?'bg-gray-800 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Custom</a>
+        <a href="?page=laporan_internal&view=CUSTOM" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='CUSTOM'?'bg-gray-800 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Filter Custom Lengkap</a>
     </div>
 
     <!-- FILTER FORM DINAMIS -->
-    <form class="flex flex-wrap gap-4 items-end">
+    <form class="flex flex-col gap-4">
         <input type="hidden" name="page" value="laporan_internal">
         <input type="hidden" name="view" value="<?= $view_type ?>">
         
-        <?php if($view_type == 'ANGGARAN'): ?>
-            <!-- Input Khusus Anggaran -->
-            <div class="flex-1 min-w-[200px]">
-                <label class="block text-xs font-bold text-gray-600 mb-1">Target Anggaran (Rp)</label>
-                <input type="text" name="budget" value="<?= $_GET['budget'] ?? '' ?>" onkeyup="formatRupiah(this)" class="border p-2 rounded text-sm w-full font-bold" placeholder="0">
-            </div>
-            <div>
-                <label class="block text-xs font-bold text-gray-600 mb-1">Filter Gudang</label>
-                <select name="budget_warehouse" class="border p-2 rounded text-sm w-full bg-white">
-                    <option value="ALL">-- Semua --</option>
-                    <?php foreach($all_warehouses as $wh): ?>
-                        <option value="<?= $wh['id'] ?>" <?= ($_GET['budget_warehouse']??'') == $wh['id'] ? 'selected' : '' ?>><?= $wh['name'] ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-        <?php else: ?>
-            <!-- Standard Filters -->
-            <?php if($view_type == 'ALL_TRANSAKSI' || $view_type == 'CUSTOM'): ?>
-            <div class="flex-1 min-w-[200px]">
-                <label class="block text-xs font-bold text-gray-600 mb-1">Cari (Keyword)</label>
-                <input type="text" name="q" value="<?= htmlspecialchars($_GET['q']??'') ?>" class="border p-2 rounded text-sm w-full" placeholder="Ket/Akun...">
+        <?php if($view_type == 'CUSTOM'): ?>
+            <!-- FORM FILTER LENGKAP -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 bg-gray-50 p-4 rounded border border-gray-200">
+                <!-- Group 1: Pencarian Barang -->
+                <div class="md:col-span-1 border-r border-gray-200 pr-4">
+                    <h5 class="text-xs font-bold text-gray-500 uppercase mb-2 border-b pb-1">Pencarian Barang</h5>
+                    <div class="space-y-2">
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 mb-1">SKU / Kode Barang</label>
+                            <input type="text" name="sku" value="<?= htmlspecialchars($_GET['sku']??'') ?>" class="border p-2 rounded text-sm w-full font-mono uppercase" placeholder="Scan SKU...">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 mb-1">Serial Number (SN)</label>
+                            <input type="text" name="sn" value="<?= htmlspecialchars($_GET['sn']??'') ?>" class="border p-2 rounded text-sm w-full font-mono uppercase" placeholder="Scan SN...">
+                        </div>
+                        <p class="text-[10px] text-gray-400 italic">*Mencari transaksi keuangan terkait barang ini via Referensi.</p>
+                    </div>
+                </div>
+
+                <!-- Group 2: Filter Keuangan -->
+                <div class="md:col-span-1 border-r border-gray-200 pr-4">
+                    <h5 class="text-xs font-bold text-gray-500 uppercase mb-2 border-b pb-1">Filter Keuangan</h5>
+                    <div class="space-y-2">
+                        <div class="flex gap-2">
+                            <div class="w-1/2">
+                                <label class="block text-xs font-bold text-gray-600 mb-1">Akun</label>
+                                <select name="account_id" class="border p-2 rounded text-sm w-full bg-white">
+                                    <option value="ALL">Semua</option>
+                                    <?php foreach($all_accounts as $acc): ?>
+                                        <option value="<?= $acc['id'] ?>" <?= ($_GET['account_id']??'') == $acc['id'] ? 'selected' : '' ?>><?= $acc['code'] ?> - <?= $acc['name'] ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="w-1/2">
+                                <label class="block text-xs font-bold text-gray-600 mb-1">Tipe</label>
+                                <select name="type" class="border p-2 rounded text-sm w-full bg-white">
+                                    <option value="ALL">Semua</option>
+                                    <option value="INCOME" <?= ($_GET['type']??'')=='INCOME'?'selected':'' ?>>Pemasukan</option>
+                                    <option value="EXPENSE" <?= ($_GET['type']??'')=='EXPENSE'?'selected':'' ?>>Pengeluaran</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <div class="w-1/2">
+                                <label class="block text-xs font-bold text-gray-600 mb-1">Min Nominal</label>
+                                <input type="text" name="min_amount" value="<?= $_GET['min_amount']??'' ?>" onkeyup="formatRupiah(this)" class="border p-2 rounded text-sm w-full text-right" placeholder="0">
+                            </div>
+                            <div class="w-1/2">
+                                <label class="block text-xs font-bold text-gray-600 mb-1">Max Nominal</label>
+                                <input type="text" name="max_amount" value="<?= $_GET['max_amount']??'' ?>" onkeyup="formatRupiah(this)" class="border p-2 rounded text-sm w-full text-right" placeholder="0">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 mb-1">Cari Uraian/Ket</label>
+                            <input type="text" name="q" value="<?= htmlspecialchars($_GET['q']??'') ?>" class="border p-2 rounded text-sm w-full" placeholder="Keyword...">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Group 3: Lokasi & Waktu -->
+                <div class="md:col-span-1">
+                    <h5 class="text-xs font-bold text-gray-500 uppercase mb-2 border-b pb-1">Lokasi & Waktu</h5>
+                    <div class="space-y-2">
+                        <div>
+                            <label class="block text-xs font-bold text-gray-600 mb-1">Wilayah / Gudang</label>
+                            <select name="warehouse_id" class="border p-2 rounded text-sm w-full bg-white">
+                                <option value="ALL">-- Semua Wilayah --</option>
+                                <?php foreach($all_warehouses as $wh): ?>
+                                    <option value="<?= $wh['id'] ?>" <?= ($_GET['warehouse_id']??'') == $wh['id'] ? 'selected' : '' ?>><?= $wh['name'] ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="flex gap-2">
+                            <div class="w-1/2">
+                                <label class="block text-xs font-bold text-gray-600 mb-1">Dari</label>
+                                <input type="date" name="start" value="<?= $start ?>" class="border p-2 rounded text-sm w-full">
+                            </div>
+                            <div class="w-1/2">
+                                <label class="block text-xs font-bold text-gray-600 mb-1">Sampai</label>
+                                <input type="date" name="end" value="<?= $end ?>" class="border p-2 rounded text-sm w-full">
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
             
-            <?php if($view_type == 'ALL_TRANSAKSI'): ?>
-            <div>
-                <label class="block text-xs font-bold text-gray-600 mb-1">Filter Wilayah</label>
-                <select name="filter_warehouse_id" class="border p-2 rounded text-sm w-full bg-white">
-                    <option value="ALL">-- Semua Wilayah --</option>
-                    <?php foreach($all_warehouses as $wh): ?>
-                        <option value="<?= $wh['id'] ?>" <?= ($_GET['filter_warehouse_id']??'') == $wh['id'] ? 'selected' : '' ?>><?= $wh['name'] ?></option>
-                    <?php endforeach; ?>
-                </select>
+            <div class="flex gap-2 mt-2">
+                <button class="bg-gray-800 text-white px-6 py-2 rounded font-bold text-sm hover:bg-black w-full md:w-auto"><i class="fas fa-search"></i> Terapkan Filter Custom</button>
             </div>
-            <?php endif; ?>
 
-            <div>
-                <label class="block text-xs font-bold text-gray-600 mb-1">Filter Akun</label>
-                <select name="account_id" class="border p-2 rounded text-sm w-full bg-white">
-                    <option value="ALL">-- Semua --</option>
-                    <?php foreach($all_accounts as $acc): ?>
-                        <option value="<?= $acc['id'] ?>" <?= ($_GET['account_id']??'') == $acc['id'] ? 'selected' : '' ?>><?= $acc['code'] ?> - <?= $acc['name'] ?></option>
-                    <?php endforeach; ?>
-                </select>
+        <?php elseif($view_type == 'ANGGARAN'): ?>
+            <!-- FORM ANGGARAN -->
+            <div class="flex gap-4 items-end flex-wrap">
+                <div class="flex-1 min-w-[200px]">
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Target Anggaran (Rp)</label>
+                    <input type="text" name="budget" value="<?= $_GET['budget'] ?? '' ?>" onkeyup="formatRupiah(this)" class="border p-2 rounded text-sm w-full font-bold" placeholder="0">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Filter Gudang</label>
+                    <select name="budget_warehouse" class="border p-2 rounded text-sm w-full bg-white">
+                        <option value="ALL">-- Semua --</option>
+                        <?php foreach($all_warehouses as $wh): ?>
+                            <option value="<?= $wh['id'] ?>" <?= ($_GET['budget_warehouse']??'') == $wh['id'] ? 'selected' : '' ?>><?= $wh['name'] ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Dari</label>
+                    <input type="date" name="start" value="<?= $start ?>" class="border p-2 rounded text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Sampai</label>
+                    <input type="date" name="end" value="<?= $end ?>" class="border p-2 rounded text-sm">
+                </div>
+                <button class="bg-indigo-600 text-white px-4 py-2 rounded font-bold text-sm hover:bg-indigo-700 h-[38px]">Filter</button>
             </div>
-            <?php endif; ?>
+
+        <?php else: ?>
+            <!-- FORM DEFAULT (ALL_TRANSAKSI, CASHFLOW, ETC) -->
+            <div class="flex gap-4 items-end flex-wrap">
+                <?php if($view_type == 'ALL_TRANSAKSI'): ?>
+                <div class="flex-1 min-w-[150px]">
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Cari (Keyword)</label>
+                    <input type="text" name="q" value="<?= htmlspecialchars($_GET['q']??'') ?>" class="border p-2 rounded text-sm w-full" placeholder="Ket/Akun...">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Filter Wilayah</label>
+                    <select name="filter_warehouse_id" class="border p-2 rounded text-sm w-full bg-white">
+                        <option value="ALL">-- Semua Wilayah --</option>
+                        <?php foreach($all_warehouses as $wh): ?>
+                            <option value="<?= $wh['id'] ?>" <?= ($_GET['filter_warehouse_id']??'') == $wh['id'] ? 'selected' : '' ?>><?= $wh['name'] ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Filter Akun</label>
+                    <select name="account_id" class="border p-2 rounded text-sm w-full bg-white">
+                        <option value="ALL">-- Semua --</option>
+                        <?php foreach($all_accounts as $acc): ?>
+                            <option value="<?= $acc['id'] ?>" <?= ($_GET['account_id']??'') == $acc['id'] ? 'selected' : '' ?>><?= $acc['code'] ?> - <?= $acc['name'] ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <?php endif; ?>
+
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Dari</label>
+                    <input type="date" name="start" value="<?= $start ?>" class="border p-2 rounded text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Sampai</label>
+                    <input type="date" name="end" value="<?= $end ?>" class="border p-2 rounded text-sm">
+                </div>
+
+                <div class="flex gap-2">
+                    <button class="bg-indigo-600 text-white px-4 py-2 rounded font-bold text-sm hover:bg-indigo-700 h-[38px]">Filter</button>
+                    <?php if($view_type == 'ALL_TRANSAKSI'): ?>
+                        <button type="button" onclick="exportToExcel()" class="bg-green-600 text-white px-4 py-2 rounded font-bold text-sm hover:bg-green-700 h-[38px]"><i class="fas fa-file-excel"></i> Excel</button>
+                        <button type="button" onclick="savePDF()" class="bg-red-600 text-white px-4 py-2 rounded font-bold text-sm hover:bg-red-700 h-[38px]"><i class="fas fa-file-pdf"></i> PDF</button>
+                    <?php else: ?>
+                        <button type="button" onclick="window.print()" class="bg-gray-700 text-white px-4 py-2 rounded font-bold text-sm hover:bg-gray-800 h-[38px]"><i class="fas fa-print"></i> Cetak</button>
+                    <?php endif; ?>
+                </div>
+            </div>
         <?php endif; ?>
-
-        <div>
-            <label class="block text-xs font-bold text-gray-600 mb-1">Dari</label>
-            <input type="date" name="start" value="<?= $start ?>" class="border p-2 rounded text-sm">
-        </div>
-        <div>
-            <label class="block text-xs font-bold text-gray-600 mb-1">Sampai</label>
-            <input type="date" name="end" value="<?= $end ?>" class="border p-2 rounded text-sm">
-        </div>
-
-        <div class="flex gap-2">
-            <button class="bg-indigo-600 text-white px-4 py-2 rounded font-bold text-sm hover:bg-indigo-700">Filter</button>
-            <?php if($view_type == 'ALL_TRANSAKSI'): ?>
-                <button type="button" onclick="exportToExcel()" class="bg-green-600 text-white px-4 py-2 rounded font-bold text-sm hover:bg-green-700"><i class="fas fa-file-excel"></i> Excel</button>
-                <button type="button" onclick="savePDF()" class="bg-red-600 text-white px-4 py-2 rounded font-bold text-sm hover:bg-red-700"><i class="fas fa-file-pdf"></i> PDF</button>
-            <?php else: ?>
-                <button type="button" onclick="window.print()" class="bg-gray-700 text-white px-4 py-2 rounded font-bold text-sm hover:bg-gray-800"><i class="fas fa-print"></i> Cetak</button>
-            <?php endif; ?>
-        </div>
     </form>
 </div>
 
@@ -621,6 +783,15 @@ if ($view_type == 'CUSTOM') {
     <!-- 6. VIEW: CUSTOM -->
     <?php elseif ($view_type == 'CUSTOM'): ?>
     <div class="overflow-x-auto">
+        <?php if(!empty($_GET['sn']) || !empty($_GET['sku'])): ?>
+            <div class="bg-yellow-50 p-2 mb-2 text-xs text-yellow-800 border border-yellow-200 rounded">
+                <i class="fas fa-search"></i> Menampilkan hasil penelusuran untuk 
+                <?= !empty($_GET['sku']) ? "SKU: <b>" . htmlspecialchars($_GET['sku']) . "</b> " : "" ?>
+                <?= !empty($_GET['sn']) ? "Serial Number: <b>" . htmlspecialchars($_GET['sn']) . "</b>" : "" ?>.
+                Data diambil dari transaksi keuangan yang memiliki referensi terkait.
+            </div>
+        <?php endif; ?>
+
         <table class="w-full text-sm border-collapse border border-gray-400">
             <thead class="bg-gray-800 text-white">
                 <tr>
@@ -628,7 +799,7 @@ if ($view_type == 'CUSTOM') {
                     <th class="p-3 border border-gray-600">Akun</th>
                     <th class="p-3 border border-gray-600">Tipe</th>
                     <th class="p-3 border border-gray-600 text-right">Jumlah</th>
-                    <th class="p-3 border border-gray-600">Deskripsi</th>
+                    <th class="p-3 border border-gray-600">Deskripsi / Referensi</th>
                     <th class="p-3 border border-gray-600">User</th>
                 </tr>
             </thead>

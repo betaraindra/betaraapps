@@ -20,6 +20,7 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
 // --- FILTER INPUTS ---
 $category_filter = $_GET['category'] ?? 'ALL';
 $warehouse_filter = $_GET['warehouse'] ?? 'ALL';
+$search_query = $_GET['q'] ?? '';
 
 $params = [];
 
@@ -37,6 +38,13 @@ if ($warehouse_filter === 'ALL') {
         $sql .= " AND p.category = ?";
         $params[] = $category_filter;
     }
+
+    if (!empty($search_query)) {
+        $sql .= " AND (p.name LIKE ? OR p.sku LIKE ?)";
+        $params[] = "%$search_query%";
+        $params[] = "%$search_query%";
+    }
+
     $sql .= " ORDER BY p.name ASC";
 
     $current_warehouse_name = "Semua Gudang";
@@ -59,6 +67,12 @@ if ($warehouse_filter === 'ALL') {
     if ($category_filter !== 'ALL') {
         $sql .= " AND p.category = ?";
         $params[] = $category_filter;
+    }
+
+    if (!empty($search_query)) {
+        $sql .= " AND (p.name LIKE ? OR p.sku LIKE ?)";
+        $params[] = "%$search_query%";
+        $params[] = "%$search_query%";
     }
 
     // Filter hanya barang yang ada stoknya di gudang tersebut
@@ -167,6 +181,11 @@ foreach($products as $p) {
     <form method="GET" class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
         <input type="hidden" name="page" value="laporan_aset">
         
+        <div class="md:col-span-1">
+            <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang</label>
+            <input type="text" name="q" value="<?= htmlspecialchars($search_query) ?>" class="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500" placeholder="Nama / SKU...">
+        </div>
+
         <div>
             <label class="block text-xs font-bold text-gray-600 mb-1">Lokasi Gudang</label>
             <select name="warehouse" class="w-full border p-2 rounded text-sm bg-gray-50 font-bold text-blue-800">
@@ -236,6 +255,7 @@ foreach($products as $p) {
         <thead class="bg-gray-100 text-gray-700">
             <tr>
                 <th class="p-2 border border-gray-300 text-center w-10">No</th>
+                <th class="p-2 border border-gray-300">Wilayah / Gudang</th>
                 <th class="p-2 border border-gray-300">Kode Barang (SKU)</th>
                 <th class="p-2 border border-gray-300">Nama Barang</th>
                 <th class="p-2 border border-gray-300">Kategori (Akun)</th>
@@ -255,6 +275,7 @@ foreach($products as $p) {
             ?>
             <tr class="hover:bg-gray-50">
                 <td class="p-2 border border-gray-300 text-center"><?= $no++ ?></td>
+                <td class="p-2 border border-gray-300 font-bold text-blue-800"><?= htmlspecialchars($current_warehouse_name) ?></td>
                 <td class="p-2 border border-gray-300 font-mono"><?= $p['sku'] ?></td>
                 <td class="p-2 border border-gray-300 font-medium"><?= $p['name'] ?></td>
                 <td class="p-2 border border-gray-300 text-gray-600"><?= $cat_label ?></td>
@@ -267,12 +288,12 @@ foreach($products as $p) {
             </tr>
             <?php endforeach; ?>
             <?php if(empty($products)): ?>
-                <tr><td colspan="8" class="p-4 text-center text-gray-500">Tidak ada stok barang di lokasi ini.</td></tr>
+                <tr><td colspan="9" class="p-4 text-center text-gray-500">Tidak ada stok barang di lokasi ini.</td></tr>
             <?php endif; ?>
         </tbody>
         <tfoot class="bg-gray-100 font-bold border-t-2 border-gray-400">
             <tr>
-                <td colspan="4" class="p-3 text-right border border-gray-300">TOTAL KESELURUHAN</td>
+                <td colspan="5" class="p-3 text-right border border-gray-300">TOTAL KESELURUHAN</td>
                 <td class="p-3 text-right text-blue-700 border border-gray-300"><?= number_format($total_qty) ?></td>
                 <td colspan="2" class="border border-gray-300"></td>
                 <td class="p-3 text-right text-lg text-blue-800 bg-blue-100 border border-gray-300">

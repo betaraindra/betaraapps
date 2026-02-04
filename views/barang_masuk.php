@@ -12,6 +12,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $qty = (float)$_POST['quantity']; // Support desimal
     $notes = $_POST['notes'];
     
+    // SN Fields
+    $has_sn = isset($_POST['has_sn_flag']) && $_POST['has_sn_flag'] == '1';
+    $sn_list = $_POST['sn_list'] ?? [];
+
     // Validasi Input Wajib
     if (empty($sku)) {
         $_SESSION['flash'] = ['type'=>'error', 'message'=>'SKU Barang harus diisi/scan.'];
@@ -19,11 +23,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['flash'] = ['type'=>'error', 'message'=>'Jumlah barang harus lebih dari 0.'];
     } elseif (empty($warehouse_id)) {
         $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gudang Penerima harus dipilih.'];
+    } elseif ($has_sn && count(array_filter($sn_list)) < $qty) {
+        // Validasi jumlah SN harus sama dengan Qty jika wajib SN
+        // Note: Floating point qty for SN items is usually 1, 2, 3 (integer based)
+        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Wajib input Serial Number sejumlah Qty barang.'];
     } else {
         $pdo->beginTransaction();
         try {
             // 1. Cek Apakah Produk Sudah Ada
-            $stmt = $pdo->prepare("SELECT id, name, stock, buy_price, category FROM products WHERE sku = ?");
+            $stmt = $pdo->prepare("SELECT id, name, stock, buy_price, category, has_serial_number FROM products WHERE sku = ?");
             $stmt->execute([$sku]);
             $product = $stmt->fetch();
             
@@ -60,6 +68,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $current_buy_price = cleanNumber($_POST['buy_price'] ?? 0);
                 $sell = cleanNumber($_POST['sell_price'] ?? 0);
                 
+                // Set has_serial_number for new product if checkbox checked (handled in UI via new fields logic, but let's assume new product logic handles it via `new_has_sn` if implemented, or simplify)
+                // For now, new product from quick entry assumes NO SN unless specific.
+                // Let's rely on `has_sn_flag` hidden input which we might need to toggle for new products if we add checkbox there.
+                // But typically quick add is simple. Let's assume 0 for quick add unless we add input.
+                
                 $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock) VALUES (?, ?, ?, ?, ?, ?, ?)");
                 $stmt->execute([$sku, $name, $cat, $unit, $current_buy_price, $sell, $qty]);
                 $product_id = $pdo->lastInsertId();
@@ -71,28 +84,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $trx_id = $pdo->lastInsertId(); // ID Transaksi Inventori
             
             // 3. AUTO RECORD FINANCIAL TRANSACTION (HPP/ASET)
-            // Mencatat nilai aset bertambah / pembelian (EXPENSE/ASSET Account)
             if ($current_buy_price > 0 && !empty($product_category_code)) {
                 $total_value = $qty * $current_buy_price;
-                
-                // Cari ID Akun berdasarkan Kode Kategori Produk (Misal 3003, 2005, atau 2105)
                 $stmtAcc = $pdo->prepare("SELECT id, type FROM accounts WHERE code = ?");
                 $stmtAcc->execute([$product_category_code]);
                 $acc = $stmtAcc->fetch();
-                
                 if ($acc) {
-                    // Ambil Nama Gudang untuk Tag Wilayah
                     $stmtWh = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
                     $stmtWh->execute([$warehouse_id]);
                     $wh_name = $stmtWh->fetchColumn();
                     $wilayah_tag = $wh_name ? " [Wilayah: $wh_name]" : "";
-
                     $desc_fin = "Pembelian/Stok Masuk: $sku - $reference ($qty x " . number_format($current_buy_price,0,',','.') . "){$wilayah_tag}";
-                    // Default type EXPENSE untuk HPP/Pembelian agar balance Cashflow berkurang (Uang Keluar beli stok)
                     $fin_type = 'EXPENSE'; 
-                    
                     $stmtFin = $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, ?, ?, ?, ?, ?)");
                     $stmtFin->execute([$date, $fin_type, $acc['id'], $total_value, $desc_fin, $_SESSION['user_id']]);
+                }
+            }
+
+            // 4. INSERT SERIAL NUMBERS
+            if ($has_sn && !empty($sn_list)) {
+                $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+                foreach ($sn_list as $sn) {
+                    if (!empty($sn)) {
+                        // Cek Duplicate SN for this product
+                        $chk = $pdo->prepare("SELECT id FROM product_serials WHERE product_id=? AND serial_number=?");
+                        $chk->execute([$product_id, $sn]);
+                        if($chk->rowCount() > 0) {
+                            throw new Exception("Serial Number '$sn' sudah ada untuk produk ini.");
+                        }
+                        $stmtSn->execute([$product_id, $sn, $warehouse_id, $trx_id]);
+                    }
                 }
             }
 
@@ -196,6 +217,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
 
         <form method="POST" autocomplete="off" onkeydown="return event.key != 'Enter';">
             <?= csrf_field() ?>
+            <input type="hidden" id="has_sn_flag" name="has_sn_flag" value="0">
             
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
                 <div>
@@ -298,7 +320,18 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
 
             <div class="mb-4">
                 <label class="block text-sm font-bold text-gray-700 mb-1">Jumlah Masuk <span class="text-red-500">*</span></label>
-                <input type="number" name="quantity" step="0.01" class="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-green-500 focus:outline-none font-bold text-lg" placeholder="0" required>
+                <input type="number" id="quantity_input" name="quantity" step="1" onchange="renderSnInputs()" onkeyup="renderSnInputs()" class="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-green-500 focus:outline-none font-bold text-lg" placeholder="0" required>
+            </div>
+
+            <!-- SERIAL NUMBER INPUT AREA -->
+            <div id="sn_container" class="hidden mb-6 bg-purple-50 p-4 rounded border border-purple-200">
+                <h4 class="font-bold text-purple-800 text-sm mb-2 flex items-center gap-2">
+                    <i class="fas fa-barcode"></i> Input Serial Number (Wajib)
+                </h4>
+                <div id="sn_inputs" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                    <!-- Dynamic Inputs Here -->
+                </div>
+                <p class="text-xs text-purple-600 mt-2 italic">* Scan atau ketik SN untuk setiap item.</p>
             </div>
 
             <div class="mb-6">
@@ -405,6 +438,7 @@ async function checkSku() {
     const statusEl = document.getElementById('sku_status');
     const detailSec = document.getElementById('detail_section');
     const newFields = document.getElementById('new_fields');
+    const hasSnInput = document.getElementById('has_sn_flag');
     
     statusEl.innerHTML = '<span class="text-blue-500"><i class="fas fa-spinner fa-spin"></i> Mencari data...</span>';
 
@@ -416,8 +450,12 @@ async function checkSku() {
 
         if (data && data.id) {
             // Produk Ada
-            statusEl.innerHTML = `<span class="text-green-600 font-bold"><i class="fas fa-check-circle"></i> Ditemukan: ${data.name} (Stok: ${data.stock})</span>`;
+            let snText = data.has_serial_number == 1 ? ' [WAJIB SN]' : '';
+            statusEl.innerHTML = `<span class="text-green-600 font-bold"><i class="fas fa-check-circle"></i> Ditemukan: ${data.name} (Stok: ${data.stock})${snText}</span>`;
             newFields.classList.add('hidden');
+            
+            // Set SN Flag
+            hasSnInput.value = data.has_serial_number;
             
             // Auto fill price if exists
             if(data.buy_price) document.getElementById('buy_price').value = new Intl.NumberFormat('id-ID').format(data.buy_price);
@@ -425,11 +463,16 @@ async function checkSku() {
             
             // Focus ke Quantity
             document.querySelector('input[name="quantity"]').focus();
+            
+            // Re-render inputs in case quantity was already filled
+            renderSnInputs();
         } else {
             // Produk Baru
             statusEl.innerHTML = '<span class="text-orange-600 font-bold"><i class="fas fa-plus-circle"></i> Produk Baru. Silakan lengkapi data.</span>';
             newFields.classList.remove('hidden');
             document.getElementById('new_name').focus();
+            hasSnInput.value = 0; // Default new product no SN unless explicit (currently no checkbox for new)
+            renderSnInputs();
             
             // Generate Preview Barcode Baru (Code 128)
             setTimeout(() => {
@@ -447,6 +490,32 @@ async function checkSku() {
         }
     } catch (e) {
         statusEl.innerText = "Error API.";
+    }
+}
+
+function renderSnInputs() {
+    const qty = parseInt(document.getElementById('quantity_input').value) || 0;
+    const hasSn = document.getElementById('has_sn_flag').value == '1';
+    const container = document.getElementById('sn_container');
+    const inputsDiv = document.getElementById('sn_inputs');
+    
+    if (hasSn && qty > 0) {
+        container.classList.remove('hidden');
+        inputsDiv.innerHTML = '';
+        
+        for (let i = 1; i <= qty; i++) {
+            const div = document.createElement('div');
+            div.innerHTML = `
+                <div class="relative">
+                    <span class="absolute left-2 top-2 text-xs font-bold text-gray-400">#${i}</span>
+                    <input type="text" name="sn_list[]" class="w-full border p-2 pl-8 rounded text-sm font-mono uppercase focus:ring-1 focus:ring-purple-500" placeholder="Scan Serial Number" required>
+                </div>
+            `;
+            inputsDiv.appendChild(div);
+        }
+    } else {
+        container.classList.add('hidden');
+        inputsDiv.innerHTML = '';
     }
 }
 

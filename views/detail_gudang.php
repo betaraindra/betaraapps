@@ -18,15 +18,74 @@ if(!$warehouse) {
     exit; 
 }
 
+// --- LOGIC BARU: HANDLE SIMPAN AKTIVITAS (PEMAKAIAN) ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
+    validate_csrf();
+    
+    $act_date = $_POST['act_date'];
+    $act_prod_id = $_POST['act_product_id'];
+    $act_qty = (float)$_POST['act_qty'];
+    $act_desc = trim($_POST['act_desc']);
+    $act_ref = trim($_POST['act_ref']); // Misal ID Pelanggan
+    
+    // Validasi Stok
+    $stmtCheck = $pdo->prepare("
+        SELECT p.name, 
+               (COALESCE(SUM(CASE WHEN i.type = 'IN' THEN i.quantity ELSE 0 END), 0) -
+                COALESCE(SUM(CASE WHEN i.type = 'OUT' THEN i.quantity ELSE 0 END), 0)) as current_stock
+        FROM products p
+        JOIN inventory_transactions i ON p.id = i.product_id
+        WHERE i.warehouse_id = ? AND p.id = ?
+        GROUP BY p.id
+    ");
+    $stmtCheck->execute([$id, $act_prod_id]);
+    $stockData = $stmtCheck->fetch();
+    
+    if (!$stockData || $stockData['current_stock'] < $act_qty) {
+        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: Stok tidak mencukupi untuk aktivitas ini.'];
+    } else {
+        // Generate Auto Reference jika kosong
+        if(empty($act_ref)) $act_ref = "ACT/" . date('ymd') . "/" . rand(100,999);
+        
+        // Simpan Transaksi OUT
+        // Note: Ini mengurangi stok fisik (availabilitas) sesuai request "mengurangi stok yang bisa di mutasi"
+        $final_notes = "Aktivitas Wilayah: " . $act_desc;
+        
+        $stmtIns = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
+        if ($stmtIns->execute([$act_date, $act_prod_id, $id, $act_qty, $act_ref, $final_notes, $_SESSION['user_id']])) {
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>'Aktivitas wilayah berhasil dicatat. Stok fisik diperbarui.'];
+        } else {
+            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Terjadi kesalahan database.'];
+        }
+    }
+    
+    echo "<script>window.location='?page=detail_gudang&id=$id&tab=stock';</script>";
+    exit;
+}
+
 // --- FILTER ---
 $start_date = $_GET['start'] ?? date('Y-m-01');
 $end_date = $_GET['end'] ?? date('Y-m-d');
 $q = $_GET['q'] ?? '';
 $tab = $_GET['tab'] ?? 'stock'; // stock, history, finance
 
+// --- QUERY PRODUK TERSEDIA (UNTUK MODAL AKTIVITAS) ---
+// Hanya ambil produk yang stoknya > 0 di gudang ini
+$available_products = $pdo->prepare("
+    SELECT p.id, p.name, p.sku, p.unit,
+           (COALESCE(SUM(CASE WHEN i.type = 'IN' THEN i.quantity ELSE 0 END), 0) -
+            COALESCE(SUM(CASE WHEN i.type = 'OUT' THEN i.quantity ELSE 0 END), 0)) as stock
+    FROM products p
+    JOIN inventory_transactions i ON p.id = i.product_id
+    WHERE i.warehouse_id = ?
+    GROUP BY p.id
+    HAVING stock > 0
+    ORDER BY p.name ASC
+");
+$available_products->execute([$id]);
+$modal_products = $available_products->fetchAll();
+
 // --- 1. OPTIMIZED DATA STOK FISIK (Menggunakan JOIN aggregation) ---
-// Sebelumnya: Subquery di SELECT clause (Lambat: O(n*m))
-// Sekarang: Derived Table / JOIN (Cepat: O(n))
 if ($tab === 'stock') {
     $sql_stock = "
         SELECT p.sku, p.name, p.unit, p.buy_price,
@@ -120,14 +179,19 @@ if ($tab === 'finance') {
         <p class="text-gray-500 text-sm ml-6"><i class="fas fa-map-marker-alt"></i> <?= h($warehouse['location']) ?></p>
     </div>
     
-    <?php if($tab === 'stock'): ?>
-    <div class="flex gap-4">
+    <div class="flex gap-4 items-center">
+        <!-- TOMBOL INPUT AKTIVITAS -->
+        <button onclick="document.getElementById('modalActivity').classList.remove('hidden')" class="bg-green-600 text-white px-4 py-2 rounded shadow hover:bg-green-700 font-bold flex items-center gap-2">
+            <i class="fas fa-tools"></i> Input Aktivitas / Pemakaian
+        </button>
+
+        <?php if($tab === 'stock'): ?>
         <div class="bg-blue-100 text-blue-800 px-4 py-2 rounded text-center">
             <div class="text-xs font-bold uppercase">Nilai Aset</div>
             <div class="font-bold text-lg"><?= formatRupiah($total_asset_value) ?></div>
         </div>
+        <?php endif; ?>
     </div>
-    <?php endif; ?>
 </div>
 
 <!-- FILTER BAR -->
@@ -332,4 +396,64 @@ if ($tab === 'finance') {
         </div>
     <?php endif; ?>
 
+</div>
+
+<!-- MODAL INPUT AKTIVITAS -->
+<div id="modalActivity" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
+        <button onclick="document.getElementById('modalActivity').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
+            <i class="fas fa-times text-xl"></i>
+        </button>
+        <h3 class="text-xl font-bold mb-4 border-b pb-2 text-green-700 flex items-center gap-2">
+            <i class="fas fa-tools"></i> Input Aktivitas Wilayah
+        </h3>
+        <div class="mb-4 bg-green-50 p-3 rounded text-sm text-green-800 border border-green-200">
+            <p><strong>Info:</strong> Fitur ini mencatat pemakaian barang (modem, kabel, material) yang digunakan di wilayah ini. Stok akan berkurang dari gudang.</p>
+        </div>
+        
+        <form method="POST">
+            <?= csrf_field() ?>
+            <input type="hidden" name="save_activity" value="1">
+            
+            <div class="mb-3">
+                <label class="block text-sm font-bold text-gray-700 mb-1">Tanggal</label>
+                <input type="date" name="act_date" value="<?= date('Y-m-d') ?>" class="w-full border p-2 rounded" required>
+            </div>
+            
+            <div class="mb-3">
+                <label class="block text-sm font-bold text-gray-700 mb-1">Pilih Barang (Stok Tersedia)</label>
+                <select name="act_product_id" class="w-full border p-2 rounded bg-white" required>
+                    <option value="" disabled selected>-- Pilih Barang --</option>
+                    <?php foreach($modal_products as $mp): ?>
+                        <option value="<?= $mp['id'] ?>">
+                            <?= $mp['name'] ?> (Sisa: <?= $mp['stock'] ?> <?= $mp['unit'] ?>)
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+                <?php if(empty($modal_products)): ?>
+                    <p class="text-xs text-red-500 mt-1">Stok kosong di gudang ini.</p>
+                <?php endif; ?>
+            </div>
+            
+            <div class="grid grid-cols-2 gap-4 mb-3">
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-1">Jumlah Pemakaian</label>
+                    <input type="number" name="act_qty" class="w-full border p-2 rounded font-bold" placeholder="0" min="1" step="0.01" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-1">ID Pelanggan / Ref</label>
+                    <input type="text" name="act_ref" class="w-full border p-2 rounded" placeholder="Contoh: PLG-001">
+                </div>
+            </div>
+            
+            <div class="mb-4">
+                <label class="block text-sm font-bold text-gray-700 mb-1">Keterangan Aktivitas</label>
+                <textarea name="act_desc" class="w-full border p-2 rounded" rows="2" placeholder="Contoh: Pemasangan baru di rumah Bpk Budi" required></textarea>
+            </div>
+            
+            <button type="submit" class="w-full bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 shadow">
+                Simpan Aktivitas
+            </button>
+        </form>
+    </div>
 </div>

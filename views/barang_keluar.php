@@ -18,10 +18,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cancel_id'])) {
             $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?")
                 ->execute([$trx['quantity'], $trx['product_id']]);
 
-            // 3. Hapus Transaksi Inventori
+            // 3. Kembalikan Status SN menjadi AVAILABLE (Jika ada)
+            $pdo->prepare("UPDATE product_serials SET status = 'AVAILABLE', out_transaction_id = NULL WHERE out_transaction_id = ?")->execute([$cancel_id]);
+
+            // 4. Hapus Transaksi Inventori
             $pdo->prepare("DELETE FROM inventory_transactions WHERE id = ?")->execute([$cancel_id]);
 
-            // 4. Catat Log
+            // 5. Catat Log
             logActivity($pdo, 'RETUR_BARANG', "Batal/Retur Barang Keluar: " . $trx['reference'] . " (Stok kembali +{$trx['quantity']})");
 
             $pdo->commit();
@@ -86,31 +89,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
             $count = 0;
             foreach ($cart as $item) {
                 // 1. Cek Stok & Ambil Info Harga
-                $stmt = $pdo->prepare("SELECT id, stock, sell_price, buy_price, name FROM products WHERE sku = ?");
+                $stmt = $pdo->prepare("SELECT id, stock, sell_price, buy_price, name, has_serial_number FROM products WHERE sku = ?");
                 $stmt->execute([$item['sku']]);
                 $prod = $stmt->fetch();
                 
                 if (!$prod) throw new Exception("Produk dengan SKU {$item['sku']} tidak ditemukan.");
                 
+                // 2. Validate SN if product has SN
+                if ($prod['has_serial_number'] == 1) {
+                    if (empty($item['sns']) || count($item['sns']) != $item['qty']) {
+                        throw new Exception("Produk {$prod['name']} wajib Serial Number sesuai Qty.");
+                    }
+                }
+
                 if ($prod['stock'] < $item['qty']) {
                     throw new Exception("Stok {$item['name']} tidak mencukupi! (Sisa: {$prod['stock']})");
                 }
                 
-                // 2. Kurangi Stok Global (Master Produk)
+                // 3. Kurangi Stok Global (Master Produk)
                 $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$item['qty'], $prod['id']]);
                 
-                // 3. Catat Transaksi OUT (Inventori Asal)
+                // 4. Catat Transaksi OUT (Inventori Asal)
                 $notes_out = $item['notes'];
                 if($dest_wh_id) $notes_out .= " (Mutasi ke $dest_wh_name)";
                 
+                // Add SNs to notes if available for simple tracking
+                if(!empty($item['sns'])) {
+                    $notes_out .= " [SN: " . implode(', ', $item['sns']) . "]";
+                }
+
                 $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)")
                     ->execute([$date, $prod['id'], $wh_id, $item['qty'], $ref, $notes_out, $_SESSION['user_id']]);
+                $trx_out_id = $pdo->lastInsertId();
+
+                // 5. UPDATE SN STATUS (IF SN)
+                if ($prod['has_serial_number'] == 1 && !empty($item['sns'])) {
+                    $snStmt = $pdo->prepare("UPDATE product_serials SET status = 'SOLD', out_transaction_id = ? WHERE product_id = ? AND serial_number = ? AND status = 'AVAILABLE'");
+                    foreach ($item['sns'] as $sn) {
+                        $snStmt->execute([$trx_out_id, $prod['id'], $sn]);
+                        if ($snStmt->rowCount() == 0) {
+                            // Cek apakah SN ini ada tapi tidak available
+                            $chk = $pdo->query("SELECT status FROM product_serials WHERE serial_number='$sn'")->fetchColumn();
+                            throw new Exception("SN $sn tidak tersedia (Status: $chk) atau salah produk.");
+                        }
+                    }
+                }
                 
                 // Hitung Nilai Transaksi
                 $total_buy_val = $item['qty'] * $prod['buy_price'];  // Nilai Modal/Aset
                 $total_sell_val = $item['qty'] * $prod['sell_price']; // Nilai Jual
 
-                // 4. LOGIKA MUTASI ANTAR GUDANG (Internal Transfer)
+                // 6. LOGIKA MUTASI ANTAR GUDANG (Internal Transfer)
                 if ($out_type === 'INTERNAL' && !empty($dest_wh_id)) {
                     // A. Update Stok Global (Kembalikan stok, karena hanya pindah lokasi)
                     $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?")->execute([$item['qty'], $prod['id']]);
@@ -120,8 +149,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                     $notes_in = "Mutasi Masuk dari " . $wh_name;
                     $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'IN', ?, ?, ?, ?, ?, ?)")
                         ->execute([$date, $prod['id'], $dest_wh_id, $item['qty'], $ref_in, $notes_in, $_SESSION['user_id']]);
+                    $trx_in_id = $pdo->lastInsertId();
 
-                    // C. Catat Transaksi Keuangan (Opsional: Nilai Transfer antar Wilayah)
+                    // C. Update Location SN (Set AVAILABLE again but in new warehouse)
+                    // Note: Previous logic set it to SOLD. We need to set it back to AVAILABLE with new WH ID if transfer.
+                    if ($prod['has_serial_number'] == 1 && !empty($item['sns'])) {
+                        $snUpdate = $pdo->prepare("UPDATE product_serials SET status = 'AVAILABLE', warehouse_id = ?, in_transaction_id = ? WHERE product_id = ? AND serial_number = ?");
+                        foreach ($item['sns'] as $sn) {
+                            $snUpdate->execute([$dest_wh_id, $trx_in_id, $prod['id'], $sn]);
+                        }
+                    }
+
+                    // D. Catat Transaksi Keuangan (Opsional: Nilai Transfer antar Wilayah)
                     if ($total_buy_val > 0) {
                         // 1. Pengeluaran Wilayah Asal (Account 2009)
                         $acc_out_id = $pdo->query("SELECT id FROM accounts WHERE code = '2009'")->fetchColumn();
@@ -141,9 +180,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                     }
                 }
 
-                // 5. LOGIKA PENJUALAN (EXTERNAL)
+                // 7. LOGIKA PENJUALAN (EXTERNAL)
                 elseif ($out_type === 'EXTERNAL') {
-                    
                     // A. Transaksi Keuntungan/Omzet (INCOME - Harga Jual)
                     if ($total_sell_val > 0) {
                         $acc_rev_id = $pdo->query("SELECT id FROM accounts WHERE code = '1001'")->fetchColumn(); // Penjualan Produk
@@ -153,13 +191,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                                 ->execute([$date, $acc_rev_id, $total_sell_val, $desc_rev, $_SESSION['user_id']]);
                         }
                     }
-
-                    // B. Transaksi HPP (DINONAKTIFKAN UNTUK KAS)
-                    // HPP dihitung secara virtual di laporan Laba Rugi berdasarkan Barang Keluar.
-                    // Hal ini mencegah saldo kas berkurang 2x (saat beli stok & saat jual).
                 }
                 
-                // 6. LOGIKA PEMAKAIAN INTERNAL
+                // 8. LOGIKA PEMAKAIAN INTERNAL
                 elseif ($out_type === 'INTERNAL' && empty($dest_wh_id)) {
                     if ($total_buy_val > 0) {
                         $acc_op_id = $pdo->query("SELECT id FROM accounts WHERE code = '2002'")->fetchColumn(); // Beban Ops
@@ -191,8 +225,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
     }
 }
 
-// ... SISA CODE UI TETAP SAMA ...
-// Ambil data Warehouses & History seperti biasa
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
 $recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_name FROM inventory_transactions i JOIN products p ON i.product_id = p.id JOIN warehouses w ON i.warehouse_id = w.id WHERE i.type = 'OUT' ORDER BY i.created_at DESC LIMIT 10")->fetchAll();
 $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
@@ -220,7 +252,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
             </div>
         </div>
 
-        <!-- Scanner & Form Section (Tidak berubah signifikan secara UI, hanya logic PHP di atas) -->
+        <!-- Scanner & Form Section -->
         <!-- Area Scanner Live -->
         <div id="scanner_area" class="hidden mb-6 bg-black rounded-lg relative overflow-hidden shadow-inner border-4 border-gray-800">
             <div class="absolute top-2 left-2 z-20">
@@ -255,12 +287,15 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                     <div class="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 border-t pt-4 mt-2">
                         <div>
                             <label class="block text-xs font-bold text-gray-600 mb-1">Dari Gudang Asal <span class="text-red-500">*</span></label>
-                            <select name="warehouse_id" id="warehouse_id" class="w-full border p-2 rounded text-sm bg-white font-bold text-gray-800" onchange="toggleDestWarehouse()" required>
+                            <select name="warehouse_id" id="warehouse_id" class="w-full border p-2 rounded text-sm bg-white font-bold text-gray-800 transition-colors duration-300" onchange="toggleDestWarehouse()" required>
                                 <option value="" selected disabled>-- Pilih Gudang Asal --</option>
                                 <?php foreach($warehouses as $w): ?>
                                     <option value="<?= $w['id'] ?>"><?= $w['name'] ?></option>
                                 <?php endforeach; ?>
                             </select>
+                            <p class="text-[10px] text-gray-500 mt-1 italic">
+                                * Otomatis terpilih jika barang discan (berdasarkan mutasi masuk terakhir).
+                            </p>
                         </div>
                         
                         <div>
@@ -290,7 +325,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 <h4 class="font-bold text-blue-800 mb-3 text-sm border-b border-blue-200 pb-1">Input Barang</h4>
                 <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
                     <div class="md:col-span-4">
-                        <label class="block text-xs font-bold text-gray-600 mb-1">SKU Barcode</label>
+                        <label class="block text-xs font-bold text-gray-600 mb-1">SKU / SN Barcode</label>
                         <div class="flex gap-1">
                             <input type="text" id="sku_input" class="w-full border-2 border-blue-500 p-2 rounded font-mono font-bold text-lg uppercase" placeholder="SCAN..." onchange="checkSku()" onkeydown="if(event.key === 'Enter'){ checkSku(); event.preventDefault(); }">
                             <button type="button" onclick="checkSku()" class="bg-blue-600 text-white px-3 rounded hover:bg-blue-700"><i class="fas fa-search"></i></button>
@@ -300,7 +335,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                     
                     <div class="md:col-span-2">
                         <label class="block text-xs font-bold text-gray-600 mb-1">Qty</label>
-                        <input type="number" id="qty_input" class="w-full border p-2 rounded font-bold text-center" placeholder="0" onkeydown="if(event.key === 'Enter'){ addToCart(); event.preventDefault(); }">
+                        <input type="number" id="qty_input" class="w-full border p-2 rounded font-bold text-center" placeholder="0" onchange="renderSnInputs()" onkeydown="if(event.key === 'Enter'){ addToCart(); event.preventDefault(); }">
                     </div>
 
                     <div class="md:col-span-4">
@@ -314,7 +349,16 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                         </button>
                     </div>
                 </div>
+                
+                <!-- SN INPUT AREA -->
+                <div id="sn_out_container" class="hidden mt-4 bg-purple-100 p-3 rounded border border-purple-200">
+                    <h5 class="text-xs font-bold text-purple-800 mb-2">Scan Serial Number (Wajib)</h5>
+                    <div id="sn_out_inputs" class="grid grid-cols-2 md:grid-cols-4 gap-2"></div>
+                </div>
+
                 <input type="hidden" id="h_name"><input type="hidden" id="h_stock">
+                <input type="hidden" id="h_has_sn" value="0">
+                <input type="hidden" id="h_scanned_sn" value=""> <!-- Stores SN if scanned directly -->
             </div>
 
             <div class="mb-6">
@@ -326,12 +370,13 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                                 <th class="p-3">SKU</th>
                                 <th class="p-3">Barang</th>
                                 <th class="p-3 text-center">Qty</th>
+                                <th class="p-3">SN</th>
                                 <th class="p-3">Ket</th>
                                 <th class="p-3 text-center"><i class="fas fa-trash"></i></th>
                             </tr>
                         </thead>
                         <tbody id="cart_table_body">
-                            <tr><td colspan="5" class="p-4 text-center text-gray-400 italic">Belum ada barang.</td></tr>
+                            <tr><td colspan="6" class="p-4 text-center text-gray-400 italic">Belum ada barang.</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -377,7 +422,6 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
 </div>
 
 <script>
-// Logic JS (Sama dengan sebelumnya)
 let html5QrCode;
 let audioCtx = null;
 let isFlashOn = false;
@@ -402,10 +446,6 @@ function toggleDestWarehouse() {
     }
 }
 
-// ... (Functions: initAudio, playBeep, activateUSB, handleFileScan, initCamera, startScan, stopScan, toggleFlash, checkSku, addToCart, renderCart, removeFromCart, validateCart, generateReference) ...
-// Copy-paste logic JS scanner & cart dari file sebelumnya.
-// Pastikan semua fungsi tersebut ada di blok <script> ini.
-
 function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); }
 function playBeep() { if (!audioCtx) return; try { const o = audioCtx.createOscillator(); const g = audioCtx.createGain(); o.connect(g); g.connect(audioCtx.destination); o.type = 'square'; o.frequency.setValueAtTime(1200, audioCtx.currentTime); g.gain.setValueAtTime(0.1, audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1); o.start(); o.stop(audioCtx.currentTime + 0.15); } catch (e) {} }
 function activateUSB() { const i = document.getElementById('sku_input'); i.focus(); i.select(); i.classList.add('ring-4', 'ring-yellow-400'); setTimeout(() => i.classList.remove('ring-4', 'ring-yellow-400'), 1500); }
@@ -415,9 +455,186 @@ function startScan(id) { if(html5QrCode) try{html5QrCode.stop()}catch(e){} html5
 function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }).catch(() => document.getElementById('scanner_area').classList.add('hidden')); }
 function toggleFlash() { if(html5QrCode) { isFlashOn = !isFlashOn; html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] }); } }
 
-async function checkSku() { const s = document.getElementById('sku_input').value.trim(); if(s.length < 3) return; const stat = document.getElementById('sku_status'); const n = document.getElementById('h_name'); const st = document.getElementById('h_stock'); stat.innerHTML = 'Searching...'; try { const r = await fetch(`api.php?action=get_product_by_sku&sku=${encodeURIComponent(s)}`); const d = await r.json(); if(d && d.id) { stat.innerHTML = `<span class="text-green-600">Found: ${d.name} (${d.stock})</span>`; n.value = d.name; st.value = d.stock; document.getElementById('qty_input').focus(); } else { stat.innerHTML = '<span class="text-red-600">Not Found!</span>'; n.value=''; st.value=0; } } catch(e){ stat.innerText = "Error"; } }
-function addToCart() { const s = document.getElementById('sku_input').value.trim(); const n = document.getElementById('h_name').value; const st = parseFloat(document.getElementById('h_stock').value||0); const q = parseFloat(document.getElementById('qty_input').value); const nt = document.getElementById('notes_input').value; if(!n) return alert("Scan item first"); if(!q || q<=0) return alert("Qty invalid"); if(q>st) return alert("Stok kurang!"); const exist = cart.findIndex(x => x.sku === s); if(exist > -1) { if((cart[exist].qty + q) > st) return alert("Total stok kurang!"); cart[exist].qty += q; } else { cart.push({sku:s, name:n, qty:q, notes:nt}); } renderCart(); document.getElementById('sku_input').value=''; document.getElementById('h_name').value=''; document.getElementById('h_stock').value=''; document.getElementById('qty_input').value=''; document.getElementById('notes_input').value=''; document.getElementById('sku_status').innerText=''; document.getElementById('sku_input').focus(); }
-function renderCart() { const b = document.getElementById('cart_table_body'); b.innerHTML = ''; if(cart.length===0) { b.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-400">Empty</td></tr>'; document.getElementById('btn_process').disabled = true; } else { document.getElementById('btn_process').disabled = false; cart.forEach((i,x) => { const r = document.createElement('tr'); r.innerHTML = `<td class="p-3 font-mono">${i.sku}</td><td class="p-3">${i.name}</td><td class="p-3 text-center font-bold">${i.qty}</td><td class="p-3 italic">${i.notes}</td><td class="p-3 text-center"><button type="button" onclick="removeFromCart(${x})" class="text-red-500"><i class="fas fa-trash"></i></button></td>`; b.appendChild(r); }); } document.getElementById('cart_json').value = JSON.stringify(cart); document.getElementById('cart_count').innerText = cart.length; }
+async function checkSku() { 
+    const s = document.getElementById('sku_input').value.trim(); 
+    if(s.length < 3) return; 
+    const stat = document.getElementById('sku_status'); 
+    const n = document.getElementById('h_name'); 
+    const st = document.getElementById('h_stock'); 
+    const h_has_sn = document.getElementById('h_has_sn');
+    const h_scanned_sn = document.getElementById('h_scanned_sn');
+    
+    stat.innerHTML = 'Searching...'; 
+    try { 
+        const r = await fetch(`api.php?action=get_product_by_sku&sku=${encodeURIComponent(s)}`); 
+        const d = await r.json(); 
+        
+        if(d && d.id) { 
+            stat.innerHTML = `<span class="text-green-600">Found: ${d.name} (${d.stock})</span>`; 
+            n.value = d.name; 
+            st.value = d.stock; 
+            h_has_sn.value = d.has_serial_number;
+            
+            // Cek apakah scan SN langsung?
+            if (d.scanned_sn) {
+                h_scanned_sn.value = d.scanned_sn;
+                // Jika scan SN langsung, otomatis set qty 1 dan auto add
+                document.getElementById('qty_input').value = 1;
+                renderSnInputs(); // Ini akan trigger pengisian kolom SN #1
+            } else {
+                h_scanned_sn.value = '';
+                document.getElementById('qty_input').focus(); 
+            }
+
+            // --- AUTO SELECT GUDANG ASAL ---
+            if(d.last_warehouse_id) {
+                const whSelect = document.getElementById('warehouse_id');
+                // Ubah value
+                whSelect.value = d.last_warehouse_id;
+                // Visual effect supaya user sadar
+                whSelect.classList.remove('bg-white');
+                whSelect.classList.add('bg-green-100');
+                setTimeout(() => {
+                    whSelect.classList.remove('bg-green-100');
+                    whSelect.classList.add('bg-white');
+                }, 1000);
+            }
+            // -------------------------------
+            
+            // Auto add jika direct SN scan
+            if (d.scanned_sn) {
+                // Wait small delay for UI rendering then add
+                setTimeout(() => addToCart(), 200);
+            }
+
+        } else { 
+            stat.innerHTML = '<span class="text-red-600">Not Found!</span>'; 
+            n.value=''; 
+            st.value=0; 
+            h_has_sn.value=0;
+            h_scanned_sn.value='';
+        } 
+    } catch(e){ 
+        stat.innerText = "Error API"; 
+    } 
+}
+
+function renderSnInputs() {
+    const qty = parseInt(document.getElementById('qty_input').value) || 0;
+    const hasSn = document.getElementById('h_has_sn').value == '1';
+    const container = document.getElementById('sn_out_container');
+    const inputsDiv = document.getElementById('sn_out_inputs');
+    const scannedSn = document.getElementById('h_scanned_sn').value;
+    
+    if (hasSn && qty > 0) {
+        container.classList.remove('hidden');
+        inputsDiv.innerHTML = '';
+        
+        for (let i = 1; i <= qty; i++) {
+            // Jika scan direct SN, otomatis isi input pertama
+            let val = (i === 1 && scannedSn) ? scannedSn : '';
+            
+            const div = document.createElement('div');
+            div.innerHTML = `
+                <input type="text" name="sn_out[]" value="${val}" class="w-full border p-1 rounded text-sm font-mono uppercase bg-white border-purple-400" placeholder="SN #${i}" required>
+            `;
+            inputsDiv.appendChild(div);
+        }
+    } else {
+        container.classList.add('hidden');
+        inputsDiv.innerHTML = '';
+    }
+}
+
+function addToCart() { 
+    const s = document.getElementById('sku_input').value.trim(); 
+    const n = document.getElementById('h_name').value; 
+    const st = parseFloat(document.getElementById('h_stock').value||0); 
+    const q = parseFloat(document.getElementById('qty_input').value); 
+    const nt = document.getElementById('notes_input').value; 
+    const hasSn = document.getElementById('h_has_sn').value == '1';
+    
+    if(!n) return alert("Scan item first"); 
+    if(!q || q<=0) return alert("Qty invalid"); 
+    if(q>st) return alert("Stok kurang!"); 
+    
+    // SN Validation
+    let sns = [];
+    if(hasSn) {
+        const inputs = document.getElementsByName('sn_out[]');
+        if(inputs.length != q) return alert("Jumlah input SN harus sama dengan Qty");
+        
+        for(let input of inputs) {
+            const val = input.value.trim();
+            if(!val) return alert("Semua Serial Number harus diisi!");
+            if(sns.includes(val)) return alert("SN duplikat terdeteksi: " + val);
+            sns.push(val);
+        }
+    }
+
+    const exist = cart.findIndex(x => x.sku === s); 
+    
+    // Khusus SN, jika exist, kita append Qty dan SN listnya
+    // Tapi karena SN unik, logicnya lebih baik tambahkan row baru atau merge.
+    // Simpelnya: jika produk sama, merge qty dan array SN
+    
+    if(exist > -1) { 
+        if((cart[exist].qty + q) > st) return alert("Total stok kurang!"); 
+        cart[exist].qty += q;
+        if(hasSn) {
+            cart[exist].sns = cart[exist].sns.concat(sns);
+        }
+    } else { 
+        cart.push({sku:s, name:n, qty:q, notes:nt, sns: sns, has_sn: hasSn}); 
+    } 
+    
+    renderCart(); 
+    
+    // Reset Form
+    document.getElementById('sku_input').value=''; 
+    document.getElementById('h_name').value=''; 
+    document.getElementById('h_stock').value=''; 
+    document.getElementById('h_has_sn').value='0';
+    document.getElementById('h_scanned_sn').value='';
+    document.getElementById('qty_input').value=''; 
+    document.getElementById('notes_input').value=''; 
+    document.getElementById('sku_status').innerText=''; 
+    document.getElementById('sn_out_container').classList.add('hidden');
+    document.getElementById('sn_out_inputs').innerHTML = '';
+    
+    document.getElementById('sku_input').focus(); 
+}
+
+function renderCart() { 
+    const b = document.getElementById('cart_table_body'); 
+    b.innerHTML = ''; 
+    if(cart.length===0) { 
+        b.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-gray-400">Empty</td></tr>'; 
+        document.getElementById('btn_process').disabled = true; 
+    } else { 
+        document.getElementById('btn_process').disabled = false; 
+        cart.forEach((i,x) => { 
+            let snHtml = '-';
+            if(i.has_sn && i.sns.length > 0) {
+                snHtml = i.sns.map(s => `<span class="bg-purple-100 text-purple-800 text-[10px] px-1 rounded mr-1">${s}</span>`).join(' ');
+            }
+            
+            const r = document.createElement('tr'); 
+            r.innerHTML = `
+                <td class="p-3 font-mono">${i.sku}</td>
+                <td class="p-3">${i.name}</td>
+                <td class="p-3 text-center font-bold">${i.qty}</td>
+                <td class="p-3">${snHtml}</td>
+                <td class="p-3 italic">${i.notes}</td>
+                <td class="p-3 text-center"><button type="button" onclick="removeFromCart(${x})" class="text-red-500"><i class="fas fa-trash"></i></button></td>
+            `; 
+            b.appendChild(r); 
+        }); 
+    } 
+    document.getElementById('cart_json').value = JSON.stringify(cart); 
+    document.getElementById('cart_count').innerText = cart.length; 
+}
+
 function removeFromCart(i) { cart.splice(i,1); renderCart(); }
 function validateCart() { 
     const wh = document.getElementById('warehouse_id').value;

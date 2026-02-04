@@ -18,13 +18,65 @@ if ($action === 'search_product') {
     exit;
 }
 
-// === GET PRODUCT BY SKU (SCANNER) ===
+// === GET PRODUCT BY SKU OR SERIAL NUMBER ===
 if ($action === 'get_product_by_sku') {
-    $sku = $_GET['sku'] ?? '';
+    $code = $_GET['sku'] ?? '';
+    
+    // 1. Cek Apakah ini SKU Produk?
     $stmt = $pdo->prepare("SELECT * FROM products WHERE sku = ?");
-    $stmt->execute([$sku]);
+    $stmt->execute([$code]);
     $product = $stmt->fetch();
+
+    $found_sn = null;
+
+    // 2. Jika bukan SKU, Cek Apakah ini Serial Number? (Hanya untuk yang statusnya AVAILABLE)
+    if (!$product) {
+        $stmtSn = $pdo->prepare("
+            SELECT p.*, ps.serial_number as scanned_sn 
+            FROM product_serials ps
+            JOIN products p ON ps.product_id = p.id
+            WHERE ps.serial_number = ? AND ps.status = 'AVAILABLE'
+            LIMIT 1
+        ");
+        $stmtSn->execute([$code]);
+        $product = $stmtSn->fetch();
+        
+        if ($product) {
+            $found_sn = $product['scanned_sn'];
+        }
+    }
+
+    if ($product) {
+        // Cari Gudang Terakhir berdasarkan barang masuk terakhir
+        $stmtWh = $pdo->prepare("SELECT warehouse_id FROM inventory_transactions 
+                                 WHERE product_id = ? AND type = 'IN' 
+                                 ORDER BY date DESC, created_at DESC LIMIT 1");
+        $stmtWh->execute([$product['id']]);
+        $wh_id = $stmtWh->fetchColumn();
+        
+        // Tambahkan ke response
+        $product['last_warehouse_id'] = $wh_id;
+        
+        // Jika ditemukan via SN, kirim SN nya kembali
+        if ($found_sn) {
+            $product['scanned_sn'] = $found_sn;
+        }
+    }
+
     echo json_encode($product ?: ['error' => 'Not found']);
+    exit;
+}
+
+// === CHECK SERIAL NUMBER AVAILABILITY (FOR INBOUND) ===
+if ($action === 'check_sn_duplicate') {
+    $sn = $_GET['sn'] ?? '';
+    $prod_id = $_GET['product_id'] ?? 0;
+    
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM product_serials WHERE serial_number = ? AND product_id = ?");
+    $stmt->execute([$sn, $prod_id]);
+    $exists = $stmt->fetchColumn() > 0;
+    
+    echo json_encode(['exists' => $exists]);
     exit;
 }
 

@@ -79,9 +79,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $product_id = $pdo->lastInsertId();
             }
             
+            // Siapkan Notes dengan SN agar muncul di Inventory Report
+            $sn_string = "";
+            $valid_sns = array_filter($sn_list, function($v) { return !empty(trim($v)); });
+            if (!empty($valid_sns)) {
+                $sn_string = " [SN: " . implode(", ", $valid_sns) . "]";
+            }
+            $final_notes = $notes . $sn_string;
+
             // 2. Simpan Riwayat Transaksi (IN)
             $stmt = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'IN', ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$date, $product_id, $warehouse_id, $qty, $reference, $notes, $_SESSION['user_id']]);
+            $stmt->execute([$date, $product_id, $warehouse_id, $qty, $reference, $final_notes, $_SESSION['user_id']]);
             $trx_id = $pdo->lastInsertId(); 
             
             // 3. AUTO RECORD FINANCIAL TRANSACTION
@@ -103,20 +111,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             // 4. INSERT SERIAL NUMBERS
-            if (!empty($sn_list)) {
+            if (!empty($valid_sns)) {
                 $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
-                foreach ($sn_list as $sn) {
-                    if (!empty($sn)) {
-                        // Cek Duplicate SN for this product
-                        $chk = $pdo->prepare("SELECT id FROM product_serials WHERE product_id=? AND serial_number=?");
-                        $chk->execute([$product_id, $sn]);
-                        if($chk->rowCount() > 0) {
-                            // Jika SN sudah ada tapi status SOLD/RETURNED, mungkin ini barang retur masuk?
-                            // Untuk simplifikasi, jika duplikat lempar error.
-                            throw new Exception("Serial Number '$sn' sudah ada di database untuk produk ini.");
-                        }
-                        $stmtSn->execute([$product_id, $sn, $warehouse_id, $trx_id]);
+                foreach ($valid_sns as $sn) {
+                    // Cek Duplicate SN for this product
+                    $chk = $pdo->prepare("SELECT id FROM product_serials WHERE product_id=? AND serial_number=?");
+                    $chk->execute([$product_id, $sn]);
+                    if($chk->rowCount() > 0) {
+                        // Jika SN sudah ada tapi status SOLD/RETURNED, mungkin ini barang retur masuk?
+                        // Untuk simplifikasi, jika duplikat lempar error.
+                        throw new Exception("Serial Number '$sn' sudah ada di database untuk produk ini.");
                     }
+                    $stmtSn->execute([$product_id, $sn, $warehouse_id, $trx_id]);
                 }
             }
 
@@ -590,7 +596,7 @@ function renderSnInputs() {
             div.innerHTML = `
                 <div class="relative">
                     <span class="absolute left-2 top-2 text-xs font-bold text-gray-400">#${i}</span>
-                    <input type="text" name="sn_list[]" value="${val}" class="w-full border p-2 pl-8 rounded text-sm font-mono uppercase focus:ring-1 focus:ring-purple-500 sn-input-field" placeholder="Scan SN" required>
+                    <input type="text" name="sn_list[]" value="${val}" class="w-full border p-2 pl-8 rounded text-sm font-mono uppercase focus:ring-1 focus:ring-purple-500 sn-input-field" placeholder="SN Barang" required>
                 </div>
             `;
             inputsDiv.appendChild(div);

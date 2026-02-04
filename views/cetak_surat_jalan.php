@@ -160,7 +160,7 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                     <th style="width: 110px;">SKU / Barcode</th>
                     <th>Detail Material / Barang</th>
                     <th style="width: 80px;">Gudang</th>
-                    <th style="width: 120px;">Serial Number (SN)</th>
+                    <th style="width: 120px;">SN Barang</th>
                     <th>Catatan Item</th>
                     <th style="width: 40px;">Jml</th>
                     <th style="width: 40px;">Unit</th>

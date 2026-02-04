@@ -224,16 +224,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // 4. DELETE PRODUCT
+    // 4. DELETE PRODUCT (UPDATED: Cascade Delete to Inventory, SN, and Finance)
     if (isset($_POST['delete_id'])) {
+        $del_id = (int)$_POST['delete_id'];
+        
+        $pdo->beginTransaction();
         try {
-            $prod = $pdo->query("SELECT name FROM products WHERE id=".(int)$_POST['delete_id'])->fetch();
-            $prodName = $prod ? $prod['name'] : 'Unknown';
-            $pdo->prepare("DELETE FROM products WHERE id=?")->execute([(int)$_POST['delete_id']]);
-            logActivity($pdo, 'DELETE_BARANG', "Hapus barang: $prodName");
-            $_SESSION['flash'] = ['type'=>'success', 'message'=>'Barang dihapus'];
+            // 1. Ambil Data Produk
+            $stmt = $pdo->prepare("SELECT name, sku, image_url FROM products WHERE id = ?");
+            $stmt->execute([$del_id]);
+            $prod = $stmt->fetch();
+            
+            if (!$prod) throw new Exception("Barang tidak ditemukan.");
+            
+            $prodName = $prod['name'];
+            $prodSku = $prod['sku'];
+            $img = $prod['image_url'];
+
+            // 2. Hapus Serial Numbers
+            $pdo->prepare("DELETE FROM product_serials WHERE product_id = ?")->execute([$del_id]);
+
+            // 3. Hapus Transaksi Inventori
+            $pdo->prepare("DELETE FROM inventory_transactions WHERE product_id = ?")->execute([$del_id]);
+
+            // 4. Hapus Transaksi Keuangan yang terkait (Berdasarkan kemunculan SKU/Nama di deskripsi)
+            // Note: Ini dilakukan agar data keuangan bersih jika barang master dihapus (permintaan user).
+            // PENTING: Menggunakan SKU sebagai kunci pencarian yang unik.
+            if (!empty($prodSku)) {
+                $pdo->prepare("DELETE FROM finance_transactions WHERE description LIKE ? OR description LIKE ?")
+                    ->execute(["%$prodSku%", "%$prodName%"]);
+            }
+
+            // 5. Hapus Produk Utama
+            $pdo->prepare("DELETE FROM products WHERE id = ?")->execute([$del_id]);
+            
+            // 6. Hapus Gambar jika ada
+            if (!empty($img) && file_exists($img)) {
+                @unlink($img);
+            }
+
+            logActivity($pdo, 'DELETE_BARANG', "Hapus barang & data terkait (Keuangan/Inv): $prodName ($prodSku)");
+            $pdo->commit();
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>'Barang, riwayat inventori, dan transaksi keuangannya berhasil dihapus.'];
+            
         } catch(Exception $e) {
-            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal hapus. Mungkin barang sudah memiliki transaksi.'];
+            $pdo->rollBack();
+            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal hapus: ' . $e->getMessage()];
         }
         echo "<script>window.location='?page=data_barang';</script>";
         exit;
@@ -594,7 +630,7 @@ foreach($products as $p) {
                             <!-- SAFE JSON ENCODE FOR EDIT BUTTON -->
                             <button onclick="editProduct(<?= htmlspecialchars(json_encode($p), ENT_QUOTES, 'UTF-8') ?>)" class="text-blue-600 hover:text-blue-800"><i class="fas fa-edit"></i></button>
                             
-                            <form method="POST" onsubmit="return confirm('Hapus?')" class="inline">
+                            <form method="POST" onsubmit="return confirm('PERINGATAN: Menghapus barang akan menghapus SEMUA riwayat inventori dan transaksi keuangan yang terkait dengan barang ini. Lanjutkan?')" class="inline">
                                 <?= csrf_field() ?>
                                 <input type="hidden" name="delete_id" value="<?= $p['id'] ?>">
                                 <button class="text-red-500 hover:text-red-700"><i class="fas fa-trash"></i></button>

@@ -616,7 +616,7 @@ function renderSnInputs() {
         for (let i = 1; i <= qty; i++) {
             let val = (i === 1 && scannedSn) ? scannedSn : '';
             const div = document.createElement('div');
-            div.innerHTML = `<input type="text" name="sn_out[]" value="${val}" class="w-full border p-1 rounded text-sm font-mono uppercase bg-white border-purple-400" placeholder="SN #${i}" required>`;
+            div.innerHTML = `<input type="text" name="sn_out[]" value="${val}" class="w-full border p-1 rounded text-sm font-mono uppercase bg-white border-purple-400" placeholder="SN Barang" required>`;
             inputsDiv.appendChild(div);
         }
     } else {

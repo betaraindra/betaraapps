@@ -214,7 +214,7 @@ $recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_
     LIMIT 10")->fetchAll();
 ?>
 
-<!-- STYLE & UI (SAMA SEPERTI FILE ASLI, DISESUAIKAN UNTUK KELENGKAPAN) -->
+<!-- STYLE & UI -->
 <div class="space-y-6">
     <div class="bg-white p-6 rounded-lg shadow">
         <!-- HEADER -->
@@ -293,6 +293,20 @@ $recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_
             <!-- ITEM INPUT -->
             <div class="bg-red-50 p-4 rounded border border-red-200 mb-6">
                 <h4 class="font-bold text-red-800 mb-2 text-sm">Input Barang</h4>
+                
+                <!-- DROPDOWN CARI MANUAL (BARU) -->
+                <div class="mb-3 bg-white p-2 rounded border border-red-100 shadow-sm">
+                    <label class="block text-xs font-bold text-gray-500 mb-1">Cari Barang dari Database (Manual)</label>
+                    <select id="manual_product_select" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-red-500" onchange="handleManualProductSelect(this)">
+                        <option value="">-- Cari Nama Barang (Stok Tersedia) --</option>
+                        <?php foreach($products_list as $prod): ?>
+                            <option value="<?= $prod['sku'] ?>">
+                                <?= $prod['name'] ?> (Stok: <?= $prod['stock'] ?>) - SKU: <?= $prod['sku'] ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
                 <div class="flex flex-col md:flex-row gap-2 items-end">
                     <div class="flex-1 w-full">
                         <label class="text-xs font-bold text-gray-600">Scan SKU / SN</label>
@@ -337,6 +351,16 @@ $recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_
 let cart = [];
 let html5QrCode;
 const APP_REF = "<?= $app_ref_prefix ?>";
+
+// Handle Dropdown Manual Select
+function handleManualProductSelect(select) {
+    const sku = select.value;
+    if (sku) {
+        document.getElementById('sku_input').value = sku;
+        checkSku(); // Validasi dan persiapan data
+        select.value = ""; // Reset dropdown agar bisa pilih ulang
+    }
+}
 
 function toggleDestWarehouse() {
     const type = document.querySelector('input[name="out_type"]:checked').value;

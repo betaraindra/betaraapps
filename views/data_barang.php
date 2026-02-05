@@ -1,9 +1,17 @@
 <?php
 checkRole(['SUPER_ADMIN', 'ADMIN_GUDANG', 'MANAGER', 'SVP']);
 
+// --- SELF-HEALING: AUTO ADD COLUMN NOTES ---
+try {
+    $pdo->query("SELECT notes FROM products LIMIT 1");
+} catch (Exception $e) {
+    try {
+        $pdo->exec("ALTER TABLE products ADD COLUMN notes TEXT DEFAULT NULL AFTER unit");
+    } catch (Exception $ex) { }
+}
+
 // --- AMBIL DATA MASTER UNTUK FORM ---
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
-// Akun Kategori Persediaan/Biaya (Sesuai Barang Masuk)
 $category_accounts = $pdo->query("SELECT * FROM accounts WHERE code IN ('3003', '2005', '2105') ORDER BY code ASC")->fetchAll();
 
 // --- HANDLE POST REQUESTS ---
@@ -14,16 +22,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['delete_id'])) {
         $id = $_POST['delete_id'];
         
-        // Cek ketergantungan
         $chk = $pdo->query("SELECT COUNT(*) FROM inventory_transactions WHERE product_id=$id")->fetchColumn();
         if ($chk > 0) {
             $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: Barang ini memiliki riwayat transaksi.'];
         } else {
-            // Hapus gambar lama
             $img = $pdo->query("SELECT image_url FROM products WHERE id=$id")->fetchColumn();
             if ($img && file_exists($img)) unlink($img);
             
-            // Hapus SN
             $pdo->prepare("DELETE FROM product_serials WHERE product_id=?")->execute([$id]);
             $pdo->prepare("DELETE FROM products WHERE id=?")->execute([$id]);
             $_SESSION['flash'] = ['type'=>'success', 'message'=>'Barang berhasil dihapus.'];
@@ -39,6 +44,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $name = trim($_POST['name']);
             $category = trim($_POST['category']);
             $unit = trim($_POST['unit']);
+            $notes = trim($_POST['notes'] ?? ''); // Tangkap Input Catatan
             $buy_price = cleanNumber($_POST['buy_price']);
             $sell_price = cleanNumber($_POST['sell_price']);
             
@@ -57,18 +63,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!empty($_POST['edit_id'])) {
                 // === UPDATE PRODUCT ===
                 $id = $_POST['edit_id'];
-                
-                // Ambil Data Lama
                 $oldData = $pdo->query("SELECT stock, image_url FROM products WHERE id=$id")->fetch();
                 $old_stock = (int)$oldData['stock'];
-                $new_stock = (int)$_POST['initial_stock']; // Input dari form
+                $new_stock = (int)$_POST['initial_stock'];
                 $old_img_path = $oldData['image_url'];
                 
                 $pdo->beginTransaction();
 
-                // 1. Update Informasi Dasar
-                $sql_set = "sku=?, name=?, category=?, unit=?, buy_price=?, sell_price=?";
-                $params = [$sku, $name, $category, $unit, $buy_price, $sell_price];
+                // Update Data Utama + Notes
+                $sql_set = "sku=?, name=?, category=?, unit=?, buy_price=?, sell_price=?, notes=?";
+                $params = [$sku, $name, $category, $unit, $buy_price, $sell_price, $notes];
                 
                 if ($image_path) {
                     $sql_set .= ", image_url = ?";
@@ -79,47 +83,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($old_img_path && file_exists($old_img_path)) unlink($old_img_path);
                 }
                 
-                $params[] = $id; // ID untuk WHERE
+                $params[] = $id;
                 
                 $stmt = $pdo->prepare("UPDATE products SET $sql_set WHERE id=?");
                 $stmt->execute($params);
 
-                // 2. Handle Perubahan Stok (Adjustment)
+                // Handle Adjustment Stok
                 if ($new_stock != $old_stock) {
                     if ($new_stock < $old_stock) {
                         throw new Exception("Pengurangan stok tidak diizinkan di sini. Gunakan menu Barang Keluar.");
                     }
-                    
-                    // Jika Stok Bertambah (Adjustment IN)
                     $delta = $new_stock - $old_stock;
                     $wh_id = $_POST['warehouse_id'] ?? null;
                     $sn_string = $_POST['sn_list_text'] ?? '';
 
-                    if (empty($wh_id)) {
-                        throw new Exception("Gudang Penempatan wajib dipilih untuk penambahan stok.");
-                    }
+                    if (empty($wh_id)) throw new Exception("Gudang Penempatan wajib dipilih untuk penambahan stok.");
 
-                    // Buat Transaksi IN
                     $ref = "ADJ/" . date('ymd') . "/" . rand(100,999);
                     $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'IN', ?, ?, ?, ?, 'Adjustment via Edit', ?)")
                         ->execute([$id, $wh_id, $delta, $ref, $_SESSION['user_id']]);
                     $trx_id = $pdo->lastInsertId();
 
-                    // Insert SN Baru
                     $sns = array_filter(array_map('trim', explode(',', $sn_string)));
                     $needed = $delta - count($sns);
                     for($i=0; $i<$needed; $i++) $sns[] = "SN" . time() . rand(1000,9999);
                     $sns = array_slice($sns, 0, $delta);
 
                     $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
-                    foreach($sns as $sn) {
-                        $stmtSn->execute([$id, $sn, $wh_id, $trx_id]);
-                    }
+                    foreach($sns as $sn) $stmtSn->execute([$id, $sn, $wh_id, $trx_id]);
 
-                    // Update Total Stok di Tabel Products
                     $pdo->prepare("UPDATE products SET stock = ? WHERE id = ?")->execute([$new_stock, $id]);
 
-                    // *** CATAT KEUANGAN (AUTO EXPENSE ASSET - 3003) ***
                     $total_val = $delta * $buy_price;
                     $acc3003 = $pdo->query("SELECT id FROM accounts WHERE code='3003'")->fetchColumn();
                     if ($acc3003 && $total_val > 0) {
@@ -147,8 +141,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $pdo->beginTransaction();
 
-                $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, image_url, has_serial_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)");
-                $stmt->execute([$sku, $name, $category, $unit, $buy_price, $sell_price, $initial_stock, $image_path]);
+                // Insert termasuk Notes
+                $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, image_url, has_serial_number, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)");
+                $stmt->execute([$sku, $name, $category, $unit, $buy_price, $sell_price, $initial_stock, $image_path, $notes]);
                 $new_id = $pdo->lastInsertId();
 
                 if ($initial_stock > 0) {
@@ -165,7 +160,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
                     foreach($sns as $sn) $stmtSn->execute([$new_id, $sn, $wh_id, $trx_id]);
 
-                    // *** CATAT KEUANGAN (AUTO EXPENSE ASSET - 3003) ***
                     $total_val = $initial_stock * $buy_price;
                     $acc3003 = $pdo->query("SELECT id FROM accounts WHERE code='3003'")->fetchColumn();
                     if ($acc3003 && $total_val > 0) {
@@ -188,7 +182,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // 3. IMPORT DATA BARANG (Backend Process)
+    // 3. IMPORT DATA BARANG
     if (isset($_POST['import_products'])) {
         $json_data = $_POST['import_json'];
         $items = json_decode($json_data, true);
@@ -198,75 +192,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $pdo->beginTransaction();
             try {
-                // Ambil Default Gudang (ID terkecil/pertama) untuk stok awal
                 $def_wh = $pdo->query("SELECT id FROM warehouses ORDER BY id ASC LIMIT 1")->fetchColumn();
                 if (!$def_wh) throw new Exception("Harap buat minimal 1 Data Gudang sebelum import.");
-
-                // Ambil Akun Persediaan (3003)
                 $acc3003 = $pdo->query("SELECT id FROM accounts WHERE code='3003'")->fetchColumn();
 
-                $count_new = 0;
-                $count_update = 0;
+                $count_new = 0; $count_update = 0;
 
                 foreach ($items as $row) {
-                    // Mapping Key Excel (Case Insensitive logic handled by ensuring Excel headers match or checking variants)
-                    // Asumsi header Excel dari Export function: 'Nama', 'SKU', 'Beli (HPP)', 'Jual', 'Stok', 'Sat', 'SN', 'Kategori'
-                    
                     $sku = trim($row['SKU'] ?? ($row['sku'] ?? ''));
                     $name = trim($row['Nama'] ?? ($row['nama'] ?? ''));
-                    
                     if (empty($sku) || empty($name)) continue;
 
-                    // Clean Values
                     $buy = isset($row['Beli (HPP)']) ? cleanNumber($row['Beli (HPP)']) : 0;
                     $sell = isset($row['Jual']) ? cleanNumber($row['Jual']) : 0;
                     $stock = isset($row['Stok']) ? (int)$row['Stok'] : 0;
                     $unit = trim($row['Sat'] ?? ($row['unit'] ?? 'Pcs'));
                     $cat = trim($row['Kategori'] ?? ($row['category'] ?? 'Umum'));
+                    $note = trim($row['Catatan'] ?? ($row['notes'] ?? '')); // Import Catatan
                     
-                    // Cek Existing
                     $stmtCheck = $pdo->prepare("SELECT id FROM products WHERE sku = ?");
                     $stmtCheck->execute([$sku]);
                     $exists = $stmtCheck->fetch();
 
                     if ($exists) {
-                        // UPDATE EXISTING (Master Data Only, Stock tidak ditimpa untuk safety)
-                        $pdo->prepare("UPDATE products SET name=?, category=?, unit=?, buy_price=?, sell_price=? WHERE id=?")
-                            ->execute([$name, $cat, $unit, $buy, $sell, $exists['id']]);
+                        $pdo->prepare("UPDATE products SET name=?, category=?, unit=?, buy_price=?, sell_price=?, notes=? WHERE id=?")
+                            ->execute([$name, $cat, $unit, $buy, $sell, $note, $exists['id']]);
                         $count_update++;
                     } else {
-                        // INSERT NEW
-                        $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, has_serial_number) VALUES (?, ?, ?, ?, ?, ?, ?, 1)")
-                            ->execute([$sku, $name, $cat, $unit, $buy, $sell, $stock]);
+                        $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, has_serial_number, notes) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)")
+                            ->execute([$sku, $name, $cat, $unit, $buy, $sell, $stock, $note]);
                         $new_id = $pdo->lastInsertId();
                         $count_new++;
 
-                        // Handle Initial Stock Log (Hanya untuk Barang Baru)
                         if ($stock > 0) {
-                            // 1. Inventory Log
                             $ref = "IMP/" . date('ymd') . "/" . rand(100,999);
                             $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'IN', ?, ?, ?, ?, 'Import Excel Awal', ?)")
                                 ->execute([$new_id, $def_wh, $stock, $ref, $_SESSION['user_id']]);
                             $trx_id = $pdo->lastInsertId();
 
-                            // 2. Serial Numbers
                             $sns_raw = trim($row['SN'] ?? '');
                             $sns = [];
-                            if (!empty($sns_raw)) {
-                                $sns = array_map('trim', explode(',', $sns_raw));
-                            }
+                            if (!empty($sns_raw)) $sns = array_map('trim', explode(',', $sns_raw));
                             
-                            // Generate sisa SN jika kurang dari stok
                             $needed = $stock - count($sns);
                             for($i=0; $i<$needed; $i++) $sns[] = "SN" . time() . rand(1000,9999) . $i;
-                            $sns = array_slice($sns, 0, $stock); // Ensure count matches stock
+                            $sns = array_slice($sns, 0, $stock);
 
                             $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
-                            foreach($sns as $sn) {
-                                $stmtSn->execute([$new_id, $sn, $def_wh, $trx_id]);
-                            }
+                            foreach($sns as $sn) $stmtSn->execute([$new_id, $sn, $def_wh, $trx_id]);
 
-                            // 3. Finance Log (3003 Asset)
                             $total_val = $stock * $buy;
                             if ($acc3003 && $total_val > 0) {
                                 $wh_name = $pdo->query("SELECT name FROM warehouses WHERE id=$def_wh")->fetchColumn();
@@ -277,7 +251,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
                 }
-
                 $pdo->commit();
                 $_SESSION['flash'] = ['type'=>'success', 'message'=>"Import Selesai. Data Baru: $count_new, Data Update: $count_update"];
             } catch (Exception $e) {
@@ -305,8 +278,8 @@ $sql = "SELECT p.*,
         (SELECT reference FROM inventory_transactions WHERE product_id = p.id ORDER BY date DESC LIMIT 1) as last_ref,
         (SELECT id FROM inventory_transactions WHERE product_id = p.id ORDER BY date DESC LIMIT 1) as last_trx_id
         FROM products p 
-        WHERE (p.name LIKE ? OR p.sku LIKE ?)";
-$params = ["%$search%", "%$search%"];
+        WHERE (p.name LIKE ? OR p.sku LIKE ? OR p.notes LIKE ?)";
+$params = ["%$search%", "%$search%", "%$search%"];
 
 if ($cat_filter !== 'ALL') {
     $sql .= " AND p.category = ?";
@@ -357,6 +330,7 @@ foreach($products as &$p) {
         'Jual' => $p['sell_price'],
         'Stok' => $p['stock'],
         'Sat' => $p['unit'],
+        'Catatan' => $p['notes'],
         'SN' => $full_sn_text
     ];
     $total_asset_group += ($p['stock'] * $p['buy_price']);
@@ -541,6 +515,12 @@ if (isset($_GET['edit_id'])) {
                     </div>
                 </div>
 
+                <!-- NEW FIELD: NOTES -->
+                <div class="mb-3">
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Catatan</label>
+                    <textarea name="notes" class="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500" rows="2" placeholder="Spesifikasi / Detail..."><?= htmlspecialchars($edit_item['notes']??'') ?></textarea>
+                </div>
+
                 <div class="mb-3 bg-gray-50 p-3 rounded border border-gray-200">
                     <label class="block text-xs font-bold text-gray-700 mb-1">Stok <?= $edit_item ? ' (Edit = Tambah Stok)' : ' Awal' ?></label>
                     <div class="grid grid-cols-2 gap-2">
@@ -610,6 +590,7 @@ if (isset($_GET['edit_id'])) {
                             <th class="p-2 border border-gray-300 text-right">Jual</th>
                             <th class="p-2 border border-gray-300 w-16">Stok</th>
                             <th class="p-2 border border-gray-300 w-10">Sat</th>
+                            <th class="p-2 border border-gray-300">Catatan</th>
                             <th class="p-2 border border-gray-300">Ket</th>
                             <th class="p-2 border border-gray-300 w-20">Update</th>
                             <th class="p-2 border border-gray-300 text-center w-24">Ref / Cetak</th>
@@ -634,6 +615,8 @@ if (isset($_GET['edit_id'])) {
                             <td class="p-2 border text-right text-green-600 font-bold"><?= formatRupiah($p['sell_price']) ?></td>
                             <td class="p-2 border text-center font-bold text-lg <?= $p['stock'] < 10 ? 'text-red-600 bg-red-50' : 'text-blue-800 bg-blue-50' ?>"><?= number_format($p['stock']) ?></td>
                             <td class="p-2 border text-center"><?= htmlspecialchars($p['unit']) ?></td>
+                            <!-- NEW COLUMN: NOTES -->
+                            <td class="p-2 border text-[10px] text-gray-600 italic"><?= htmlspecialchars($p['notes']) ?></td>
                             <td class="p-2 border text-[10px] text-gray-500 text-center"><?= htmlspecialchars($p['category']) ?></td>
                             <td class="p-2 border text-center text-[9px] text-gray-500"><?= $p['last_update'] ? date('d/m/y', strtotime($p['last_update'])) : '-' ?></td>
                             <td class="p-2 border text-center">
@@ -658,7 +641,7 @@ if (isset($_GET['edit_id'])) {
                         </tr>
                         <?php endforeach; ?>
                         <?php if(empty($products)): ?>
-                            <tr><td colspan="13" class="p-8 text-center text-gray-400">Tidak ada data barang.</td></tr>
+                            <tr><td colspan="14" class="p-8 text-center text-gray-400">Tidak ada data barang.</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
@@ -667,7 +650,7 @@ if (isset($_GET['edit_id'])) {
     </div>
 </div>
 
-<!-- IMPORT MODAL [SAMA SEPERTI SEBELUMNYA] -->
+<!-- IMPORT MODAL -->
 <div id="importModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
     <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
         <button onclick="document.getElementById('importModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
@@ -677,9 +660,8 @@ if (isset($_GET['edit_id'])) {
             <ul class="list-disc ml-4">
                 <li>Gunakan <b>Export Excel</b> untuk mendapatkan template.</li>
                 <li>Kolom Wajib: <b>Nama, SKU, Stok, Beli (HPP)</b>.</li>
-                <li>Kolom <b>SN</b> pisahkan dengan koma (cth: SN1, SN2).</li>
-                <li>Data SKU yang sama akan <b>diupdate</b> (Nama/Harga).</li>
-                <li>Stok hanya diisi untuk <b>Barang Baru</b>.</li>
+                <li>Kolom Opsional: <b>Catatan</b>.</li>
+                <li>Data SKU yang sama akan <b>diupdate</b>.</li>
             </ul>
         </div>
         <form id="form_import" method="POST">
@@ -712,6 +694,6 @@ function formatRupiah(input) { let value = input.value.replace(/\D/g, ''); if(va
 function toggleSnInput() { const qtyInput = document.getElementById('init_qty'); const newQty = parseInt(qtyInput.value) || 0; const snArea = document.getElementById('sn_area'); const snText = document.getElementById('sn_list_input'); const whSelect = document.getElementById('init_wh'); const stockHint = document.getElementById('stock_hint'); const editMode = document.getElementById('edit_mode_flag') ? true : false; let showSn = false; if (editMode) { const originalStock = parseInt(qtyInput.getAttribute('data-original')) || 0; const delta = newQty - originalStock; if (delta > 0) { showSn = true; snText.placeholder = `Masukkan ${delta} SN baru...`; stockHint.innerText = `Menambah ${delta} stok. Wajib input SN & Pilih Gudang.`; stockHint.classList.remove('text-blue-600', 'text-red-500'); stockHint.classList.add('text-green-600', 'font-bold'); whSelect.removeAttribute('disabled'); } else if (delta < 0) { stockHint.innerText = "PERINGATAN: Pengurangan stok tidak bisa dilakukan di sini. Gunakan Barang Keluar."; stockHint.classList.add('text-red-500', 'font-bold'); whSelect.setAttribute('disabled', 'disabled'); } else { stockHint.innerText = "Ubah angka untuk menambah stok."; stockHint.classList.remove('text-red-500', 'font-bold', 'text-green-600'); stockHint.classList.add('text-blue-600'); whSelect.setAttribute('disabled', 'disabled'); } } else { if (newQty > 0) { showSn = true; whSelect.removeAttribute('disabled'); } else { whSelect.setAttribute('disabled', 'disabled'); whSelect.value = ""; } } if (showSn) { snArea.classList.remove('hidden'); } else { snArea.classList.add('hidden'); } }
 function printLabelDirect(sku, name) { document.getElementById('lbl_name').innerText = name; try { bwipjs.toCanvas('lbl_barcode_canvas', { bcid: 'code128', text: sku, scale: 2, height: 10, includetext: true, textxalign: 'center', }); window.print(); } catch(e) { alert('Gagal render barcode'); } }
 const exportData = <?= json_encode($export_data) ?>;
-function exportToExcel() { if(exportData.length === 0) return alert("Tidak ada data."); const ws = XLSX.utils.json_to_sheet(exportData); const wscols = [ {wch:30}, {wch:15}, {wch:15}, {wch:20}, {wch:15}, {wch:10}, {wch:10}, {wch:30} ]; ws['!cols'] = wscols; const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Data Barang"); XLSX.writeFile(wb, "Data_Barang_Master_" + new Date().toISOString().slice(0,10) + ".xlsx"); }
+function exportToExcel() { if(exportData.length === 0) return alert("Tidak ada data."); const ws = XLSX.utils.json_to_sheet(exportData); const wscols = [ {wch:30}, {wch:15}, {wch:15}, {wch:20}, {wch:15}, {wch:10}, {wch:10}, {wch:20}, {wch:30} ]; ws['!cols'] = wscols; const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Data Barang"); XLSX.writeFile(wb, "Data_Barang_Master_" + new Date().toISOString().slice(0,10) + ".xlsx"); }
 function processImport() { const fileInput = document.getElementById('file_excel'); if(!fileInput.files.length) return alert("Pilih file excel dulu!"); const file = fileInput.files[0]; const reader = new FileReader(); reader.onload = function(e) { const data = new Uint8Array(e.target.result); const workbook = XLSX.read(data, {type: 'array'}); const firstSheetName = workbook.SheetNames[0]; const worksheet = workbook.Sheets[firstSheetName]; const jsonData = XLSX.utils.sheet_to_json(worksheet); if (jsonData.length === 0) { alert("File kosong atau format salah."); return; } document.getElementById('import_json_data').value = JSON.stringify(jsonData); document.getElementById('form_import').submit(); }; reader.readAsArrayBuffer(file); }
 </script>

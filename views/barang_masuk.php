@@ -113,9 +113,21 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
         </div>
 
         <!-- CAMERA VIEWPORT -->
-        <div id="scanner_area" class="hidden mb-6 relative bg-black rounded-lg border-4 border-gray-900 overflow-hidden shadow-2xl">
-            <div id="reader" class="w-full h-64"></div>
-            <button onclick="stopScan()" class="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-full shadow hover:bg-red-700 z-50">
+        <div id="scanner_area" class="hidden mb-6 relative bg-black rounded-lg border-4 border-gray-900 overflow-hidden shadow-2xl group">
+            <div id="reader" class="w-full h-64 md:h-80 bg-black"></div>
+            
+            <!-- Controls Overlay -->
+            <div class="absolute bottom-4 left-0 right-0 flex justify-center gap-4 z-20">
+                <button type="button" onclick="switchCamera()" class="bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Ganti Kamera">
+                    <i class="fas fa-sync-alt"></i>
+                </button>
+                <button type="button" onclick="toggleFlash()" id="btn_flash" class="hidden bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Flash / Senter">
+                    <i class="fas fa-bolt"></i>
+                </button>
+            </div>
+
+            <!-- Close Button -->
+            <button onclick="stopScan()" class="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-full shadow-lg hover:bg-red-700 z-50">
                 <i class="fas fa-times"></i>
             </button>
         </div>
@@ -165,7 +177,10 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                     <div>
                         <label class="block text-xs font-bold text-gray-600">SKU / Barcode</label>
-                        <input type="text" id="inp_sku" class="w-full border p-2 rounded font-mono font-bold text-blue-700 uppercase" placeholder="Scan disini...">
+                        <div class="flex gap-1">
+                            <input type="text" id="inp_sku" class="w-full border p-2 rounded font-mono font-bold text-blue-700 uppercase" placeholder="Scan disini...">
+                            <button type="button" onclick="genSku()" class="bg-yellow-500 text-white px-3 rounded hover:bg-yellow-600" title="Auto SKU"><i class="fas fa-bolt"></i></button>
+                        </div>
                     </div>
                     <div>
                         <label class="block text-xs font-bold text-gray-600">Nama Barang</label>
@@ -246,6 +261,8 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
 <script>
 let cart = [];
 let html5QrCode;
+let currentFacingMode = "environment"; // Default Belakang
+let isFlashOn = false;
 const APP_REF = "<?= $app_ref ?>";
 
 $(document).ready(function() {
@@ -279,18 +296,15 @@ function activateUSB() {
     setTimeout(() => el.classList.remove('ring-4', 'ring-blue-400'), 1000);
 }
 
-// Event Listener untuk USB Scanner (Enter di kolom SKU)
 document.getElementById('inp_sku').addEventListener('keypress', function (e) {
     if (e.key === 'Enter') {
         e.preventDefault();
         const sku = this.value.trim();
-        // Coba cari di select2
         const opt = $(`#product_select option[value='${sku}']`);
         if(opt.length > 0) {
             $('#product_select').val(sku).trigger('change');
-            $('#product_select').trigger({type: 'select2:select'}); // Force trigger
+            $('#product_select').trigger({type: 'select2:select'}); 
         } else {
-            // Barang Baru / Tidak ketemu -> Buka form detail
             document.getElementById('extra_details').classList.remove('hidden');
             document.getElementById('inp_name').focus();
         }
@@ -299,23 +313,81 @@ document.getElementById('inp_sku').addEventListener('keypress', function (e) {
 
 async function initCamera() {
     document.getElementById('scanner_area').classList.remove('hidden');
+    
+    // Reset instance jika ada
+    if(html5QrCode) { try{ await html5QrCode.stop(); html5QrCode.clear(); }catch(e){} }
+
     html5QrCode = new Html5Qrcode("reader");
-    html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, 
-        (decodedText) => {
-            stopScan();
-            document.getElementById('inp_sku').value = decodedText;
-            // Trigger logic yang sama dengan USB
-            const event = new KeyboardEvent('keypress', { key: 'Enter' });
-            document.getElementById('inp_sku').dispatchEvent(event);
-        },
-        (errorMessage) => {}
-    ).catch(err => alert("Kamera error: " + err));
+    const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+    
+    try {
+        await html5QrCode.start(
+            { facingMode: currentFacingMode }, 
+            config, 
+            (decodedText) => {
+                stopScan();
+                document.getElementById('inp_sku').value = decodedText;
+                const event = new KeyboardEvent('keypress', { key: 'Enter' });
+                document.getElementById('inp_sku').dispatchEvent(event);
+            },
+            (errorMessage) => {}
+        );
+
+        // Cek Capability Flash
+        const capabilities = html5QrCode.getRunningTrackCameraCapabilities();
+        const flashBtn = document.getElementById('btn_flash');
+        if (capabilities && capabilities.torchFeature().isSupported()) {
+            flashBtn.classList.remove('hidden');
+        } else {
+            flashBtn.classList.add('hidden');
+        }
+        
+    } catch (err) {
+        alert("Gagal memulai kamera: " + err);
+        stopScan();
+    }
+}
+
+async function switchCamera() {
+    // Stop dulu
+    if (html5QrCode) {
+        await html5QrCode.stop();
+        html5QrCode.clear();
+    }
+    // Toggle Mode
+    currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment";
+    // Restart
+    initCamera();
+}
+
+async function toggleFlash() {
+    if (html5QrCode) {
+        try {
+            isFlashOn = !isFlashOn;
+            await html5QrCode.applyVideoConstraints({
+                advanced: [{ torch: isFlashOn }]
+            });
+            const btn = document.getElementById('btn_flash');
+            if(isFlashOn) {
+                btn.classList.add('bg-yellow-400', 'text-black');
+                btn.classList.remove('bg-white/20', 'text-white');
+            } else {
+                btn.classList.remove('bg-yellow-400', 'text-black');
+                btn.classList.add('bg-white/20', 'text-white');
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    }
 }
 
 function stopScan() {
     if(html5QrCode) html5QrCode.stop().then(() => {
         document.getElementById('scanner_area').classList.add('hidden');
         html5QrCode.clear();
+    }).catch(err => {
+        // Force hide
+        document.getElementById('scanner_area').classList.add('hidden');
     });
 }
 
@@ -416,4 +488,5 @@ function validateCart() { return cart.length > 0; }
 function fmtRupiah(i) { let v = i.value.replace(/\D/g, ''); i.value = v ? new Intl.NumberFormat('id-ID').format(v) : ''; }
 function fmtMoney(v) { return v ? new Intl.NumberFormat('id-ID').format(v) : ''; }
 async function genRef() { try{const r=await fetch('api.php?action=get_next_trx_number&type=IN');const d=await r.json();const dt=new Date();document.getElementById('ref_input').value=`${APP_REF}/IN/${dt.getDate()}${dt.getMonth()+1}${dt.getFullYear().toString().substr(-2)}-${d.next_no}`;}catch(e){} }
+async function genSku() { try { const r = await fetch('api.php?action=generate_sku'); const d = await r.json(); if(d.sku) { document.getElementById('inp_sku').value = d.sku; const event = new KeyboardEvent('keypress', { key: 'Enter' }); document.getElementById('inp_sku').dispatchEvent(event); } } catch(e) { alert('Gagal Auto SKU'); } }
 </script>

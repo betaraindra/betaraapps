@@ -35,15 +35,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                 
                 // SN wajib ada sesuai Qty
                 if (empty($item['sns']) || count($item['sns']) != $item['qty']) {
-                    throw new Exception("SN untuk produk {$prod['name']} belum lengkap. Qty: {$item['qty']}, SN Input: " . count($item['sns']));
+                    throw new Exception("Jumlah SN tidak sesuai Qty untuk produk {$prod['name']}.");
                 }
 
-                // Cek Stok Global
                 if ($prod['stock'] < $item['qty']) {
-                    throw new Exception("Stok Global {$prod['name']} tidak cukup! (Sisa: {$prod['stock']})");
+                    throw new Exception("Stok Global {$prod['name']} tidak cukup!");
                 }
                 
-                // 2. Transaksi OUT (Logistik)
+                // 2. Transaksi OUT
                 $notes_out = $item['notes'];
                 if($dest_wh_id) $notes_out .= " (Mutasi ke $dest_wh_name)";
                 $notes_out .= " [SN: " . implode(', ', $item['sns']) . "]";
@@ -52,15 +51,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                     ->execute([$date, $prod['id'], $wh_id, $item['qty'], $ref, $notes_out, $_SESSION['user_id']]);
                 $trx_out_id = $pdo->lastInsertId();
 
-                // 3. Update Stok Produk & Status SN
+                // 3. Update Stok & Status SN
                 $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$item['qty'], $prod['id']]);
                 
                 $snStmt = $pdo->prepare("UPDATE product_serials SET status = 'SOLD', out_transaction_id = ? WHERE product_id = ? AND serial_number = ? AND status = 'AVAILABLE'");
                 foreach ($item['sns'] as $sn) {
                     $snStmt->execute([$trx_out_id, $prod['id'], $sn]);
                     if ($snStmt->rowCount() == 0) {
-                        // Strict check: SN must be valid available
-                        throw new Exception("SN $sn tidak valid/tersedia untuk produk ini.");
+                        throw new Exception("SN $sn tidak tersedia di sistem (mungkin sudah terjual).");
                     }
                 }
 
@@ -69,19 +67,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                 $total_sell = $item['qty'] * $prod['sell_price'];
 
                 if ($out_type === 'INTERNAL' && !empty($dest_wh_id)) {
-                    // MUTASI: Stok masuk lagi di gudang tujuan
+                    // MUTASI
                     $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?")->execute([$item['qty'], $prod['id']]);
                     $ref_in = $ref . '-TRF';
                     $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'IN', ?, ?, ?, ?, 'Mutasi Masuk', ?)")
                         ->execute([$date, $prod['id'], $dest_wh_id, $item['qty'], $ref_in, $_SESSION['user_id']]);
                     $trx_in_id = $pdo->lastInsertId();
                     
-                    // Pindahkan SN
                     $snMove = $pdo->prepare("UPDATE product_serials SET status = 'AVAILABLE', warehouse_id = ?, in_transaction_id = ? WHERE product_id = ? AND serial_number = ?");
                     foreach ($item['sns'] as $sn) $snMove->execute([$dest_wh_id, $trx_in_id, $prod['id'], $sn]);
                 
                 } elseif ($out_type === 'EXTERNAL') {
-                    // PENJUALAN: Catat Income
+                    // PENJUALAN
                     $acc_sales = $pdo->query("SELECT id FROM accounts WHERE code='4001'")->fetchColumn();
                     if ($acc_sales && $total_sell > 0) {
                         $desc = "Penjualan: {$prod['name']} ($item[qty]) [Wilayah: $wh_name]";
@@ -89,7 +86,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                             ->execute([$date, $acc_sales, $total_sell, $desc, $_SESSION['user_id']]);
                     }
                 } elseif ($out_type === 'INTERNAL' && empty($dest_wh_id)) {
-                    // PEMAKAIAN SENDIRI: Catat Expense
+                    // PEMAKAIAN SENDIRI
                     $acc_use = $pdo->query("SELECT id FROM accounts WHERE code='2105'")->fetchColumn();
                     if ($acc_use && $total_buy > 0) {
                         $desc = "Pemakaian: {$prod['name']} ($item[qty]) [Wilayah: $wh_name]";
@@ -113,9 +110,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
 
 // Data Master
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
-$products_list = $pdo->query("SELECT sku, name, stock, sell_price FROM products WHERE stock > 0 ORDER BY name ASC")->fetchAll();
+$products_list = $pdo->query("SELECT sku, name FROM products WHERE stock > 0 ORDER BY name ASC")->fetchAll();
 $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
-$recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_name FROM inventory_transactions i JOIN products p ON i.product_id = p.id JOIN warehouses w ON i.warehouse_id = w.id WHERE i.type = 'OUT' ORDER BY i.created_at DESC LIMIT 10")->fetchAll();
 ?>
 
 <div class="space-y-6">
@@ -163,7 +159,7 @@ $recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                 <div>
                     <label class="block text-sm font-bold text-gray-700 mb-1">Dari Gudang (Asal)</label>
-                    <select name="warehouse_id" class="w-full border p-2 rounded bg-white" required onchange="resetCart()">
+                    <select name="warehouse_id" id="warehouse_id" class="w-full border p-2 rounded bg-white" required onchange="resetCart()">
                         <?php foreach($warehouses as $w): ?>
                             <option value="<?= $w['id'] ?>"><?= $w['name'] ?></option>
                         <?php endforeach; ?>
@@ -177,25 +173,25 @@ $recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_
                             <option value="<?= $w['id'] ?>"><?= $w['name'] ?></option>
                         <?php endforeach; ?>
                     </select>
-                    <p class="text-xs text-gray-500 mt-1">* Kosongkan jika Pemakaian Sendiri (Beban).</p>
+                    <p class="text-xs text-gray-500 mt-1">* Kosongkan jika Pemakaian Sendiri.</p>
                 </div>
             </div>
 
             <!-- INPUT ITEM -->
             <div class="bg-red-50 p-4 rounded border border-red-200 mb-6">
-                <h4 class="font-bold text-red-800 mb-2 text-sm">Pilih Barang</h4>
+                <h4 class="font-bold text-red-800 mb-3 text-sm">Pilih Barang & SN</h4>
                 
                 <div class="mb-3">
                     <label class="block text-xs font-bold text-gray-500 mb-1">Cari Barang (Ketik Nama/SKU)</label>
                     <select id="manual_product_select" class="w-full p-2 rounded">
                         <option value="">-- Cari Barang --</option>
                         <?php foreach($products_list as $prod): ?>
-                            <option value="<?= $prod['sku'] ?>"><?= $prod['name'] ?> (Stok: <?= $prod['stock'] ?>) - SKU: <?= $prod['sku'] ?></option>
+                            <option value="<?= $prod['sku'] ?>"><?= $prod['name'] ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
 
-                <!-- DETAIL CARD (Hidden by Default) -->
+                <!-- DETAIL CARD -->
                 <div id="product_detail_card" class="hidden mb-4 bg-white p-3 rounded border border-red-100 shadow-sm flex items-center justify-between">
                     <div>
                         <div class="text-[10px] text-gray-500 font-bold uppercase">Barang Terpilih</div>
@@ -209,21 +205,24 @@ $recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_
                     </div>
                 </div>
 
+                <!-- SN DROPDOWN MULTI SELECT -->
+                <div id="sn_dropdown_container" class="hidden mb-4">
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Pilih Serial Number (Klik untuk memilih)</label>
+                    <select id="sn_multi_select" class="w-full p-2 border rounded" multiple="multiple" style="width: 100%">
+                        <!-- Options populated via AJAX -->
+                    </select>
+                    <p class="text-[10px] text-gray-500 mt-1">Pilih SN yang akan dikeluarkan. Qty otomatis terhitung.</p>
+                </div>
+
                 <div class="flex flex-col md:flex-row gap-2 items-end">
                     <div class="w-24">
                         <label class="text-xs font-bold text-gray-600">Qty</label>
-                        <input type="number" id="qty_input" class="w-full border p-2 rounded text-center font-bold" min="1" placeholder="0" onkeyup="renderSnInputs()" onchange="renderSnInputs()">
+                        <input type="number" id="qty_input" class="w-full border p-2 rounded text-center font-bold bg-gray-100" readonly value="0">
                     </div>
                     <div class="flex-1">
                         <label class="text-xs font-bold text-gray-600">Catatan</label>
                         <input type="text" id="notes_input" class="w-full border p-2 rounded" placeholder="Keterangan...">
                     </div>
-                </div>
-
-                <!-- SN INPUTS -->
-                <div id="sn_out_wrapper" class="hidden mt-3 bg-white p-3 rounded border border-red-200">
-                    <label class="text-xs font-bold text-red-700 mb-2 block">Masukkan / Scan Serial Number (Wajib per Unit)</label>
-                    <div id="sn_out_inputs" class="grid grid-cols-2 md:grid-cols-4 gap-2"></div>
                 </div>
 
                 <button type="button" onclick="addToCart()" class="mt-4 bg-red-600 text-white px-6 py-2 rounded font-bold hover:bg-red-700 shadow w-full md:w-auto">
@@ -261,95 +260,87 @@ const APP_REF = "<?= $app_ref_prefix ?>";
 
 $(document).ready(function() {
     $('#manual_product_select').select2({ placeholder: '-- Cari Barang --', allowClear: true, width: '100%' });
+    $('#sn_multi_select').select2({ placeholder: 'Pilih Serial Number...', width: '100%' });
     generateReference();
 });
 
-// HANDLER SELECT
+// HANDLER SELECT BARANG
 $('#manual_product_select').on('select2:select', function (e) {
     const sku = e.params.data.id;
-    if(sku) checkSku(sku);
+    if(sku) loadProductData(sku);
 });
 
-async function checkSku(sku) {
-    try {
-        const res = await fetch(`api.php?action=get_product_by_sku&sku=${encodeURIComponent(sku)}`);
-        const data = await res.json();
-        if(data.id) {
-            // Show Detail
-            document.getElementById('product_detail_card').classList.remove('hidden');
-            document.getElementById('detail_name').innerText = data.name;
-            document.getElementById('detail_sku').innerText = data.sku;
-            document.getElementById('detail_stock').innerText = data.stock;
-            document.getElementById('detail_unit').innerText = data.unit || 'Pcs';
-            
-            // Set Hidden Data
-            document.getElementById('qty_input').dataset.sku = data.sku;
-            document.getElementById('qty_input').dataset.name = data.name;
-            document.getElementById('qty_input').dataset.max = data.stock;
-            
-            document.getElementById('qty_input').value = '';
-            renderSnInputs();
-            document.getElementById('qty_input').focus();
-        }
-    } catch(e){}
+// HANDLER CHANGE SN -> UPDATE QTY
+$('#sn_multi_select').on('change', function() {
+    const selected = $(this).val();
+    document.getElementById('qty_input').value = selected ? selected.length : 0;
+});
+
+async function loadProductData(sku) {
+    const whId = document.getElementById('warehouse_id').value;
+    
+    // 1. Get Product Detail
+    const res = await fetch(`api.php?action=get_product_by_sku&sku=${encodeURIComponent(sku)}`);
+    const data = await res.json();
+    
+    if(data.id) {
+        document.getElementById('product_detail_card').classList.remove('hidden');
+        document.getElementById('detail_name').innerText = data.name;
+        document.getElementById('detail_sku').innerText = data.sku;
+        document.getElementById('detail_stock').innerText = data.stock; // Global stock, but we care about SN availability
+        
+        // Save hidden data
+        document.getElementById('qty_input').dataset.sku = data.sku;
+        document.getElementById('qty_input').dataset.name = data.name;
+        document.getElementById('qty_input').dataset.id = data.id;
+
+        // 2. Fetch Available SNs for this Product & Warehouse
+        loadAvailableSNs(data.id, whId);
+    }
 }
 
-function renderSnInputs() {
-    const qty = parseInt(document.getElementById('qty_input').value) || 0;
-    const max = parseInt(document.getElementById('qty_input').dataset.max) || 0;
-    const container = document.getElementById('sn_out_inputs');
-    const wrapper = document.getElementById('sn_out_wrapper');
-
-    if (qty > max) {
-        alert("Stok tidak mencukupi!");
-        document.getElementById('qty_input').value = max;
-        renderSnInputs(); // Recursive fix
-        return;
-    }
-
-    if (qty > 0) {
-        wrapper.classList.remove('hidden');
-        // Simple regeneration
-        container.innerHTML = '';
-        for(let i=0; i<qty; i++) {
-            const inp = document.createElement('input');
-            inp.className = 'sn-field border p-2 rounded text-xs font-mono uppercase bg-gray-50';
-            inp.placeholder = `SN Barang #${i+1}`;
-            container.appendChild(inp);
-        }
+async function loadAvailableSNs(prodId, whId) {
+    const snContainer = document.getElementById('sn_dropdown_container');
+    const snSelect = $('#sn_multi_select');
+    
+    snSelect.empty();
+    document.getElementById('qty_input').value = 0;
+    
+    const res = await fetch(`api.php?action=get_available_sns&product_id=${prodId}&warehouse_id=${whId}`);
+    const sns = await res.json();
+    
+    if (sns.length > 0) {
+        snContainer.classList.remove('hidden');
+        sns.forEach(sn => {
+            const opt = new Option(sn, sn, false, false);
+            snSelect.append(opt);
+        });
+        snSelect.trigger('change');
     } else {
-        wrapper.classList.add('hidden');
-        container.innerHTML = '';
+        snContainer.classList.add('hidden');
+        alert("Stok SN habis di gudang ini!");
     }
 }
 
 function addToCart() {
     const qty = parseInt(document.getElementById('qty_input').value);
-    if(!qty || qty <= 0) { alert("Masukkan Qty!"); return; }
+    if(!qty || qty <= 0) { alert("Pilih minimal 1 SN!"); return; }
     
     const sku = document.getElementById('qty_input').dataset.sku;
     const name = document.getElementById('qty_input').dataset.name;
     const notes = document.getElementById('notes_input').value;
-
-    // Collect SN
-    let sns = [];
-    let valid = true;
-    document.querySelectorAll('.sn-field').forEach(i => {
-        if(!i.value.trim()) valid = false;
-        sns.push(i.value.trim());
-    });
-
-    if(!valid) { alert("Lengkapi semua Serial Number!"); return; }
+    const sns = $('#sn_multi_select').val(); // Array of strings
 
     cart.push({ sku, name, qty, sns, notes });
     renderCart();
     
-    // Reset
+    // Reset Form
     $('#manual_product_select').val(null).trigger('change');
+    $('#sn_multi_select').val(null).trigger('change');
     document.getElementById('product_detail_card').classList.add('hidden');
-    document.getElementById('qty_input').value = '';
+    document.getElementById('sn_dropdown_container').classList.add('hidden');
+    document.getElementById('qty_input').value = 0;
     document.getElementById('notes_input').value = '';
-    renderSnInputs();
 }
 
 function renderCart() {
@@ -380,6 +371,9 @@ function resetCart() {
         cart = [];
         renderCart();
     }
+    $('#manual_product_select').val(null).trigger('change');
+    document.getElementById('product_detail_card').classList.add('hidden');
+    document.getElementById('sn_dropdown_container').classList.add('hidden');
 }
 
 function toggleDestWarehouse() {

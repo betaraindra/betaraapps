@@ -10,36 +10,6 @@ if (!isLoggedIn()) {
     exit;
 }
 
-// --- SELF-HEALING: AUTO MIGRATION CHECK ---
-try {
-    $pdo->query("SELECT has_serial_number FROM products LIMIT 0");
-} catch (Exception $e) {
-    try {
-        $pdo->exec("ALTER TABLE products ADD COLUMN has_serial_number TINYINT(1) DEFAULT 0");
-    } catch (Exception $ex) { }
-}
-
-try {
-    $pdo->query("SELECT 1 FROM product_serials LIMIT 0");
-} catch (Exception $e) {
-    try {
-        $pdo->exec("CREATE TABLE IF NOT EXISTS product_serials (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            product_id INT NOT NULL,
-            serial_number VARCHAR(100) NOT NULL,
-            status ENUM('AVAILABLE','SOLD','RETURNED','DEFECTIVE') DEFAULT 'AVAILABLE',
-            warehouse_id INT DEFAULT NULL,
-            in_transaction_id INT DEFAULT NULL,
-            out_transaction_id INT DEFAULT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE KEY unique_sn_product (product_id, serial_number),
-            INDEX idx_sn (serial_number),
-            INDEX idx_status (status)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-    } catch (Exception $ex) { }
-}
-// --- END SELF-HEALING ---
-
 $action = $_GET['action'] ?? '';
 
 // === GET AVAILABLE SERIAL NUMBERS ===
@@ -62,7 +32,7 @@ if ($action === 'get_available_sns') {
     exit;
 }
 
-// === GET WAREHOUSE STOCK (EXISTING) ===
+// === GET WAREHOUSE STOCK ===
 if ($action === 'get_warehouse_stock') {
     $wh_id = $_GET['warehouse_id'] ?? 0;
     if (empty($wh_id)) { echo json_encode([]); exit; }
@@ -83,37 +53,66 @@ if ($action === 'get_warehouse_stock') {
     exit;
 }
 
-// === GET PRODUCT BY SKU (EXISTING) ===
+// === GET PRODUCT BY SKU (AUTO DETECT WAREHOUSE) ===
 if ($action === 'get_product_by_sku') {
-    $code = $_GET['sku'] ?? '';
-    $stmt = $pdo->prepare("SELECT * FROM products WHERE sku = ?");
-    $stmt->execute([$code]);
-    $product = $stmt->fetch();
+    $code = trim($_GET['sku'] ?? '');
+    
+    // 1. Cek apakah ini Serial Number Unik?
+    $stmtSn = $pdo->prepare("
+        SELECT ps.product_id, ps.serial_number, ps.warehouse_id, 
+               p.sku, p.name, p.unit, p.stock as global_stock, p.sell_price, p.buy_price
+        FROM product_serials ps
+        JOIN products p ON ps.product_id = p.id
+        WHERE ps.serial_number = ? AND ps.status = 'AVAILABLE'
+        LIMIT 1
+    ");
+    $stmtSn->execute([$code]);
+    $snData = $stmtSn->fetch();
 
-    $found_sn = null;
-    if (!$product) {
-        $stmtSn = $pdo->prepare("
-            SELECT p.*, ps.serial_number as scanned_sn, ps.warehouse_id as sn_wh_id
-            FROM product_serials ps
-            JOIN products p ON ps.product_id = p.id
-            WHERE ps.serial_number = ? AND ps.status = 'AVAILABLE'
+    if ($snData) {
+        // MATCH BY SN
+        $response = [
+            'id' => $snData['product_id'],
+            'sku' => $snData['sku'],
+            'name' => $snData['name'],
+            'unit' => $snData['unit'],
+            'stock' => $snData['global_stock'],
+            'sell_price' => $snData['sell_price'],
+            'buy_price' => $snData['buy_price'],
+            'detected_warehouse_id' => $snData['warehouse_id'], // Auto Select This Warehouse
+            'scanned_sn' => $snData['serial_number'] // Auto Select This SN
+        ];
+        echo json_encode($response);
+        exit;
+    }
+
+    // 2. Jika bukan SN, Cek apakah SKU Produk?
+    $stmtProd = $pdo->prepare("SELECT * FROM products WHERE sku = ?");
+    $stmtProd->execute([$code]);
+    $prodData = $stmtProd->fetch();
+
+    if ($prodData) {
+        // MATCH BY SKU
+        // Cari Gudang dengan stok terbanyak untuk barang ini sebagai default
+        $stmtWh = $pdo->prepare("
+            SELECT t.warehouse_id, 
+                   (SUM(CASE WHEN t.type='IN' THEN t.quantity ELSE 0 END) - SUM(CASE WHEN t.type='OUT' THEN t.quantity ELSE 0 END)) as qty
+            FROM inventory_transactions t
+            WHERE t.product_id = ?
+            GROUP BY t.warehouse_id
+            ORDER BY qty DESC
             LIMIT 1
         ");
-        $stmtSn->execute([$code]);
-        $product = $stmtSn->fetch();
-        if ($product) $found_sn = $product['scanned_sn'];
+        $stmtWh->execute([$prodData['id']]);
+        $whData = $stmtWh->fetch();
+        
+        $prodData['detected_warehouse_id'] = $whData ? $whData['warehouse_id'] : null;
+        
+        echo json_encode($prodData);
+        exit;
     }
 
-    if ($product) {
-        $stmtWh = $pdo->prepare("SELECT warehouse_id FROM inventory_transactions WHERE product_id = ? AND type = 'IN' ORDER BY date DESC, created_at DESC LIMIT 1");
-        $stmtWh->execute([$product['id']]);
-        $product['last_warehouse_id'] = $stmtWh->fetchColumn();
-        if ($found_sn) {
-            $product['scanned_sn'] = $found_sn;
-            $product['sn_warehouse_id'] = $product['sn_wh_id']; 
-        }
-    }
-    echo json_encode($product ?: ['error' => 'Not found']);
+    echo json_encode(['error' => 'Barang tidak ditemukan']);
     exit;
 }
 

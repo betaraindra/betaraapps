@@ -64,8 +64,20 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
                 <button onclick="initCamera()" class="bg-red-600 px-3 py-1 rounded text-xs font-bold"><i class="fas fa-video"></i> Live</button>
             </div>
         </div>
-        <div id="scanner_area" class="hidden mb-4 relative bg-black rounded-lg h-48 overflow-hidden">
+
+        <!-- CAMERA VIEWPORT -->
+        <div id="scanner_area" class="hidden mb-6 relative bg-black rounded-lg border-4 border-gray-900 overflow-hidden shadow-2xl group h-64">
             <div id="reader" class="w-full h-full"></div>
+            
+            <div class="absolute bottom-4 left-0 right-0 flex justify-center gap-4 z-20">
+                <button type="button" onclick="switchCamera()" class="bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30">
+                    <i class="fas fa-sync-alt"></i>
+                </button>
+                <button type="button" onclick="toggleFlash()" id="btn_flash" class="hidden bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30">
+                    <i class="fas fa-bolt"></i>
+                </button>
+            </div>
+
             <button onclick="stopScan()" class="absolute top-2 right-2 bg-red-600 text-white p-1 rounded-full"><i class="fas fa-times"></i></button>
         </div>
 
@@ -146,6 +158,8 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
 <script>
 let cart = [];
 let html5QrCode;
+let currentFacingMode = "environment"; 
+let isFlashOn = false;
 const APP_REF = "<?= $app_ref ?>";
 
 $(document).ready(function(){
@@ -169,12 +183,10 @@ $('#product_select').on('select2:select', function(e){
                 document.getElementById('det_sku').innerText = d.sku;
                 document.getElementById('det_stock').innerText = d.stock;
                 
-                // DATASET
                 document.getElementById('inp_qty').dataset.sku = d.sku;
                 document.getElementById('inp_qty').dataset.name = d.name;
                 document.getElementById('inp_qty').dataset.id = d.id;
 
-                // GET SN
                 return fetch(`api.php?action=get_available_sns&product_id=${d.id}&warehouse_id=${whId}`);
             }
         })
@@ -229,8 +241,24 @@ function renderCart() {
 }
 
 function handleFileScan(input) { if (input.files.length === 0) return; const h = new Html5Qrcode("reader"); h.scanFile(input.files[0], true).then(t => processScan(t)); }
-async function initCamera() { document.getElementById('scanner_area').classList.remove('hidden'); html5QrCode = new Html5Qrcode("reader"); html5QrCode.start({ facingMode: "environment" }, { fps: 10 }, (t) => { stopScan(); processScan(t); }, () => {}); }
+
+async function initCamera() {
+    document.getElementById('scanner_area').classList.remove('hidden');
+    if(html5QrCode) { try{ await html5QrCode.stop(); html5QrCode.clear(); }catch(e){} }
+
+    html5QrCode = new Html5Qrcode("reader");
+    try {
+        await html5QrCode.start({ facingMode: currentFacingMode }, { fps: 10 }, (t) => { stopScan(); processScan(t); }, () => {});
+        const c = html5QrCode.getRunningTrackCameraCapabilities();
+        const fb = document.getElementById('btn_flash');
+        if (c && c.torchFeature().isSupported()) fb.classList.remove('hidden'); else fb.classList.add('hidden');
+    } catch(e) { alert("Cam Err: "+e); stopScan(); }
+}
+
+async function switchCamera() { if (html5QrCode) { await html5QrCode.stop(); html5QrCode.clear(); } currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment"; initCamera(); }
+async function toggleFlash() { if(html5QrCode) { isFlashOn=!isFlashOn; await html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] }); } }
 function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }); }
+
 function processScan(txt) {
     const opt = $(`#product_select option[value='${txt}']`);
     if(opt.length>0) $('#product_select').val(txt).trigger('change');

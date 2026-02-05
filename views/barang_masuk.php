@@ -48,7 +48,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_inbound'])) {
                 if (!empty($sns)) {
                     $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
                     foreach ($sns as $sn) {
-                        // Cek duplikat global (opsional, strict mode)
                         $chk = $pdo->prepare("SELECT id FROM product_serials WHERE product_id=? AND serial_number=?");
                         $chk->execute([$prod_id, $sn]);
                         if($chk->rowCount() == 0) {
@@ -313,8 +312,6 @@ document.getElementById('inp_sku').addEventListener('keypress', function (e) {
 
 async function initCamera() {
     document.getElementById('scanner_area').classList.remove('hidden');
-    
-    // Reset instance jika ada
     if(html5QrCode) { try{ await html5QrCode.stop(); html5QrCode.clear(); }catch(e){} }
 
     html5QrCode = new Html5Qrcode("reader");
@@ -333,7 +330,6 @@ async function initCamera() {
             (errorMessage) => {}
         );
 
-        // Cek Capability Flash
         const capabilities = html5QrCode.getRunningTrackCameraCapabilities();
         const flashBtn = document.getElementById('btn_flash');
         if (capabilities && capabilities.torchFeature().isSupported()) {
@@ -341,7 +337,6 @@ async function initCamera() {
         } else {
             flashBtn.classList.add('hidden');
         }
-        
     } catch (err) {
         alert("Gagal memulai kamera: " + err);
         stopScan();
@@ -349,14 +344,11 @@ async function initCamera() {
 }
 
 async function switchCamera() {
-    // Stop dulu
     if (html5QrCode) {
         await html5QrCode.stop();
         html5QrCode.clear();
     }
-    // Toggle Mode
     currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment";
-    // Restart
     initCamera();
 }
 
@@ -364,20 +356,11 @@ async function toggleFlash() {
     if (html5QrCode) {
         try {
             isFlashOn = !isFlashOn;
-            await html5QrCode.applyVideoConstraints({
-                advanced: [{ torch: isFlashOn }]
-            });
+            await html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] });
             const btn = document.getElementById('btn_flash');
-            if(isFlashOn) {
-                btn.classList.add('bg-yellow-400', 'text-black');
-                btn.classList.remove('bg-white/20', 'text-white');
-            } else {
-                btn.classList.remove('bg-yellow-400', 'text-black');
-                btn.classList.add('bg-white/20', 'text-white');
-            }
-        } catch (e) {
-            console.error(e);
-        }
+            if(isFlashOn) { btn.classList.add('bg-yellow-400', 'text-black'); btn.classList.remove('bg-white/20', 'text-white'); } 
+            else { btn.classList.remove('bg-yellow-400', 'text-black'); btn.classList.add('bg-white/20', 'text-white'); }
+        } catch (e) { console.error(e); }
     }
 }
 
@@ -385,10 +368,7 @@ function stopScan() {
     if(html5QrCode) html5QrCode.stop().then(() => {
         document.getElementById('scanner_area').classList.add('hidden');
         html5QrCode.clear();
-    }).catch(err => {
-        // Force hide
-        document.getElementById('scanner_area').classList.add('hidden');
-    });
+    }).catch(err => { document.getElementById('scanner_area').classList.add('hidden'); });
 }
 
 function handleFileScan(input) {
@@ -403,7 +383,6 @@ function handleFileScan(input) {
         .catch(err => alert("Gagal scan foto."));
 }
 
-// --- SN & CART LOGIC ---
 function renderSnInputs() {
     const qty = parseInt(document.getElementById('inp_qty').value) || 0;
     const cont = document.getElementById('sn_container');
@@ -431,7 +410,6 @@ function addToCart() {
     
     if(!sku || !name || !qty || qty <= 0) { alert("Lengkapi Data!"); return; }
 
-    // Collect SN
     let sns = [];
     let validSn = true;
     document.querySelectorAll('.sn-field').forEach(i => {
@@ -450,8 +428,6 @@ function addToCart() {
     });
     
     renderCart();
-    
-    // Reset Form
     $('#product_select').val(null).trigger('change');
     document.getElementById('inp_sku').value = '';
     document.getElementById('inp_name').value = '';

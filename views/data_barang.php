@@ -44,7 +44,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $name = trim($_POST['name']);
             $category = trim($_POST['category']);
             $unit = trim($_POST['unit']);
-            $notes = trim($_POST['notes'] ?? ''); // Tangkap Input Catatan
+            $notes = trim($_POST['notes'] ?? ''); 
             $buy_price = cleanNumber($_POST['buy_price']);
             $sell_price = cleanNumber($_POST['sell_price']);
             
@@ -70,7 +70,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 $pdo->beginTransaction();
 
-                // Update Data Utama + Notes
                 $sql_set = "sku=?, name=?, category=?, unit=?, buy_price=?, sell_price=?, notes=?";
                 $params = [$sku, $name, $category, $unit, $buy_price, $sell_price, $notes];
                 
@@ -141,7 +140,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $pdo->beginTransaction();
 
-                // Insert termasuk Notes
                 $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, image_url, has_serial_number, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)");
                 $stmt->execute([$sku, $name, $category, $unit, $buy_price, $sell_price, $initial_stock, $image_path, $notes]);
                 $new_id = $pdo->lastInsertId();
@@ -208,7 +206,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stock = isset($row['Stok']) ? (int)$row['Stok'] : 0;
                     $unit = trim($row['Sat'] ?? ($row['unit'] ?? 'Pcs'));
                     $cat = trim($row['Kategori'] ?? ($row['category'] ?? 'Umum'));
-                    $note = trim($row['Catatan'] ?? ($row['notes'] ?? '')); // Import Catatan
+                    $note = trim($row['Catatan'] ?? ($row['notes'] ?? ''));
                     
                     $stmtCheck = $pdo->prepare("SELECT id FROM products WHERE sku = ?");
                     $stmtCheck->execute([$sku]);
@@ -456,11 +454,18 @@ if (isset($_GET['edit_id'])) {
             </div>
 
             <!-- SCANNER AREA -->
-            <div id="scanner_area" class="hidden mb-4 bg-black rounded-lg relative overflow-hidden shadow-inner border-4 border-gray-800">
-                <div class="absolute top-2 left-2 z-20">
-                    <select id="camera_select" class="bg-white text-gray-800 text-xs py-1 px-2 rounded shadow border border-gray-300 focus:outline-none"><option value="">Memuat Kamera...</option></select>
+            <div id="scanner_area" class="hidden mb-4 bg-black rounded-lg relative overflow-hidden shadow-inner border-4 border-gray-800 group h-48">
+                <div id="reader" class="w-full h-full"></div>
+                
+                <div class="absolute bottom-4 left-0 right-0 flex justify-center gap-4 z-20">
+                    <button type="button" onclick="switchCamera()" class="bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Ganti Kamera">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+                    <button type="button" onclick="toggleFlash()" id="btn_flash" class="hidden bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Flash / Senter">
+                        <i class="fas fa-bolt"></i>
+                    </button>
                 </div>
-                <div id="reader" class="w-full h-48 bg-black"></div>
+
                 <div class="absolute top-2 right-2 z-10">
                     <button type="button" onclick="stopScan()" class="bg-red-600 text-white w-8 h-8 rounded-full shadow hover:bg-red-700 flex items-center justify-center"><i class="fas fa-times"></i></button>
                 </div>
@@ -678,17 +683,37 @@ if (isset($_GET['edit_id'])) {
 </div>
 
 <script>
-// [SCRIPT SAMA SEPERTI SEBELUMNYA: Scanner, Auto SKU, Format Rupiah, Toggle SN, Print Label, Export/Import Excel]
 let html5QrCode;
 let audioCtx = null;
+let currentFacingMode = "environment";
+let isFlashOn = false;
 
 function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); }
 function playBeep() { if (!audioCtx) return; try { const o = audioCtx.createOscillator(); const g = audioCtx.createGain(); o.connect(g); g.connect(audioCtx.destination); o.type = 'square'; o.frequency.setValueAtTime(1200, audioCtx.currentTime); g.gain.setValueAtTime(0.1, audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1); o.start(); o.stop(audioCtx.currentTime + 0.15); } catch (e) {} }
 function activateUSB() { const input = document.getElementById('form_sku'); input.focus(); input.select(); input.classList.add('ring-4', 'ring-yellow-400', 'border-yellow-500'); setTimeout(() => { input.classList.remove('ring-4', 'ring-yellow-400', 'border-yellow-500'); }, 1500); }
 function handleFileScan(input) { if (input.files.length === 0) return; const file = input.files[0]; initAudio(); const i = document.getElementById('form_sku'); const p = i.placeholder; i.value = ""; i.placeholder = "Processing..."; const h = new Html5Qrcode("reader"); h.scanFile(file, true).then(d => { playBeep(); i.value = d; i.placeholder = p; input.value = ''; }).catch(e => { alert("Gagal baca."); i.placeholder = p; input.value = ''; }); }
-async function initCamera() { initAudio(); document.getElementById('scanner_area').classList.remove('hidden'); try { await navigator.mediaDevices.getUserMedia({ video: true }); const d = await Html5Qrcode.getCameras(); const s = document.getElementById('camera_select'); s.innerHTML = ""; if (d && d.length) { let id = d[0].id; d.forEach(dev => { if(dev.label.toLowerCase().includes('back')) id = dev.id; const o = document.createElement("option"); o.value = dev.id; o.text = dev.label; s.appendChild(o); }); s.value = id; startScan(id); s.onchange = () => { if(html5QrCode) html5QrCode.stop().then(() => startScan(s.value)); }; } else { alert("Kamera tidak ditemukan."); } } catch (e) { alert("Gagal akses kamera."); document.getElementById('scanner_area').classList.add('hidden'); } }
-function startScan(id) { if(html5QrCode) try { html5QrCode.stop(); } catch(e) {} html5QrCode = new Html5Qrcode("reader"); const config = { fps: 10, qrbox: { width: 250, height: 250 } }; html5QrCode.start(id, config, (d) => { playBeep(); document.getElementById('form_sku').value = d; stopScan(); }, () => {}); }
+
+async function initCamera() {
+    initAudio();
+    document.getElementById('scanner_area').classList.remove('hidden');
+    if(html5QrCode) { try{ await html5QrCode.stop(); html5QrCode.clear(); }catch(e){} }
+
+    html5QrCode = new Html5Qrcode("reader");
+    try {
+        await html5QrCode.start({ facingMode: currentFacingMode }, { fps: 10, qrbox: { width: 250, height: 250 } }, 
+            (d) => { playBeep(); document.getElementById('form_sku').value = d; stopScan(); }, 
+            () => {}
+        );
+        const c = html5QrCode.getRunningTrackCameraCapabilities();
+        const fb = document.getElementById('btn_flash');
+        if (c && c.torchFeature().isSupported()) fb.classList.remove('hidden'); else fb.classList.add('hidden');
+    } catch(e) { alert("Cam Error: "+e); stopScan(); }
+}
+
+async function switchCamera() { if (html5QrCode) { await html5QrCode.stop(); html5QrCode.clear(); } currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment"; initCamera(); }
+async function toggleFlash() { if(html5QrCode) { isFlashOn=!isFlashOn; await html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] }); const btn=document.getElementById('btn_flash'); if(isFlashOn) { btn.classList.add('bg-yellow-400','text-black'); btn.classList.remove('bg-white/20','text-white'); } else { btn.classList.remove('bg-yellow-400','text-black'); btn.classList.add('bg-white/20','text-white'); } } }
 function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }); }
+
 async function generateSku() { try { const res = await fetch('api.php?action=generate_sku'); const data = await res.json(); if(data.sku) document.getElementById('form_sku').value = data.sku; } catch(e) { alert('Gagal Auto SKU'); } }
 function formatRupiah(input) { let value = input.value.replace(/\D/g, ''); if(value === '') { input.value = ''; return; } input.value = new Intl.NumberFormat('id-ID').format(value); }
 function toggleSnInput() { const qtyInput = document.getElementById('init_qty'); const newQty = parseInt(qtyInput.value) || 0; const snArea = document.getElementById('sn_area'); const snText = document.getElementById('sn_list_input'); const whSelect = document.getElementById('init_wh'); const stockHint = document.getElementById('stock_hint'); const editMode = document.getElementById('edit_mode_flag') ? true : false; let showSn = false; if (editMode) { const originalStock = parseInt(qtyInput.getAttribute('data-original')) || 0; const delta = newQty - originalStock; if (delta > 0) { showSn = true; snText.placeholder = `Masukkan ${delta} SN baru...`; stockHint.innerText = `Menambah ${delta} stok. Wajib input SN & Pilih Gudang.`; stockHint.classList.remove('text-blue-600', 'text-red-500'); stockHint.classList.add('text-green-600', 'font-bold'); whSelect.removeAttribute('disabled'); } else if (delta < 0) { stockHint.innerText = "PERINGATAN: Pengurangan stok tidak bisa dilakukan di sini. Gunakan Barang Keluar."; stockHint.classList.add('text-red-500', 'font-bold'); whSelect.setAttribute('disabled', 'disabled'); } else { stockHint.innerText = "Ubah angka untuk menambah stok."; stockHint.classList.remove('text-red-500', 'font-bold', 'text-green-600'); stockHint.classList.add('text-blue-600'); whSelect.setAttribute('disabled', 'disabled'); } } else { if (newQty > 0) { showSn = true; whSelect.removeAttribute('disabled'); } else { whSelect.setAttribute('disabled', 'disabled'); whSelect.value = ""; } } if (showSn) { snArea.classList.remove('hidden'); } else { snArea.classList.add('hidden'); } }

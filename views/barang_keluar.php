@@ -4,8 +4,6 @@ checkRole(['SUPER_ADMIN', 'ADMIN_GUDANG', 'MANAGER', 'SVP']);
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) {
     validate_csrf();
     $cart = json_decode($_POST['cart_json'], true);
-    // Note: warehouse_id sekarang diambil per item (jika multichange) atau dari header jika single. 
-    // Namun UI masih single header warehouse. Kita gunakan warehouse_id dari POST form.
     $wh_id = $_POST['warehouse_id']; 
     $dest_wh_id = !empty($_POST['dest_warehouse_id']) ? $_POST['dest_warehouse_id'] : null;
     
@@ -18,7 +16,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
             $dest_wh_name = $dest_wh_id ? $pdo->query("SELECT name FROM warehouses WHERE id = $dest_wh_id")->fetchColumn() : '';
 
             foreach ($cart as $item) {
-                // Get Master Product
                 $stmt = $pdo->prepare("SELECT id, stock, sell_price, buy_price, name FROM products WHERE sku = ?");
                 $stmt->execute([$item['sku']]);
                 $prod = $stmt->fetch();
@@ -27,42 +24,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                 $qty = count($item['sns']);
                 if ($qty == 0) throw new Exception("SN untuk {$item['name']} kosong.");
 
-                // Note Logic
                 $notes = $item['notes'];
                 if($dest_wh_id) $notes .= " (Mutasi ke $dest_wh_name)";
                 $notes .= " [SN: " . implode(', ', $item['sns']) . "]";
 
-                // 1. Catat Trx Keluar
                 $stmtTrx = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
                 $stmtTrx->execute([$_POST['date'], $prod['id'], $wh_id, $qty, $_POST['reference'], $notes, $_SESSION['user_id']]);
                 $trx_out_id = $pdo->lastInsertId();
 
-                // 2. Update Product Master Stock
                 $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$qty, $prod['id']]);
 
-                // 3. Update Status SN
                 $snStmt = $pdo->prepare("UPDATE product_serials SET status = 'SOLD', out_transaction_id = ? WHERE product_id = ? AND serial_number = ? AND warehouse_id = ? AND status = 'AVAILABLE'");
                 foreach ($item['sns'] as $sn) {
                     $snStmt->execute([$trx_out_id, $prod['id'], $sn, $wh_id]);
                     if ($snStmt->rowCount() == 0) throw new Exception("SN $sn tidak tersedia di Gudang $wh_name (Mungkin sudah terjual/beda gudang).");
                 }
 
-                // 4. Handle Mutasi / Penjualan
                 if (!empty($dest_wh_id) && $_POST['out_type'] === 'INTERNAL') {
-                    // MUTASI MASUK
                     $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?")->execute([$qty, $prod['id']]);
-                    
                     $ref_in = $_POST['reference'] . '-TRF';
                     $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'IN', ?, ?, ?, ?, 'Mutasi Masuk dari $wh_name', ?)")
                         ->execute([$_POST['date'], $prod['id'], $dest_wh_id, $qty, $ref_in, $_SESSION['user_id']]);
                     $trx_in_id = $pdo->lastInsertId();
                     
-                    // Pindahkan SN ke Gudang Tujuan
                     $snMove = $pdo->prepare("UPDATE product_serials SET status = 'AVAILABLE', warehouse_id = ?, in_transaction_id = ? WHERE product_id = ? AND serial_number = ?");
                     foreach ($item['sns'] as $sn) $snMove->execute([$dest_wh_id, $trx_in_id, $prod['id'], $sn]);
                 } 
                 elseif ($_POST['out_type'] === 'EXTERNAL') {
-                    // PENJUALAN
                     $val = $qty * $prod['sell_price'];
                     $accId = $pdo->query("SELECT id FROM accounts WHERE code='4001'")->fetchColumn(); 
                     if($accId && $val > 0) {
@@ -84,7 +72,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
 }
 
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
-$all_products = $pdo->query("SELECT sku, name FROM products ORDER BY name ASC")->fetchAll(); // Untuk search select2
+$all_products = $pdo->query("SELECT sku, name FROM products ORDER BY name ASC")->fetchAll(); 
 $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
 ?>
 
@@ -107,9 +95,24 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
                 </button>
             </div>
         </div>
-        <div id="scanner_area" class="hidden mb-6 relative bg-black rounded-lg border-4 border-gray-900 overflow-hidden shadow-2xl h-64">
+
+        <!-- CAMERA VIEWPORT -->
+        <div id="scanner_area" class="hidden mb-6 relative bg-black rounded-lg border-4 border-gray-900 overflow-hidden shadow-2xl group h-64 md:h-80">
             <div id="reader" class="w-full h-full"></div>
-            <button onclick="stopScan()" class="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-full"><i class="fas fa-times"></i></button>
+            
+            <!-- Controls Overlay -->
+            <div class="absolute bottom-4 left-0 right-0 flex justify-center gap-4 z-20">
+                <button type="button" onclick="switchCamera()" class="bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Ganti Kamera">
+                    <i class="fas fa-sync-alt"></i>
+                </button>
+                <button type="button" onclick="toggleFlash()" id="btn_flash" class="hidden bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Flash / Senter">
+                    <i class="fas fa-bolt"></i>
+                </button>
+            </div>
+
+            <button onclick="stopScan()" class="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-full shadow-lg hover:bg-red-700 z-50">
+                <i class="fas fa-times"></i>
+            </button>
         </div>
 
         <form method="POST" onsubmit="return validateCart()">
@@ -148,7 +151,6 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
 
             <!-- PILIH GUDANG -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                <!-- GUDANG ASAL (AUTO SELECTED) -->
                 <div class="bg-red-50 p-3 rounded border border-red-200">
                     <label class="block text-xs font-bold text-red-800 mb-1">Gudang Asal (Auto Select saat Scan)</label>
                     <select name="warehouse_id" id="warehouse_id" class="w-full border p-2 rounded bg-white font-bold" required onchange="resetCart()">
@@ -157,7 +159,6 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
                     </select>
                 </div>
 
-                <!-- GUDANG TUJUAN (MANUAL SELECT) -->
                 <div id="dest_wh_container" class="bg-green-50 p-3 rounded border border-green-200">
                     <label class="block text-xs font-bold text-green-800 mb-1">Gudang Tujuan (Untuk Mutasi)</label>
                     <select name="dest_warehouse_id" class="w-full border p-2 rounded bg-white font-bold">
@@ -181,7 +182,6 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
                     </select>
                 </div>
 
-                <!-- DETAIL INFO -->
                 <div id="prod_detail" class="hidden mb-3 bg-white p-3 rounded border border-blue-200 flex justify-between items-center shadow-sm">
                     <div>
                         <div class="font-bold text-gray-800" id="det_name">-</div>
@@ -193,7 +193,6 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
                     </div>
                 </div>
 
-                <!-- SN SELECTOR (MULTI) -->
                 <div id="sn_area" class="hidden mb-3">
                     <label class="block text-xs font-bold text-red-700 mb-1">Pilih Serial Number (Available di Gudang Asal)</label>
                     <select id="sn_select" class="w-full border rounded" multiple="multiple" style="width: 100%"></select>
@@ -242,6 +241,8 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
 <script>
 let cart = [];
 let html5QrCode;
+let currentFacingMode = "environment"; 
+let isFlashOn = false;
 const APP_REF = "<?= $app_ref ?>";
 
 $(document).ready(function() {
@@ -256,29 +257,23 @@ function toggleDestWarehouse() {
     document.getElementById('dest_wh_container').style.display = (type === 'INTERNAL') ? 'block' : 'none';
 }
 
-// TRIGGER SEARCH
 $('#product_select').on('select2:select', function (e) {
     const sku = e.params.data.id;
     if(sku) loadProduct(sku);
 });
 
-// TRIGGER QTY UPDATE
 $('#sn_select').on('change', function() {
     const vals = $(this).val();
     document.getElementById('inp_qty').value = vals ? vals.length : 0;
 });
 
 async function loadProduct(sku) {
-    // 1. Fetch Product info (tanpa filter gudang dulu)
     const res = await fetch(`api.php?action=get_product_by_sku&sku=${encodeURIComponent(sku)}`);
     const data = await res.json();
     
     if(data.id) {
-        // 2. AUTO DETECT GUDANG
-        // API sekarang mengembalikan 'detected_warehouse_id' jika SN discan atau SKU ada di gudang tertentu.
         if (data.detected_warehouse_id) {
             const currentWh = $('#warehouse_id').val();
-            // Jika belum pilih gudang, atau gudang beda, auto switch
             if (currentWh != data.detected_warehouse_id) {
                 if(cart.length > 0 && confirm("Barang ini ada di Gudang lain. Ganti gudang asal? (Keranjang akan direset)")) {
                     cart = []; renderCart();
@@ -295,13 +290,11 @@ async function loadProduct(sku) {
             return;
         }
 
-        // 3. Show Detail
         document.getElementById('prod_detail').classList.remove('hidden');
         document.getElementById('det_name').innerText = data.name;
         document.getElementById('det_sku').innerText = data.sku;
         document.getElementById('det_stock').innerText = data.stock;
         
-        // 4. Fetch SNs di Gudang Terpilih
         const snRes = await fetch(`api.php?action=get_available_sns&product_id=${data.id}&warehouse_id=${whId}`);
         const sns = await snRes.json();
         
@@ -312,7 +305,6 @@ async function loadProduct(sku) {
             document.getElementById('sn_area').classList.remove('hidden');
             sns.forEach(sn => snSel.append(new Option(sn, sn, false, false)));
             
-            // 5. AUTO SELECT SN jika yang discan adalah SN
             if (data.scanned_sn && sns.includes(data.scanned_sn)) {
                 snSel.val([data.scanned_sn]).trigger('change');
             } else {
@@ -323,7 +315,6 @@ async function loadProduct(sku) {
             document.getElementById('sn_area').classList.add('hidden');
         }
         
-        // Meta Data
         document.getElementById('inp_qty').dataset.sku = data.sku;
         document.getElementById('inp_qty').dataset.name = data.name;
     } else {
@@ -342,10 +333,7 @@ function addToCart() {
         sns: $('#sn_select').val(),
         notes: document.getElementById('inp_notes').value
     });
-    
     renderCart();
-    
-    // Reset Partial
     $('#product_select').val(null).trigger('change');
     document.getElementById('prod_detail').classList.add('hidden');
     document.getElementById('sn_area').classList.add('hidden');
@@ -379,24 +367,55 @@ function handleFileScan(input) {
     const html5QrCode = new Html5Qrcode("reader");
     html5QrCode.scanFile(input.files[0], true).then(txt => processScan(txt)).catch(e => alert("Gagal Scan Foto"));
 }
+
 async function initCamera() {
     document.getElementById('scanner_area').classList.remove('hidden');
+    if(html5QrCode) { try{ await html5QrCode.stop(); html5QrCode.clear(); }catch(e){} }
+
     html5QrCode = new Html5Qrcode("reader");
-    html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, 
-        (txt) => { stopScan(); processScan(txt); }, () => {}
-    );
+    const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+    
+    try {
+        await html5QrCode.start(
+            { facingMode: currentFacingMode }, 
+            config, 
+            (txt) => { stopScan(); processScan(txt); }, 
+            () => {}
+        );
+        const capabilities = html5QrCode.getRunningTrackCameraCapabilities();
+        const flashBtn = document.getElementById('btn_flash');
+        if (capabilities && capabilities.torchFeature().isSupported()) {
+            flashBtn.classList.remove('hidden');
+        } else {
+            flashBtn.classList.add('hidden');
+        }
+    } catch (err) { alert("Camera Error: " + err); stopScan(); }
 }
+
+async function switchCamera() {
+    if (html5QrCode) { await html5QrCode.stop(); html5QrCode.clear(); }
+    currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment";
+    initCamera();
+}
+
+async function toggleFlash() {
+    if (html5QrCode) {
+        try {
+            isFlashOn = !isFlashOn;
+            await html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] });
+            const btn = document.getElementById('btn_flash');
+            if(isFlashOn) { btn.classList.add('bg-yellow-400', 'text-black'); btn.classList.remove('bg-white/20', 'text-white'); } 
+            else { btn.classList.remove('bg-yellow-400', 'text-black'); btn.classList.add('bg-white/20', 'text-white'); }
+        } catch (e) { console.error(e); }
+    }
+}
+
 function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }); }
 
 function processScan(txt) {
-    // Select2 logic akan trigger loadProduct -> Auto detect warehouse -> Auto select SN
     const opt = $(`#product_select option[value='${txt}']`);
-    if(opt.length > 0) {
-        $('#product_select').val(txt).trigger('change');
-    } else {
-        // Coba force load product by SKU/SN string directly via API even if not in dropdown list
-        loadProduct(txt);
-    }
+    if(opt.length > 0) $('#product_select').val(txt).trigger('change');
+    else loadProduct(txt);
 }
 
 function resetCart() { if(cart.length > 0 && confirm("Ganti gudang hapus keranjang?")) { cart=[]; renderCart(); } }

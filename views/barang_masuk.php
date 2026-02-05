@@ -94,25 +94,26 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
             <i class="fas fa-box-open"></i> Input Barang Masuk
         </h3>
 
-        <!-- SCANNER UI SECTION -->
+        <!-- SCANNER UI SECTION (MAIN) -->
         <div class="bg-gray-800 p-3 rounded-lg mb-6 flex flex-col md:flex-row gap-3 items-center justify-between text-white">
-            <div class="text-sm font-bold flex items-center gap-2"><i class="fas fa-qrcode"></i> Mode Scan:</div>
+            <div class="text-sm font-bold flex items-center gap-2"><i class="fas fa-qrcode"></i> Scan Barang Utama:</div>
             <div class="flex gap-2 w-full md:w-auto">
                 <button type="button" onclick="activateUSB()" class="flex-1 bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded text-xs font-bold transition">
-                    <i class="fas fa-keyboard"></i> USB / Manual
+                    <i class="fas fa-keyboard"></i> USB
                 </button>
                 <input type="file" id="scan_image_file" accept="image/*" class="hidden" onchange="handleFileScan(this)">
                 <button type="button" onclick="document.getElementById('scan_image_file').click()" class="flex-1 bg-purple-600 hover:bg-purple-700 px-3 py-2 rounded text-xs font-bold transition">
-                    <i class="fas fa-camera"></i> Upload Foto
+                    <i class="fas fa-camera"></i> Foto
                 </button>
-                <button type="button" onclick="initCamera()" class="flex-1 bg-red-600 hover:bg-red-700 px-3 py-2 rounded text-xs font-bold transition">
-                    <i class="fas fa-video"></i> Live Kamera
+                <button type="button" onclick="initCamera('main')" class="flex-1 bg-red-600 hover:bg-red-700 px-3 py-2 rounded text-xs font-bold transition">
+                    <i class="fas fa-video"></i> Live
                 </button>
             </div>
         </div>
 
-        <!-- CAMERA VIEWPORT -->
+        <!-- CAMERA VIEWPORT (SHARED) -->
         <div id="scanner_area" class="hidden mb-6 relative bg-black rounded-lg border-4 border-gray-900 overflow-hidden shadow-2xl group">
+            <div class="absolute top-2 left-2 bg-black/50 text-white px-2 py-1 rounded text-xs z-30" id="scan_target_label">Scan SKU Produk</div>
             <div id="reader" class="w-full h-64 md:h-80 bg-black"></div>
             
             <!-- Controls Overlay -->
@@ -214,8 +215,8 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
 
                 <!-- SN AREA (Manual untuk Barang Masuk) -->
                 <div id="sn_wrapper" class="hidden mt-4 bg-white p-3 rounded border border-gray-300">
-                    <label class="block text-xs font-bold text-green-700 mb-2">Input Serial Number Baru (Wajib)</label>
-                    <div id="sn_container" class="grid grid-cols-2 md:grid-cols-4 gap-2 max-h-40 overflow-y-auto"></div>
+                    <label class="block text-xs font-bold text-green-700 mb-2">Input Serial Number (SN)</label>
+                    <div id="sn_container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 max-h-60 overflow-y-auto"></div>
                 </div>
 
                 <div class="flex gap-4 mt-4 items-end">
@@ -254,14 +255,28 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
     </div>
 </div>
 
-<!-- LIBRARIES -->
+<!-- SN SCANNER MODAL (OVERLAY) -->
+<div id="sn_scanner_modal" class="hidden fixed inset-0 bg-black z-[99] flex flex-col">
+    <div class="bg-gray-900 p-4 flex justify-between items-center text-white">
+        <h3 class="font-bold"><i class="fas fa-barcode"></i> Scan Serial Number</h3>
+        <button onclick="stopSnScan()" class="text-red-500 text-xl"><i class="fas fa-times"></i></button>
+    </div>
+    <div id="sn_reader" class="flex-1 bg-black"></div>
+    <div class="bg-gray-900 p-4 text-center">
+        <button type="button" onclick="toggleSnFlash()" id="btn_sn_flash" class="bg-white/20 text-white p-3 rounded-full hover:bg-white/40"><i class="fas fa-bolt"></i></button>
+        <p class="text-xs text-gray-400 mt-2">Arahkan kamera ke barcode SN</p>
+    </div>
+</div>
+
 <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 
 <script>
 let cart = [];
 let html5QrCode;
-let currentFacingMode = "environment"; // Default Belakang
+let snHtml5QrCode; // Dedicated instance for SN
+let currentFacingMode = "environment";
 let isFlashOn = false;
+let currentSnInput = null; // Target input element for SN Scan
 const APP_REF = "<?= $app_ref ?>";
 
 $(document).ready(function() {
@@ -287,7 +302,20 @@ function fillForm(data) {
     document.getElementById('inp_qty').focus();
 }
 
-// --- SCANNER LOGIC ---
+// --- LOGIKA UTAMA: PROSES HASIL SCAN SKU (AUTO FILL) ---
+function handleScanResult(sku) {
+    document.getElementById('inp_sku').value = sku;
+    const opt = $(`#product_select option[value='${sku}']`);
+    if(opt.length > 0) {
+        $('#product_select').val(sku).trigger('change');
+        $('#product_select').trigger({type: 'select2:select'});
+    } else {
+        document.getElementById('extra_details').classList.remove('hidden');
+        document.getElementById('inp_name').focus();
+    }
+}
+
+// --- SCANNER UTAMA (SKU) ---
 function activateUSB() {
     const el = document.getElementById('inp_sku');
     el.focus(); el.value = '';
@@ -298,58 +326,39 @@ function activateUSB() {
 document.getElementById('inp_sku').addEventListener('keypress', function (e) {
     if (e.key === 'Enter') {
         e.preventDefault();
-        const sku = this.value.trim();
-        const opt = $(`#product_select option[value='${sku}']`);
-        if(opt.length > 0) {
-            $('#product_select').val(sku).trigger('change');
-            $('#product_select').trigger({type: 'select2:select'}); 
-        } else {
-            document.getElementById('extra_details').classList.remove('hidden');
-            document.getElementById('inp_name').focus();
-        }
+        handleScanResult(this.value.trim());
     }
 });
 
-async function initCamera() {
+async function initCamera(type) {
+    // Shared Scanner Area for Main Product
     document.getElementById('scanner_area').classList.remove('hidden');
+    document.getElementById('scan_target_label').innerText = "Scan SKU Produk";
+    
     if(html5QrCode) { try{ await html5QrCode.stop(); html5QrCode.clear(); }catch(e){} }
 
     html5QrCode = new Html5Qrcode("reader");
-    const config = { fps: 10, qrbox: { width: 250, height: 250 } };
-    
     try {
         await html5QrCode.start(
             { facingMode: currentFacingMode }, 
-            config, 
+            { fps: 10, qrbox: { width: 250, height: 250 } }, 
             (decodedText) => {
                 stopScan();
-                document.getElementById('inp_sku').value = decodedText;
-                const event = new KeyboardEvent('keypress', { key: 'Enter' });
-                document.getElementById('inp_sku').dispatchEvent(event);
+                handleScanResult(decodedText);
             },
-            (errorMessage) => {}
+            () => {}
         );
-
-        const capabilities = html5QrCode.getRunningTrackCameraCapabilities();
-        const flashBtn = document.getElementById('btn_flash');
-        if (capabilities && capabilities.torchFeature().isSupported()) {
-            flashBtn.classList.remove('hidden');
-        } else {
-            flashBtn.classList.add('hidden');
-        }
+        checkFlashCapability(html5QrCode);
     } catch (err) {
-        alert("Gagal memulai kamera: " + err);
+        alert("Gagal kamera: " + err);
         stopScan();
     }
 }
 
 async function switchCamera() {
-    if (html5QrCode) {
-        await html5QrCode.stop();
-        html5QrCode.clear();
-    }
+    if (html5QrCode) { await html5QrCode.stop(); html5QrCode.clear(); }
     currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment";
-    initCamera();
+    initCamera('main');
 }
 
 async function toggleFlash() {
@@ -357,10 +366,7 @@ async function toggleFlash() {
         try {
             isFlashOn = !isFlashOn;
             await html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] });
-            const btn = document.getElementById('btn_flash');
-            if(isFlashOn) { btn.classList.add('bg-yellow-400', 'text-black'); btn.classList.remove('bg-white/20', 'text-white'); } 
-            else { btn.classList.remove('bg-yellow-400', 'text-black'); btn.classList.add('bg-white/20', 'text-white'); }
-        } catch (e) { console.error(e); }
+        } catch (e) {}
     }
 }
 
@@ -374,15 +380,17 @@ function stopScan() {
 function handleFileScan(input) {
     if (input.files.length === 0) return;
     const html5QrCode = new Html5Qrcode("reader");
-    html5QrCode.scanFile(input.files[0], true)
-        .then(decodedText => {
-            document.getElementById('inp_sku').value = decodedText;
-            const event = new KeyboardEvent('keypress', { key: 'Enter' });
-            document.getElementById('inp_sku').dispatchEvent(event);
-        })
-        .catch(err => alert("Gagal scan foto."));
+    html5QrCode.scanFile(input.files[0], true).then(d => handleScanResult(d)).catch(e => alert("Gagal scan foto."));
 }
 
+function checkFlashCapability(instance) {
+    instance.getRunningTrackCameraCapabilities().then(c => {
+        if (c && c.torchFeature().isSupported()) document.getElementById('btn_flash').classList.remove('hidden');
+    }).catch(e=>{});
+}
+
+
+// --- LOGIKA SN INPUT DINAMIS ---
 function renderSnInputs() {
     const qty = parseInt(document.getElementById('inp_qty').value) || 0;
     const cont = document.getElementById('sn_container');
@@ -391,18 +399,96 @@ function renderSnInputs() {
 
     if (qty > 0) {
         wrap.classList.remove('hidden');
+        // Hanya render jika jumlah berubah drastis atau kosong, agar input existing tidak hilang jika nambah qty
+        // Tapi demi simplisitas, reset dulu. 
+        // Improvement: Simpan value lama.
+        
+        let oldValues = [];
+        document.querySelectorAll('.sn-field').forEach(i => oldValues.push(i.value));
+        
         cont.innerHTML = '';
         for(let i=0; i<qty; i++) {
-            const inp = document.createElement('input');
-            inp.className = 'sn-field border p-2 rounded text-xs uppercase font-mono';
-            inp.placeholder = `SN Barang #${i+1}`;
-            cont.appendChild(inp);
+            const val = oldValues[i] || '';
+            const div = document.createElement('div');
+            div.className = 'flex gap-1 items-center';
+            div.innerHTML = `
+                <input type="text" class="sn-field w-full border p-2 rounded text-xs uppercase font-mono border-gray-300" placeholder="SN Barang #${i+1}" value="${val}">
+                <button type="button" onclick="openSnScanner(this)" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-2 rounded" title="Scan Kamera">
+                    <i class="fas fa-camera"></i>
+                </button>
+                <button type="button" onclick="genRowSn(this)" class="bg-yellow-100 hover:bg-yellow-200 text-yellow-700 px-2 py-2 rounded" title="Generate Auto">
+                    <i class="fas fa-bolt"></i>
+                </button>
+            `;
+            cont.appendChild(div);
         }
     } else {
         wrap.classList.add('hidden');
     }
 }
 
+// --- FITUR SN: GENERATE AUTO ---
+function genRowSn(btn) {
+    const input = btn.previousElementSibling.previousElementSibling; // Button -> Button -> Input
+    const sku = document.getElementById('inp_sku').value.substring(0,5) || 'ITM';
+    input.value = sku.toUpperCase() + "-" + Date.now().toString().slice(-6) + Math.floor(Math.random()*1000);
+}
+
+// --- FITUR SN: SCANNER KHUSUS ---
+async function openSnScanner(btn) {
+    currentSnInput = btn.previousElementSibling; // The input field
+    document.getElementById('sn_scanner_modal').classList.remove('hidden');
+    
+    if(snHtml5QrCode) { try{ await snHtml5QrCode.stop(); snHtml5QrCode.clear(); }catch(e){} }
+    
+    snHtml5QrCode = new Html5Qrcode("sn_reader");
+    try {
+        await snHtml5QrCode.start(
+            { facingMode: "environment" }, 
+            { fps: 10, qrbox: { width: 250, height: 250 } }, 
+            (txt) => {
+                // Success
+                if(currentSnInput) {
+                    currentSnInput.value = txt;
+                    // Visual feedback
+                    currentSnInput.classList.add('bg-green-100');
+                    setTimeout(() => currentSnInput.classList.remove('bg-green-100'), 500);
+                }
+                stopSnScan();
+            },
+            () => {}
+        );
+        // Check flash for SN scanner
+        snHtml5QrCode.getRunningTrackCameraCapabilities().then(c => {
+             const btnF = document.getElementById('btn_sn_flash');
+             if (c && c.torchFeature().isSupported()) btnF.style.display = 'inline-block'; else btnF.style.display = 'none';
+        });
+    } catch(e) {
+        alert("Kamera Error: " + e);
+        stopSnScan();
+    }
+}
+
+function stopSnScan() {
+    if(snHtml5QrCode) snHtml5QrCode.stop().then(() => {
+        document.getElementById('sn_scanner_modal').classList.add('hidden');
+        snHtml5QrCode.clear();
+    }).catch(() => document.getElementById('sn_scanner_modal').classList.add('hidden'));
+}
+
+async function toggleSnFlash() {
+    if (snHtml5QrCode) {
+        // Toggle logic manual (isFlashOn global might conflict, so use try/catch toggle)
+        // Simplification: Assume off, turn on. If failed, ignore.
+        try {
+            await snHtml5QrCode.applyVideoConstraints({ advanced: [{ torch: true }] });
+        } catch(e) {
+            await snHtml5QrCode.applyVideoConstraints({ advanced: [{ torch: false }] });
+        }
+    }
+}
+
+// --- CART LOGIC ---
 function addToCart() {
     const sku = document.getElementById('inp_sku').value;
     const name = document.getElementById('inp_name').value;
@@ -416,7 +502,7 @@ function addToCart() {
         if(!i.value.trim()) validSn = false;
         sns.push(i.value.trim());
     });
-    if(!validSn) { alert("Lengkapi semua SN!"); return; }
+    if(!validSn) { alert("Lengkapi semua SN! Gunakan tombol Generate jika tidak ada barcode SN."); return; }
 
     cart.push({
         sku, name, qty, sns,

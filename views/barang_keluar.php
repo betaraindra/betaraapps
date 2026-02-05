@@ -322,6 +322,18 @@ async function loadProduct(sku) {
     }
 }
 
+// --- LOGIC AUTO FILL SCANNER ---
+function processScan(txt) {
+    const opt = $(`#product_select option[value='${txt}']`);
+    if(opt.length > 0) {
+        // Jika ada di list, pilih
+        $('#product_select').val(txt).trigger('change');
+    } else {
+        // Jika tidak, load via API (mungkin SN)
+        loadProduct(txt);
+    }
+}
+
 function addToCart() {
     const qty = parseInt(document.getElementById('inp_qty').value);
     if(!qty || qty <= 0) { alert("Pilih minimal 1 SN!"); return; }
@@ -379,7 +391,10 @@ async function initCamera() {
         await html5QrCode.start(
             { facingMode: currentFacingMode }, 
             config, 
-            (txt) => { stopScan(); processScan(txt); }, 
+            (txt) => { 
+                stopScan(); 
+                processScan(txt); // Auto Fill Logic
+            }, 
             () => {}
         );
         const capabilities = html5QrCode.getRunningTrackCameraCapabilities();
@@ -411,12 +426,6 @@ async function toggleFlash() {
 }
 
 function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }); }
-
-function processScan(txt) {
-    const opt = $(`#product_select option[value='${txt}']`);
-    if(opt.length > 0) $('#product_select').val(txt).trigger('change');
-    else loadProduct(txt);
-}
 
 function resetCart() { if(cart.length > 0 && confirm("Ganti gudang hapus keranjang?")) { cart=[]; renderCart(); } }
 function validateCart() { return cart.length > 0; }

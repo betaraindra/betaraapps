@@ -248,7 +248,10 @@ async function initCamera() {
 
     html5QrCode = new Html5Qrcode("reader");
     try {
-        await html5QrCode.start({ facingMode: currentFacingMode }, { fps: 10 }, (t) => { stopScan(); processScan(t); }, () => {});
+        await html5QrCode.start({ facingMode: currentFacingMode }, { fps: 10 }, (t) => { 
+            stopScan(); 
+            processScan(t); // Auto Select Logic
+        }, () => {});
         const c = html5QrCode.getRunningTrackCameraCapabilities();
         const fb = document.getElementById('btn_flash');
         if (c && c.torchFeature().isSupported()) fb.classList.remove('hidden'); else fb.classList.add('hidden');

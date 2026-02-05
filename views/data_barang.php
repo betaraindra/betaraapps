@@ -222,20 +222,11 @@ $export_data = [];
 $total_asset_group = 0;
 
 foreach($products as &$p) {
+    // Ambil SN hanya untuk keperluan export atau detail, tidak ditampilkan di tabel utama
     $sn_stmt_all = $pdo->prepare("SELECT serial_number FROM product_serials WHERE product_id=? AND status='AVAILABLE' ORDER BY serial_number ASC");
     $sn_stmt_all->execute([$p['id']]);
     $all_sns = $sn_stmt_all->fetchAll(PDO::FETCH_COLUMN);
     $full_sn_text = implode(', ', $all_sns);
-
-    $count_sn = count($all_sns);
-    $p['sn_text'] = '';
-    if ($count_sn > 0) {
-        $slice = array_slice($all_sns, 0, 3);
-        $p['sn_text'] = implode(', ', $slice);
-        if ($count_sn > 3) $p['sn_text'] .= " ... (+$count_sn)";
-    } else {
-        $p['sn_text'] = '-';
-    }
 
     $wh_stmt = $pdo->prepare("SELECT w.name FROM inventory_transactions i JOIN warehouses w ON i.warehouse_id=w.id WHERE i.product_id=? ORDER BY i.date DESC LIMIT 1");
     $wh_stmt->execute([$p['id']]);
@@ -291,7 +282,6 @@ if (isset($_GET['edit_id'])) {
 </div>
 
 <!-- HEADER & FILTER -->
-<!-- (Content same as original, keeping layout structure) -->
 <div class="mb-6 flex flex-col md:flex-row justify-between items-center gap-4 no-print">
     <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-box text-blue-600"></i> Data Barang</h2>
     <div class="flex gap-2">
@@ -302,7 +292,6 @@ if (isset($_GET['edit_id'])) {
 
 <!-- FILTER BAR -->
 <div class="bg-white p-4 rounded-lg shadow mb-6 border-l-4 border-indigo-600 no-print">
-    <!-- Filter form same as original -->
     <form method="GET" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 items-end">
         <input type="hidden" name="page" value="data_barang">
         <div class="lg:col-span-1">
@@ -411,7 +400,6 @@ if (isset($_GET['edit_id'])) {
                     </div>
                 </div>
 
-                <!-- ... (Input fields lainnya sama) ... -->
                 <div class="mb-3">
                     <label class="block text-xs font-bold text-gray-700 mb-1">Nama Barang</label>
                     <input type="text" name="name" id="form_name" value="<?= $edit_item['name']??'' ?>" class="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500" required>
@@ -498,9 +486,8 @@ if (isset($_GET['edit_id'])) {
         </div>
     </div>
 
-    <!-- RIGHT: TABLE (Same as original) -->
+    <!-- RIGHT: TABLE (3 COLS) -->
     <div class="lg:col-span-3">
-        <!-- ... (Tabel Barang, kode sama seperti sebelumnya) ... -->
         <div class="bg-white rounded-lg shadow overflow-hidden">
             <div class="bg-red-300 px-4 py-3 border-b border-red-400">
                 <h3 class="font-bold text-red-900 text-sm">
@@ -512,14 +499,17 @@ if (isset($_GET['edit_id'])) {
                     <thead class="bg-yellow-400 text-gray-900 font-bold uppercase text-center">
                         <tr>
                             <th class="p-2 border border-gray-300 w-10">Gbr</th>
-                            <th class="p-2 border border-gray-300">Nama</th>
                             <th class="p-2 border border-gray-300">SKU</th>
-                            <th class="p-2 border border-gray-300 w-32">SN</th>
+                            <th class="p-2 border border-gray-300 w-20">Update</th>
+                            <th class="p-2 border border-gray-300">Nama</th>
                             <th class="p-2 border border-gray-300 text-right">Beli (HPP)</th>
                             <th class="p-2 border border-gray-300 w-24">Gudang</th>
                             <th class="p-2 border border-gray-300 text-right">Jual</th>
                             <th class="p-2 border border-gray-300 w-16">Stok</th>
                             <th class="p-2 border border-gray-300 w-10">Sat</th>
+                            <th class="p-2 border border-gray-300">Ket</th>
+                            <th class="p-2 border border-gray-300">Catatan</th>
+                            <th class="p-2 border border-gray-300 text-center w-24">Ref / Cetak</th>
                             <th class="p-2 border border-gray-300 text-center w-20">Aksi</th>
                         </tr>
                     </thead>
@@ -528,17 +518,32 @@ if (isset($_GET['edit_id'])) {
                         <tr class="hover:bg-gray-50 group">
                             <td class="p-2 border text-center">
                                 <?php if(!empty($p['image_url'])): ?>
-                                    <img src="<?= $p['image_url'] ?>" class="w-8 h-8 object-cover rounded border bg-white mx-auto">
+                                    <img src="<?= $p['image_url'] ?>" class="w-8 h-8 object-cover rounded border bg-white mx-auto cursor-pointer" onclick="window.open(this.src)">
+                                <?php else: ?>
+                                    <div class="w-8 h-8 bg-gray-100 rounded flex items-center justify-center text-gray-300 mx-auto"><i class="fas fa-image"></i></div>
                                 <?php endif; ?>
                             </td>
-                            <td class="p-2 border font-bold text-gray-700"><?= htmlspecialchars($p['name']) ?></td>
                             <td class="p-2 border font-mono text-blue-600 whitespace-nowrap"><?= htmlspecialchars($p['sku']) ?></td>
-                            <td class="p-2 border text-[9px] font-mono break-all text-gray-600 bg-gray-50"><?= $p['sn_text'] ?></td>
+                            <td class="p-2 border text-center text-[9px] text-gray-500">
+                                <?= $p['last_update'] ? date('d/m/y', strtotime($p['last_update'])) : '-' ?>
+                            </td>
+                            <td class="p-2 border font-bold text-gray-700"><?= htmlspecialchars($p['name']) ?></td>
                             <td class="p-2 border text-right text-red-600 font-medium"><?= formatRupiah($p['buy_price']) ?></td>
                             <td class="p-2 border text-center text-[10px]"><?= $p['last_wh'] ?></td>
                             <td class="p-2 border text-right text-green-600 font-bold"><?= formatRupiah($p['sell_price']) ?></td>
                             <td class="p-2 border text-center font-bold text-lg <?= $p['stock'] < 10 ? 'text-red-600 bg-red-50' : 'text-blue-800 bg-blue-50' ?>"><?= number_format($p['stock']) ?></td>
                             <td class="p-2 border text-center"><?= htmlspecialchars($p['unit']) ?></td>
+                            <td class="p-2 border text-[10px] text-gray-500 text-center"><?= htmlspecialchars($p['category']) ?></td>
+                            <td class="p-2 border text-[10px] text-gray-600 italic"><?= htmlspecialchars($p['notes']) ?></td>
+                            <td class="p-2 border text-center">
+                                <div class="text-[9px] text-blue-500 font-mono mb-1 font-bold"><?= $p['last_ref'] ?? '-' ?></div>
+                                <div class="flex gap-1 justify-center">
+                                    <?php if(!empty($p['last_trx_id'])): ?>
+                                        <a href="?page=cetak_surat_jalan&id=<?= $p['last_trx_id'] ?>" target="_blank" class="bg-blue-100 hover:bg-blue-200 text-blue-700 px-2 py-1 rounded text-[9px] border border-blue-300 font-bold" title="Cetak Surat Jalan Transaksi Terakhir"><i class="fas fa-print"></i> SJ</a>
+                                    <?php endif; ?>
+                                    <button onclick="printLabelDirect('<?= h($p['sku']) ?>', '<?= h($p['name']) ?>')" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-2 py-1 rounded text-[9px] border border-gray-300 font-bold" title="Cetak Label Barcode"><i class="fas fa-barcode"></i> LBL</button>
+                                </div>
+                            </td>
                             <td class="p-2 border text-center">
                                 <div class="flex justify-center gap-1">
                                     <a href="?page=data_barang&edit_id=<?= $p['id'] ?>" class="bg-yellow-100 text-yellow-700 p-1 rounded hover:bg-yellow-200" title="Edit"><i class="fas fa-pencil-alt"></i></a>
@@ -551,6 +556,9 @@ if (isset($_GET['edit_id'])) {
                             </td>
                         </tr>
                         <?php endforeach; ?>
+                        <?php if(empty($products)): ?>
+                            <tr><td colspan="13" class="p-8 text-center text-gray-400">Tidak ada data barang.</td></tr>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>

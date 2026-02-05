@@ -156,11 +156,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                     }
                 }
 
-                // --- NOTE: TRANSAKSI KEUANGAN DITIADAKAN ---
-                // Sesuai permintaan, input aktivitas tidak mencatat ke finance_transactions
-                // karena hanya mutasi stok/pemakaian internal yang tidak melibatkan kas keluar saat ini.
-                // Laporan Keuangan akan menghitung HPP secara virtual dari log inventory OUT.
-
                 $count++;
             }
             
@@ -176,17 +171,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
     }
 }
 
-// --- 3. LOAD DATA UNTUK TABEL LIST ---
+// --- 3. LOAD DATA ---
 $start_date = $_GET['start'] ?? date('Y-m-01');
 $end_date = $_GET['end'] ?? date('Y-m-d');
 $search_q = $_GET['q'] ?? '';
 
-// Pagination
 $page_num = isset($_GET['p']) ? (int)$_GET['p'] : 1;
 $limit = 20;
 $offset = ($page_num - 1) * $limit;
 
-// Query List Aktivitas (Notes contains 'Aktivitas:' or 'Pengembalian:')
 $sql_list = "SELECT i.*, p.name as prod_name, p.sku, w.name as wh_name, u.username 
              FROM inventory_transactions i 
              JOIN products p ON i.product_id = p.id 
@@ -202,7 +195,6 @@ $stmt_list = $pdo->prepare($sql_list);
 $stmt_list->execute([$start_date, $end_date, "%$search_q%", "%$search_q%", "%$search_q%"]);
 $activities_data = $stmt_list->fetchAll();
 
-// Count for Pagination
 $sql_count = "SELECT COUNT(*) FROM inventory_transactions i 
               JOIN products p ON i.product_id = p.id 
               WHERE (i.notes LIKE 'Aktivitas:%' OR i.notes LIKE 'Pengembalian:%')
@@ -231,16 +223,10 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
             </div>
             
             <div class="flex gap-2 flex-wrap">
-                <button type="button" onclick="activateUSB()" class="bg-gray-700 text-white px-3 py-2 rounded shadow hover:bg-gray-800 transition text-sm flex items-center gap-2" title="Scanner USB">
-                    <i class="fas fa-keyboard"></i> USB Mode
-                </button>
+                <button type="button" onclick="activateUSB()" class="bg-gray-700 text-white px-3 py-2 rounded shadow hover:bg-gray-800 transition text-sm flex items-center gap-2" title="Scanner USB"><i class="fas fa-keyboard"></i> USB Mode</button>
                 <input type="file" id="scan_image_file" accept="image/*" capture="environment" class="hidden" onchange="handleFileScan(this)">
-                <button type="button" onclick="document.getElementById('scan_image_file').click()" class="bg-purple-600 text-white px-3 py-2 rounded shadow hover:bg-purple-700 transition text-sm flex items-center gap-2" title="Upload Foto">
-                    <i class="fas fa-camera"></i> Foto Scan
-                </button>
-                <button type="button" onclick="initCamera()" class="bg-indigo-600 text-white px-3 py-2 rounded shadow hover:bg-indigo-700 transition text-sm flex items-center gap-2" title="Live Camera">
-                    <i class="fas fa-video"></i> Live Scan
-                </button>
+                <button type="button" onclick="document.getElementById('scan_image_file').click()" class="bg-purple-600 text-white px-3 py-2 rounded shadow hover:bg-purple-700 transition text-sm flex items-center gap-2" title="Upload Foto"><i class="fas fa-camera"></i> Foto Scan</button>
+                <button type="button" onclick="initCamera()" class="bg-indigo-600 text-white px-3 py-2 rounded shadow hover:bg-indigo-700 transition text-sm flex items-center gap-2" title="Live Camera"><i class="fas fa-video"></i> Live Scan</button>
             </div>
         </div>
 
@@ -317,7 +303,6 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 <!-- DROPDOWN MANUAL SELECT -->
                 <div class="mb-4 bg-white p-2 rounded border border-purple-100 shadow-sm">
                     <label class="block text-xs font-bold text-gray-500 mb-1">Pilih Manual dari Stok Gudang Ini</label>
-                    <!-- Select2 applied via JS -->
                     <select id="manual_select" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-purple-500" disabled onchange="selectManualItem(this)">
                         <option value="">-- Pilih Gudang Terlebih Dahulu --</option>
                     </select>
@@ -330,7 +315,11 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                             <input type="text" id="sku_input" class="w-full border-2 border-purple-500 p-2 rounded font-mono font-bold text-lg uppercase transition-colors" placeholder="SCAN..." onchange="checkSku()" onkeydown="if(event.key === 'Enter'){ checkSku(); event.preventDefault(); }">
                             <button type="button" onclick="checkSku()" class="bg-blue-600 text-white px-3 rounded hover:bg-blue-700"><i class="fas fa-search"></i></button>
                         </div>
-                        <span id="sku_status" class="text-[10px] block mt-1 font-bold"></span>
+                        
+                        <!-- DETAIL INFO AREA (GANTI SPAN) -->
+                        <div id="sku_status" class="mt-2 text-sm font-bold bg-white p-2 rounded border border-gray-300 shadow-sm min-h-[40px] flex items-center text-gray-500 italic">
+                            Belum ada barang dipilih.
+                        </div>
                     </div>
                     
                     <div class="md:col-span-2">
@@ -384,8 +373,6 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
     <!-- LIST RIWAYAT -->
     <div class="bg-white p-6 rounded-lg shadow">
         <h3 class="font-bold text-gray-800 mb-4 border-b pb-2">Riwayat Aktivitas Terakhir</h3>
-        
-        <!-- Filter Bar -->
         <form method="GET" class="flex flex-wrap gap-2 mb-4">
             <input type="hidden" name="page" value="input_aktivitas">
             <input type="text" name="q" value="<?= htmlspecialchars($search_q) ?>" class="border p-2 rounded text-sm" placeholder="Cari...">
@@ -393,7 +380,6 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
             <input type="date" name="end" value="<?= $end_date ?>" class="border p-2 rounded text-sm">
             <button type="submit" class="bg-blue-600 text-white px-3 py-2 rounded text-sm"><i class="fas fa-filter"></i></button>
         </form>
-
         <div class="overflow-x-auto">
             <table class="w-full text-sm text-left border-collapse">
                 <thead class="bg-gray-100 text-gray-700">
@@ -437,8 +423,6 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 </tbody>
             </table>
         </div>
-
-        <!-- PAGINATION -->
         <?php if($total_pages > 1): ?>
         <div class="flex justify-center gap-2 mt-4">
             <?php if($page_num > 1): ?>
@@ -530,7 +514,6 @@ async function loadProductsByWarehouse(whId) {
 }
 
 function selectManualItem(select) {
-    // Fallback if native
     const sku = select.value;
     if (sku) {
         document.getElementById('sku_input').value = sku;
@@ -551,7 +534,6 @@ function toggleMode(mode) {
     const title = document.getElementById('item_title');
     
     if (mode === 'IN') {
-        // Mode Masuk (Pengembalian)
         container.classList.remove('bg-purple-50', 'border-purple-200');
         container.classList.add('bg-teal-50', 'border-teal-200');
         skuInput.classList.remove('border-purple-500');
@@ -560,7 +542,6 @@ function toggleMode(mode) {
         title.classList.remove('text-purple-800', 'border-purple-200');
         title.classList.add('text-teal-800', 'border-teal-200');
     } else {
-        // Mode Keluar (Pemakaian)
         container.classList.remove('bg-teal-50', 'border-teal-200');
         container.classList.add('bg-purple-50', 'border-purple-200');
         skuInput.classList.remove('border-teal-500');
@@ -578,6 +559,7 @@ async function checkSku() {
     
     const status = document.getElementById('sku_status');
     status.innerText = "Mencari...";
+    status.className = "mt-2 text-sm font-bold bg-white p-2 rounded border border-gray-300 shadow-sm min-h-[40px] flex items-center text-blue-600 italic";
     
     try {
         const res = await fetch(`api.php?action=get_product_by_sku&sku=${encodeURIComponent(sku)}`);
@@ -589,21 +571,22 @@ async function checkSku() {
             document.getElementById('sku_input').setAttribute('data-name', data.name);
             document.getElementById('sku_input').setAttribute('data-unit', data.unit);
             
-            // Jika scan SN, otomatis set qty 1 dan isi SN
+            // Tampilan Detail Barang
             if (data.scanned_sn) {
                 document.getElementById('qty_input').value = 1;
                 document.getElementById('qty_input').disabled = true; // SN unik = 1 item
                 renderSnInputs([data.scanned_sn]);
-                status.innerHTML = `<span class="text-green-600"><i class="fas fa-check"></i> ${data.name} (SN: ${data.scanned_sn})</span>`;
+                status.innerHTML = `<span class="text-green-600"><i class="fas fa-check-circle"></i> ${data.name} (SN: ${data.scanned_sn})</span>`;
             } else {
                 document.getElementById('qty_input').value = 1;
                 document.getElementById('qty_input').disabled = false;
                 renderSnInputs();
                 document.getElementById('qty_input').focus();
-                status.innerHTML = `<span class="text-green-600"><i class="fas fa-check"></i> ${data.name} (Stok: ${data.stock})</span>`;
+                // Menampilkan Stok dalam Info
+                status.innerHTML = `<span class="text-green-600"><i class="fas fa-box"></i> ${data.name} <span class="bg-green-100 text-green-800 px-2 rounded text-xs ml-2">Stok: ${data.stock}</span></span>`;
             }
         } else {
-            status.innerHTML = `<span class="text-red-600">Barang tidak ditemukan!</span>`;
+            status.innerHTML = `<span class="text-red-600"><i class="fas fa-times-circle"></i> Barang tidak ditemukan!</span>`;
             document.getElementById('sku_input').value = '';
         }
     } catch (e) {
@@ -675,7 +658,10 @@ function resetInput() {
     document.getElementById('qty_input').disabled = false;
     document.getElementById('notes_input').value = '';
     document.getElementById('sn_out_container').classList.add('hidden');
-    document.getElementById('sku_status').innerText = '';
+    // Reset Status dengan Style
+    const status = document.getElementById('sku_status');
+    status.innerText = "Belum ada barang dipilih.";
+    status.className = "mt-2 text-sm font-bold bg-white p-2 rounded border border-gray-300 shadow-sm min-h-[40px] flex items-center text-gray-500 italic";
     document.getElementById('sku_input').focus();
 }
 

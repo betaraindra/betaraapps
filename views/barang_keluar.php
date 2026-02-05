@@ -199,9 +199,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
     }
 }
 
-// ... SISA KODE VIEW BARANG KELUAR (GET Data, Form HTML, JS) ...
+// ... SISA KODE VIEW BARANG KELUAR ...
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
-$products_list = $pdo->query("SELECT sku, name, stock, sell_price FROM products WHERE stock > 0 ORDER BY name ASC")->fetchAll();
+$products_list = $pdo->query("SELECT sku, name, stock, sell_price, unit FROM products WHERE stock > 0 ORDER BY name ASC")->fetchAll();
 $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
 
 // Recent TRX
@@ -253,16 +253,16 @@ $recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_
                 </div>
             </div>
 
-            <!-- TIPE TRANSAKSI -->
+            <!-- TIPE TRANSAKSI (DEFAULT: INTERNAL) -->
             <div class="mb-4 bg-gray-50 p-3 rounded border">
                 <label class="block text-sm font-bold text-gray-700 mb-2">Jenis Transaksi</label>
                 <div class="flex gap-4">
                     <label class="flex items-center gap-2 cursor-pointer">
-                        <input type="radio" name="out_type" value="EXTERNAL" checked onchange="toggleDestWarehouse()">
+                        <input type="radio" name="out_type" value="EXTERNAL" onchange="toggleDestWarehouse()">
                         <span class="font-bold text-blue-700">Penjualan / External</span>
                     </label>
                     <label class="flex items-center gap-2 cursor-pointer">
-                        <input type="radio" name="out_type" value="INTERNAL" onchange="toggleDestWarehouse()">
+                        <input type="radio" name="out_type" value="INTERNAL" checked onchange="toggleDestWarehouse()">
                         <span class="font-bold text-orange-700">Internal / Mutasi / Pemakaian</span>
                     </label>
                 </div>
@@ -278,7 +278,8 @@ $recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div id="dest_wh_container" class="hidden">
+                <!-- Default Tampil (Karena default Internal) -->
+                <div id="dest_wh_container">
                     <label class="block text-sm font-bold text-gray-700 mb-1">Ke Gudang (Tujuan Mutasi)</label>
                     <select name="dest_warehouse_id" class="w-full border p-2 rounded bg-white">
                         <option value="">-- Pilih Jika Mutasi --</option>
@@ -290,14 +291,13 @@ $recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_
                 </div>
             </div>
 
-            <!-- ITEM INPUT -->
+            <!-- ITEM INPUT SECTION -->
             <div class="bg-red-50 p-4 rounded border border-red-200 mb-6">
                 <h4 class="font-bold text-red-800 mb-2 text-sm">Input Barang</h4>
                 
-                <!-- DROPDOWN CARI MANUAL (BARU) -->
+                <!-- DROPDOWN CARI MANUAL (AUTO DETAIL) -->
                 <div class="mb-3 bg-white p-2 rounded border border-red-100 shadow-sm">
                     <label class="block text-xs font-bold text-gray-500 mb-1">Cari Barang dari Database (Manual)</label>
-                    <!-- UPDATE: Tambahkan Select2 -->
                     <select id="manual_product_select" class="w-full border p-2 rounded text-sm bg-white" onchange="handleManualProductSelect(this)">
                         <option value="">-- Cari Nama Barang (Stok Tersedia) --</option>
                         <?php foreach($products_list as $prod): ?>
@@ -321,7 +321,22 @@ $recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_
                         <i class="fas fa-plus"></i>
                     </button>
                 </div>
+                
                 <div id="sn_status" class="text-xs font-bold mt-1 min-h-[1rem]"></div>
+
+                <!-- KARTU DETAIL BARANG (HIDDEN BY DEFAULT) -->
+                <div id="product_detail_card" class="hidden mt-3 bg-white p-3 rounded border border-blue-200 shadow-sm flex items-center justify-between">
+                    <div>
+                        <div class="text-[10px] text-gray-500 font-bold uppercase tracking-wide">Barang Terpilih</div>
+                        <div class="font-bold text-lg text-gray-800" id="detail_name">-</div>
+                        <div class="text-xs text-gray-500 font-mono" id="detail_sku">-</div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-xs text-gray-500">Stok Tersedia</div>
+                        <div class="font-bold text-xl text-blue-600" id="detail_stock">0</div>
+                        <div class="text-[10px] text-gray-400" id="detail_unit">Unit</div>
+                    </div>
+                </div>
             </div>
 
             <!-- CART TABLE -->
@@ -353,7 +368,7 @@ let cart = [];
 let html5QrCode;
 const APP_REF = "<?= $app_ref_prefix ?>";
 
-// --- UPDATE: Init Select2 ---
+// --- INIT SELECT2 ---
 $(document).ready(function() {
     $('#manual_product_select').select2({
         placeholder: '-- Cari Nama Barang (Stok Tersedia) --',
@@ -372,13 +387,12 @@ $('#manual_product_select').on('select2:select', function (e) {
     }
 });
 
-// Handle Dropdown Manual Select (Fallback)
 function handleManualProductSelect(select) {
     const sku = select.value;
     if (sku) {
         document.getElementById('sku_input').value = sku;
-        checkSku(); // Validasi dan persiapan data
-        select.value = ""; // Reset dropdown agar bisa pilih ulang
+        checkSku();
+        select.value = "";
     }
 }
 
@@ -396,6 +410,8 @@ function toggleDestWarehouse() {
 async function checkSku() {
     const sku = document.getElementById('sku_input').value;
     const status = document.getElementById('sn_status');
+    const detailCard = document.getElementById('product_detail_card');
+    
     if(!sku) return;
     
     status.innerHTML = "Checking...";
@@ -404,29 +420,39 @@ async function checkSku() {
         const data = await res.json();
         
         if(data.id) {
+            // Tampilkan Kartu Detail
+            detailCard.classList.remove('hidden');
+            document.getElementById('detail_name').innerText = data.name;
+            document.getElementById('detail_sku').innerText = data.sku;
+            document.getElementById('detail_stock').innerText = data.stock;
+            document.getElementById('detail_unit').innerText = data.unit || 'Pcs';
+
             // Logic: 1 Item = 1 SN
             document.getElementById('sku_input').setAttribute('data-id', data.id);
             document.getElementById('sku_input').setAttribute('data-name', data.name);
             
             if(data.scanned_sn) {
-                status.innerHTML = `<span class="text-green-600">OK: ${data.name} (SN: ${data.scanned_sn})</span>`;
+                status.innerHTML = `<span class="text-green-600 font-bold"><i class="fas fa-check"></i> SN OK: ${data.scanned_sn}</span>`;
                 // Auto add
                 cart.push({
                     id: data.id, sku: data.sku, name: data.name, qty: 1, sns: [data.scanned_sn], notes: ''
                 });
                 renderCart();
                 document.getElementById('sku_input').value = '';
-                status.innerHTML = '';
+                // Optional: Hide card after auto-add or keep it for feedback
+                // detailCard.classList.add('hidden'); 
             } else {
                 status.innerHTML = `<span class="text-red-600">Gunakan SCANNER untuk scan Serial Number langsung!</span>`;
+                // Focus ke input Qty jika manual entry non-SN (tapi di sistem ini wajib SN)
             }
         } else {
             status.innerHTML = `<span class="text-red-600">Barang tidak ditemukan!</span>`;
+            detailCard.classList.add('hidden');
         }
     } catch(e) { console.error(e); }
 }
 
-function addToCart() { checkSku(); } // Trigger manual
+function addToCart() { checkSku(); }
 
 function renderCart() {
     const tbody = document.getElementById('cart_body');
@@ -457,9 +483,8 @@ async function generateReference() {
     document.getElementById('reference_input').value = ref;
 }
 
-// Scanner Helpers (Simpel)
 function activateUSB() { document.getElementById('sku_input').focus(); }
-function initCamera() { alert("Fitur kamera sama seperti halaman Barang Masuk."); } // Placeholder to save space
+function initCamera() { alert("Fitur kamera sama seperti halaman Barang Masuk."); } 
 
 document.addEventListener('DOMContentLoaded', generateReference);
 </script>

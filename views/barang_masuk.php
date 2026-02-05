@@ -236,9 +236,11 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                     <button type="button" id="btn_auto_ref" onclick="generateReference()" class="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 font-bold whitespace-nowrap border border-gray-300 text-sm"><i class="fas fa-magic text-green-600"></i> Auto</button>
                 </div>
             </div>
+            
             <div class="mb-4 bg-blue-50 p-3 rounded border border-blue-200">
                 <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang dari Database (Manual)</label>
-                <select id="manual_product_select" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-blue-500" onchange="handleManualProductSelect(this)">
+                <!-- UPDATE: Tambahkan class untuk Select2 -->
+                <select id="manual_product_select" class="w-full p-2 rounded text-sm bg-white" onchange="handleManualProductSelect(this)">
                     <option value="">-- Pilih / Cari Nama Barang --</option>
                     <?php foreach($products_list as $prod): ?>
                         <option value="<?= $prod['sku'] ?>"><?= $prod['name'] ?> (Stok: <?= $prod['stock'] ?>) - SKU: <?= $prod['sku'] ?></option>
@@ -392,9 +394,34 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
 let html5QrCode; let snQrCode; let audioCtx = null; let isFlashOn = false;
 const APP_NAME_PREFIX = "<?= $app_ref_prefix ?>";
 
+// --- UPDATE: Initialize Select2 ---
+$(document).ready(function() {
+    $('#manual_product_select').select2({
+        placeholder: '-- Pilih / Cari Nama Barang --',
+        allowClear: true,
+        width: '100%'
+    });
+});
+
 function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); }
 function playBeep() { if (!audioCtx) return; try { const o = audioCtx.createOscillator(); const g = audioCtx.createGain(); o.connect(g); g.connect(audioCtx.destination); o.type = 'square'; o.frequency.setValueAtTime(1200, audioCtx.currentTime); g.gain.setValueAtTime(0.1, audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1); o.start(); o.stop(audioCtx.currentTime + 0.15); } catch (e) {} }
-function handleManualProductSelect(s) { const sku = s.value; if (sku) { document.getElementById('sku_input').value = sku; checkSku(); s.value = ""; } }
+
+// --- UPDATE: Select2 Change Handler via jQuery ---
+// Native onchange might miss events from Select2
+$('#manual_product_select').on('select2:select', function (e) {
+    var sku = e.params.data.id;
+    if (sku) {
+        document.getElementById('sku_input').value = sku;
+        checkSku();
+        $('#manual_product_select').val(null).trigger('change');
+    }
+});
+
+function handleManualProductSelect(s) { 
+    // Fallback for non-select2
+    const sku = s.value; if (sku) { document.getElementById('sku_input').value = sku; checkSku(); s.value = ""; } 
+}
+
 function activateUSB() { const i = document.getElementById('sku_input'); i.focus(); i.select(); i.classList.add('ring-4', 'ring-yellow-400', 'border-yellow-500'); setTimeout(() => { i.classList.remove('ring-4', 'ring-yellow-400', 'border-yellow-500'); }, 1500); }
 function formatRupiah(i) { let v = i.value.replace(/\D/g, ''); if(v === '') { i.value = ''; return; } i.value = new Intl.NumberFormat('id-ID').format(v); }
 

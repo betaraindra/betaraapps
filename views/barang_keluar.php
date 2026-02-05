@@ -297,7 +297,8 @@ $recent_trx = $pdo->query("SELECT i.*, p.name as prod_name, p.sku, w.name as wh_
                 <!-- DROPDOWN CARI MANUAL (BARU) -->
                 <div class="mb-3 bg-white p-2 rounded border border-red-100 shadow-sm">
                     <label class="block text-xs font-bold text-gray-500 mb-1">Cari Barang dari Database (Manual)</label>
-                    <select id="manual_product_select" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-red-500" onchange="handleManualProductSelect(this)">
+                    <!-- UPDATE: Tambahkan Select2 -->
+                    <select id="manual_product_select" class="w-full border p-2 rounded text-sm bg-white" onchange="handleManualProductSelect(this)">
                         <option value="">-- Cari Nama Barang (Stok Tersedia) --</option>
                         <?php foreach($products_list as $prod): ?>
                             <option value="<?= $prod['sku'] ?>">
@@ -352,7 +353,26 @@ let cart = [];
 let html5QrCode;
 const APP_REF = "<?= $app_ref_prefix ?>";
 
-// Handle Dropdown Manual Select
+// --- UPDATE: Init Select2 ---
+$(document).ready(function() {
+    $('#manual_product_select').select2({
+        placeholder: '-- Cari Nama Barang (Stok Tersedia) --',
+        allowClear: true,
+        width: '100%'
+    });
+});
+
+// Select2 Event Listener
+$('#manual_product_select').on('select2:select', function (e) {
+    var sku = e.params.data.id;
+    if (sku) {
+        document.getElementById('sku_input').value = sku;
+        checkSku();
+        $('#manual_product_select').val(null).trigger('change');
+    }
+});
+
+// Handle Dropdown Manual Select (Fallback)
 function handleManualProductSelect(select) {
     const sku = select.value;
     if (sku) {

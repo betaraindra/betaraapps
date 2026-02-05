@@ -317,6 +317,7 @@ $app_ref_prefix = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI
                 <!-- DROPDOWN MANUAL SELECT -->
                 <div class="mb-4 bg-white p-2 rounded border border-purple-100 shadow-sm">
                     <label class="block text-xs font-bold text-gray-500 mb-1">Pilih Manual dari Stok Gudang Ini</label>
+                    <!-- Select2 applied via JS -->
                     <select id="manual_select" class="w-full border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-purple-500" disabled onchange="selectManualItem(this)">
                         <option value="">-- Pilih Gudang Terlebih Dahulu --</option>
                     </select>
@@ -471,13 +472,31 @@ document.addEventListener('DOMContentLoaded', () => {
     // Load initial if value exists (e.g. back browser)
     const initWh = document.getElementById('warehouse_id').value;
     if(initWh) loadProductsByWarehouse(initWh);
+    
+    // Init Select2 Placeholder
+    $('#manual_select').select2({
+        placeholder: "-- Pilih Gudang Terlebih Dahulu --",
+        width: '100%',
+        disabled: true
+    });
+});
+
+// --- SELECT2 EVENT LISTENER ---
+$('#manual_select').on('select2:select', function (e) {
+    var sku = e.params.data.id;
+    if (sku) {
+        document.getElementById('sku_input').value = sku;
+        checkSku();
+        $('#manual_select').val(null).trigger('change');
+    }
 });
 
 // --- LOAD MANUAL DROPDOWN ---
 async function loadProductsByWarehouse(whId) {
     const select = document.getElementById('manual_select');
-    select.disabled = true;
-    select.innerHTML = '<option>Memuat data barang...</option>';
+    // Disable during load
+    $('#manual_select').prop('disabled', true);
+    select.innerHTML = '<option value="">Memuat data barang...</option>';
     
     try {
         const res = await fetch(`api.php?action=get_warehouse_stock&warehouse_id=${whId}`);
@@ -492,9 +511,18 @@ async function loadProductsByWarehouse(whId) {
                 opt.text = `${p.name} (Stok: ${p.current_qty} ${p.unit})`;
                 select.appendChild(opt);
             });
-            select.disabled = false;
+            // Re-init Select2 & Enable
+            $('#manual_select').prop('disabled', false).select2({
+                placeholder: "-- Cari Barang (Ketik Nama) --",
+                width: '100%'
+            });
         } else {
             select.innerHTML = '<option value="">-- Tidak ada stok di gudang ini --</option>';
+            // Re-init Select2 but keep disabled effectively (or enabled to see 'No stock')
+             $('#manual_select').prop('disabled', false).select2({
+                placeholder: "-- Tidak ada stok --",
+                width: '100%'
+            });
         }
     } catch(e) {
         select.innerHTML = '<option value="">Gagal memuat data</option>';
@@ -502,11 +530,11 @@ async function loadProductsByWarehouse(whId) {
 }
 
 function selectManualItem(select) {
+    // Fallback if native
     const sku = select.value;
     if (sku) {
         document.getElementById('sku_input').value = sku;
         checkSku();
-        // Reset select to default so user can re-select same item if needed (though UX wise it adds to list)
         select.value = ""; 
     }
 }

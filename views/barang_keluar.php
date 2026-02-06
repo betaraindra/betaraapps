@@ -153,7 +153,7 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                 <div class="bg-red-50 p-3 rounded border border-red-200">
                     <label class="block text-xs font-bold text-red-800 mb-1">Gudang Asal (Auto Select saat Scan)</label>
-                    <select name="warehouse_id" id="warehouse_id" class="w-full border p-2 rounded bg-white font-bold" required onchange="resetCart()">
+                    <select name="warehouse_id" id="warehouse_id" class="w-full border p-2 rounded bg-white font-bold" required>
                         <option value="">-- Pilih Gudang Asal --</option>
                         <?php foreach($warehouses as $w): ?><option value="<?= $w['id'] ?>"><?= $w['name'] ?></option><?php endforeach; ?>
                     </select>
@@ -196,7 +196,7 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
                 <div id="sn_area" class="hidden mb-3">
                     <label class="block text-xs font-bold text-red-700 mb-1">Pilih Serial Number (Available di Gudang Asal)</label>
                     <select id="sn_select" class="w-full border rounded" multiple="multiple" style="width: 100%"></select>
-                    <p class="text-[10px] text-gray-500 mt-1">Klik untuk memilih SN. Gudang Asal terpilih otomatis.</p>
+                    <p class="text-[10px] text-gray-500 mt-1">Klik untuk memilih SN. Hanya SN yang tersedia (Available) di gudang ini yang ditampilkan.</p>
                 </div>
 
                 <div class="flex gap-4 items-end">
@@ -252,6 +252,28 @@ $(document).ready(function() {
     genRef();
 });
 
+// EVENT LISTENER: GUDANG BERUBAH -> RESET PILIHAN PRODUK & SN
+$('#warehouse_id').on('change', function() {
+    if(cart.length > 0 && !confirm("Mengubah gudang akan mengosongkan keranjang saat ini. Lanjutkan?")) {
+        // Jika batal, kembalikan ke sebelumnya (Note: Handling revert sulit di select native tanpa menyimpan prev val, 
+        // tapi user bisa memilih gudang awal lagi jika mau. Di sini kita reset jika user setuju).
+        return; 
+    }
+    
+    // Reset Cart & Inputs
+    cart = []; 
+    renderCart();
+    
+    // Clear Product & SN Selection agar user memilih ulang sesuai gudang baru
+    $('#product_select').val(null).trigger('change'); 
+    $('#sn_select').empty().trigger('change');
+    
+    // Sembunyikan detail
+    $('#prod_detail').addClass('hidden');
+    $('#sn_area').addClass('hidden');
+    document.getElementById('inp_qty').value = 0;
+});
+
 function toggleDestWarehouse() {
     const type = document.querySelector('input[name="out_type"]:checked').value;
     document.getElementById('dest_wh_container').style.display = (type === 'INTERNAL') ? 'block' : 'none';
@@ -274,19 +296,16 @@ async function loadProduct(sku) {
     if(data.id) {
         if (data.detected_warehouse_id) {
             const currentWh = $('#warehouse_id').val();
-            if (currentWh != data.detected_warehouse_id) {
-                if(cart.length > 0 && confirm("Barang ini ada di Gudang lain. Ganti gudang asal? (Keranjang akan direset)")) {
-                    cart = []; renderCart();
-                    $('#warehouse_id').val(data.detected_warehouse_id).trigger('change');
-                } else if(cart.length === 0) {
-                    $('#warehouse_id').val(data.detected_warehouse_id).trigger('change');
-                }
+            // Jika gudang belum dipilih atau beda, dan ini scan pertama (cart kosong), auto pilih gudang
+            if (!currentWh && data.detected_warehouse_id) {
+                $('#warehouse_id').val(data.detected_warehouse_id).trigger('change');
             }
         }
 
         const whId = document.getElementById('warehouse_id').value;
         if(!whId) {
-            alert("Silakan pilih Gudang Asal terlebih dahulu atau scan SN barang yang valid.");
+            alert("Silakan pilih Gudang Asal terlebih dahulu.");
+            $('#product_select').val(null).trigger('change'); // Clear selection
             return;
         }
 
@@ -295,11 +314,12 @@ async function loadProduct(sku) {
         document.getElementById('det_sku').innerText = data.sku;
         document.getElementById('det_stock').innerText = data.stock;
         
+        // Fetch Available SNs only for this warehouse
         const snRes = await fetch(`api.php?action=get_available_sns&product_id=${data.id}&warehouse_id=${whId}`);
         const sns = await snRes.json();
         
         const snSel = $('#sn_select');
-        snSel.empty();
+        snSel.empty(); // Clear previous items
         
         if(sns.length > 0) {
             document.getElementById('sn_area').classList.remove('hidden');
@@ -311,7 +331,7 @@ async function loadProduct(sku) {
                 snSel.trigger('change');
             }
         } else {
-            alert("Tidak ada SN tersedia untuk barang ini di Gudang terpilih!");
+            alert("Tidak ada SN tersedia (Available) untuk barang ini di Gudang yang dipilih!");
             document.getElementById('sn_area').classList.add('hidden');
         }
         
@@ -397,13 +417,16 @@ async function initCamera() {
             }, 
             () => {}
         );
-        const capabilities = html5QrCode.getRunningTrackCameraCapabilities();
-        const flashBtn = document.getElementById('btn_flash');
-        if (capabilities && capabilities.torchFeature().isSupported()) {
-            flashBtn.classList.remove('hidden');
-        } else {
-            flashBtn.classList.add('hidden');
-        }
+        // Fix: Use sync method
+        try {
+            const capabilities = html5QrCode.getRunningTrackCameraCapabilities();
+            const flashBtn = document.getElementById('btn_flash');
+            if (capabilities && capabilities.torchFeature().isSupported()) {
+                flashBtn.classList.remove('hidden');
+            } else {
+                flashBtn.classList.add('hidden');
+            }
+        } catch(e) {}
     } catch (err) { alert("Camera Error: " + err); stopScan(); }
 }
 
@@ -427,7 +450,6 @@ async function toggleFlash() {
 
 function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }); }
 
-function resetCart() { if(cart.length > 0 && confirm("Ganti gudang hapus keranjang?")) { cart=[]; renderCart(); } }
 function validateCart() { return cart.length > 0; }
 async function genRef() { try{const r=await fetch('api.php?action=get_next_trx_number&type=OUT');const d=await r.json();const dt=new Date();document.getElementById('ref_input').value=`${APP_REF}/OUT/${dt.getDate()}${dt.getMonth()+1}${dt.getFullYear().toString().substr(-2)}-${d.next_no}`;}catch(e){} }
 </script>

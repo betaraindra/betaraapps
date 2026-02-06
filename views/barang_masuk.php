@@ -355,10 +355,13 @@ async function initCamera(type) {
                 },
                 () => {}
             );
-            // Flash check
-            html5QrCode.getRunningTrackCameraCapabilities().then(c => {
-                if (c && c.torchFeature().isSupported()) document.getElementById('btn_flash').classList.remove('hidden');
-            }).catch(e=>{});
+            // Flash check (FIX: getRunningTrackCameraCapabilities is sync, not promise)
+            try {
+                const capabilities = html5QrCode.getRunningTrackCameraCapabilities();
+                if (capabilities && capabilities.torchFeature().isSupported()) {
+                    document.getElementById('btn_flash').classList.remove('hidden');
+                }
+            } catch(e) {}
         } catch (err) {
             console.error(err);
             alert("Gagal kamera: " + err);
@@ -462,10 +465,15 @@ async function openSnScanner(btn) {
                 },
                 () => {}
             );
-            snHtml5QrCode.getRunningTrackCameraCapabilities().then(c => {
-                 const btnF = document.getElementById('btn_sn_flash');
-                 if (c && c.torchFeature().isSupported()) btnF.style.display = 'inline-block'; else btnF.style.display = 'none';
-            });
+            try {
+                const capabilities = snHtml5QrCode.getRunningTrackCameraCapabilities();
+                const btnF = document.getElementById('btn_sn_flash');
+                if (capabilities && capabilities.torchFeature().isSupported()) {
+                    btnF.style.display = 'inline-block';
+                } else {
+                    btnF.style.display = 'none';
+                }
+            } catch(e) {}
         } catch(e) {
             alert("Kamera Error: " + e);
             stopSnScan();

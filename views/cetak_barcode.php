@@ -32,9 +32,19 @@ $products = $pdo->query("SELECT id, sku, name, sell_price, unit FROM products OR
 <div class="main-content">
     <div class="flex justify-between items-center mb-6">
         <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-qrcode text-blue-600"></i> Cetak Label (Data Matrix)</h2>
-        <div class="text-sm text-gray-500 bg-yellow-100 p-2 rounded border border-yellow-200">
-            <i class="fas fa-info-circle"></i> Layout khusus Printer Thermal ukuran <b>50mm x 30mm</b>. Barcode tipe kotak (Data Matrix).
+        
+        <!-- BUTTON IMPORT EXCEL -->
+        <div class="flex gap-2 items-center">
+            <input type="file" id="import_excel_barcode" accept=".xlsx, .xls" class="hidden" onchange="importExcelBarcode(this)">
+            <button onclick="document.getElementById('import_excel_barcode').click()" class="bg-green-600 text-white px-4 py-2 rounded font-bold hover:bg-green-700 shadow text-sm flex items-center gap-2">
+                <i class="fas fa-file-import"></i> Import Excel SKU
+            </button>
         </div>
+    </div>
+    
+    <div class="text-sm text-gray-500 bg-yellow-100 p-2 rounded border border-yellow-200 mb-6 flex justify-between items-center">
+        <span><i class="fas fa-info-circle"></i> Layout khusus Printer Thermal ukuran <b>50mm x 30mm</b>. Barcode tipe kotak (Data Matrix).</span>
+        <span class="text-xs">Format Import Excel: Kolom A=<b>SKU</b>, Kolom B=<b>Qty</b> (Opsional, Default 1).</span>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -141,7 +151,7 @@ $products = $pdo->query("SELECT id, sku, name, sell_price, unit FROM products OR
 
 <script>
 let printQueue = [];
-const allProducts = <?= json_encode($products) ?>;
+const allProducts = <?= json_encode($products) ?>; // Untuk Lookup saat import
 
 document.getElementById('search_product').addEventListener('keyup', function(e) {
     const term = e.target.value.toLowerCase();
@@ -204,7 +214,8 @@ function addCustomToQueue() {
 
 function addToQueue(product) {
     const exist = printQueue.find(item => item.sku === product.sku);
-    if(exist) { exist.qty++; } else { printQueue.push({ ...product, qty: 1 }); }
+    if(exist) { exist.qty += (product.qty || 1); } 
+    else { printQueue.push({ ...product, qty: (product.qty || 1) }); }
     renderQueue();
 }
 
@@ -314,5 +325,57 @@ function printLabels() {
         }
     });
     window.print();
+}
+
+// --- IMPORT EXCEL FUNCTION ---
+function importExcelBarcode(input) {
+    if (input.files.length === 0) return;
+    const file = input.files[0];
+    const reader = new FileReader();
+    
+    reader.onload = function(e) {
+        try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, {type: 'array'});
+            const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+            // Import: Column A = SKU, Column B = Qty
+            const jsonData = XLSX.utils.sheet_to_json(firstSheet, {header: 1}); 
+            
+            let count = 0;
+            // Skip Header (row 0) if exists
+            for(let i=1; i<jsonData.length; i++) {
+                const row = jsonData[i];
+                if (!row[0]) continue;
+                
+                const sku = String(row[0]).trim();
+                const qty = parseInt(row[1]) || 1;
+                
+                // Cari di database `allProducts` (global JS var from PHP)
+                const found = allProducts.find(p => p.sku === sku);
+                
+                if (found) {
+                    addToQueue({...found, qty: qty});
+                    count++;
+                } else {
+                    // Jika tidak ada di DB, tambahkan sebagai Custom dengan Nama = SKU
+                    addToQueue({
+                        id: 'import_' + Date.now() + i,
+                        sku: sku,
+                        name: 'Unknown Item ('+sku+')',
+                        sell_price: 0,
+                        is_custom: true,
+                        qty: qty
+                    });
+                    count++;
+                }
+            }
+            alert(count + " Barcode berhasil ditambahkan ke antrian.");
+            input.value = ''; // Reset
+        } catch(ex) {
+            alert("Gagal membaca file Excel. Pastikan format benar.");
+            console.error(ex);
+        }
+    };
+    reader.readAsArrayBuffer(file);
 }
 </script>

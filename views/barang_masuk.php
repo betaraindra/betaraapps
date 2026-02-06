@@ -272,11 +272,11 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
 
 <script>
 let cart = [];
-let html5QrCode;
-let snHtml5QrCode; // Dedicated instance for SN
+let html5QrCode = null; // MAIN SCANNER
+let snHtml5QrCode = null; // SN SCANNER
 let currentFacingMode = "environment";
 let isFlashOn = false;
-let currentSnInput = null; // Target input element for SN Scan
+let currentSnInput = null; 
 const APP_REF = "<?= $app_ref ?>";
 
 $(document).ready(function() {
@@ -284,7 +284,6 @@ $(document).ready(function() {
     genRef();
 });
 
-// --- HANDLE SELECT2 CHANGE ---
 $('#product_select').on('select2:select', function (e) {
     const data = $(this).find(':selected').data('json');
     if(data) fillForm(data);
@@ -297,12 +296,10 @@ function fillForm(data) {
     document.getElementById('inp_sell').value = fmtMoney(data.sell_price);
     document.getElementById('inp_unit').value = data.unit;
     $('#inp_cat').val(data.category);
-    
     document.getElementById('extra_details').classList.remove('hidden');
     document.getElementById('inp_qty').focus();
 }
 
-// --- LOGIKA UTAMA: PROSES HASIL SCAN SKU (AUTO FILL) ---
 function handleScanResult(sku) {
     document.getElementById('inp_sku').value = sku;
     const opt = $(`#product_select option[value='${sku}']`);
@@ -315,7 +312,6 @@ function handleScanResult(sku) {
     }
 }
 
-// --- SCANNER UTAMA (SKU) ---
 function activateUSB() {
     const el = document.getElementById('inp_sku');
     el.focus(); el.value = '';
@@ -330,35 +326,54 @@ document.getElementById('inp_sku').addEventListener('keypress', function (e) {
     }
 });
 
+// --- FIX: ROBUST INIT CAMERA FOR MAIN ---
 async function initCamera(type) {
     // Shared Scanner Area for Main Product
+    const readerElem = document.getElementById("reader");
+    if(!readerElem) return alert("Element kamera tidak ditemukan");
+
     document.getElementById('scanner_area').classList.remove('hidden');
     document.getElementById('scan_target_label').innerText = "Scan SKU Produk";
     
-    if(html5QrCode) { try{ await html5QrCode.stop(); html5QrCode.clear(); }catch(e){} }
-
-    html5QrCode = new Html5Qrcode("reader");
-    try {
-        await html5QrCode.start(
-            { facingMode: currentFacingMode }, 
-            { fps: 10, qrbox: { width: 250, height: 250 } }, 
-            (decodedText) => {
-                stopScan();
-                handleScanResult(decodedText);
-            },
-            () => {}
-        );
-        checkFlashCapability(html5QrCode);
-    } catch (err) {
-        alert("Gagal kamera: " + err);
-        stopScan();
+    // Clear existing instance safely
+    if(html5QrCode) {
+        try { await html5QrCode.stop(); } catch(e) {}
+        try { html5QrCode.clear(); } catch(e) {}
+        html5QrCode = null;
     }
+
+    // Delay slighty to ensure DOM ready if toggling
+    setTimeout(async () => {
+        html5QrCode = new Html5Qrcode("reader");
+        try {
+            await html5QrCode.start(
+                { facingMode: currentFacingMode }, 
+                { fps: 10, qrbox: { width: 250, height: 250 } }, 
+                (decodedText) => {
+                    stopScan();
+                    handleScanResult(decodedText);
+                },
+                () => {}
+            );
+            // Flash check
+            html5QrCode.getRunningTrackCameraCapabilities().then(c => {
+                if (c && c.torchFeature().isSupported()) document.getElementById('btn_flash').classList.remove('hidden');
+            }).catch(e=>{});
+        } catch (err) {
+            console.error(err);
+            alert("Gagal kamera: " + err);
+            stopScan();
+        }
+    }, 300);
 }
 
 async function switchCamera() {
-    if (html5QrCode) { await html5QrCode.stop(); html5QrCode.clear(); }
+    if (html5QrCode) { 
+        try { await html5QrCode.stop(); html5QrCode.clear(); } catch(e){}
+    }
     currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment";
-    initCamera('main');
+    // Restart with new mode
+    setTimeout(() => initCamera('main'), 200); 
 }
 
 async function toggleFlash() {
@@ -371,10 +386,18 @@ async function toggleFlash() {
 }
 
 function stopScan() {
-    if(html5QrCode) html5QrCode.stop().then(() => {
+    if(html5QrCode) {
+        html5QrCode.stop().then(() => {
+            document.getElementById('scanner_area').classList.add('hidden');
+            html5QrCode.clear();
+            html5QrCode = null;
+        }).catch(err => {
+            document.getElementById('scanner_area').classList.add('hidden');
+            html5QrCode = null; 
+        });
+    } else {
         document.getElementById('scanner_area').classList.add('hidden');
-        html5QrCode.clear();
-    }).catch(err => { document.getElementById('scanner_area').classList.add('hidden'); });
+    }
 }
 
 function handleFileScan(input) {
@@ -383,14 +406,7 @@ function handleFileScan(input) {
     html5QrCode.scanFile(input.files[0], true).then(d => handleScanResult(d)).catch(e => alert("Gagal scan foto."));
 }
 
-function checkFlashCapability(instance) {
-    instance.getRunningTrackCameraCapabilities().then(c => {
-        if (c && c.torchFeature().isSupported()) document.getElementById('btn_flash').classList.remove('hidden');
-    }).catch(e=>{});
-}
-
-
-// --- LOGIKA SN INPUT DINAMIS ---
+// --- SN SCANNER (Dedicated ID) ---
 function renderSnInputs() {
     const qty = parseInt(document.getElementById('inp_qty').value) || 0;
     const cont = document.getElementById('sn_container');
@@ -399,13 +415,8 @@ function renderSnInputs() {
 
     if (qty > 0) {
         wrap.classList.remove('hidden');
-        // Hanya render jika jumlah berubah drastis atau kosong, agar input existing tidak hilang jika nambah qty
-        // Tapi demi simplisitas, reset dulu. 
-        // Improvement: Simpan value lama.
-        
         let oldValues = [];
         document.querySelectorAll('.sn-field').forEach(i => oldValues.push(i.value));
-        
         cont.innerHTML = '';
         for(let i=0; i<qty; i++) {
             const val = oldValues[i] || '';
@@ -413,12 +424,8 @@ function renderSnInputs() {
             div.className = 'flex gap-1 items-center';
             div.innerHTML = `
                 <input type="text" class="sn-field w-full border p-2 rounded text-xs uppercase font-mono border-gray-300" placeholder="SN Barang #${i+1}" value="${val}">
-                <button type="button" onclick="openSnScanner(this)" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-2 rounded" title="Scan Kamera">
-                    <i class="fas fa-camera"></i>
-                </button>
-                <button type="button" onclick="genRowSn(this)" class="bg-yellow-100 hover:bg-yellow-200 text-yellow-700 px-2 py-2 rounded" title="Generate Auto">
-                    <i class="fas fa-bolt"></i>
-                </button>
+                <button type="button" onclick="openSnScanner(this)" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-2 rounded" title="Scan Kamera"><i class="fas fa-camera"></i></button>
+                <button type="button" onclick="genRowSn(this)" class="bg-yellow-100 hover:bg-yellow-200 text-yellow-700 px-2 py-2 rounded" title="Generate Auto"><i class="fas fa-bolt"></i></button>
             `;
             cont.appendChild(div);
         }
@@ -427,92 +434,73 @@ function renderSnInputs() {
     }
 }
 
-// --- FITUR SN: GENERATE AUTO ---
 function genRowSn(btn) {
-    const input = btn.previousElementSibling.previousElementSibling; // Button -> Button -> Input
+    const input = btn.previousElementSibling.previousElementSibling; 
     const sku = document.getElementById('inp_sku').value.substring(0,5) || 'ITM';
     input.value = sku.toUpperCase() + "-" + Date.now().toString().slice(-6) + Math.floor(Math.random()*1000);
 }
 
-// --- FITUR SN: SCANNER KHUSUS ---
 async function openSnScanner(btn) {
-    currentSnInput = btn.previousElementSibling; // The input field
+    currentSnInput = btn.previousElementSibling;
     document.getElementById('sn_scanner_modal').classList.remove('hidden');
     
-    if(snHtml5QrCode) { try{ await snHtml5QrCode.stop(); snHtml5QrCode.clear(); }catch(e){} }
+    if(snHtml5QrCode) { try{ await snHtml5QrCode.stop(); snHtml5QrCode.clear(); }catch(e){} snHtml5QrCode = null; }
     
-    snHtml5QrCode = new Html5Qrcode("sn_reader");
-    try {
-        await snHtml5QrCode.start(
-            { facingMode: "environment" }, 
-            { fps: 10, qrbox: { width: 250, height: 250 } }, 
-            (txt) => {
-                // Success
-                if(currentSnInput) {
-                    currentSnInput.value = txt;
-                    // Visual feedback
-                    currentSnInput.classList.add('bg-green-100');
-                    setTimeout(() => currentSnInput.classList.remove('bg-green-100'), 500);
-                }
-                stopSnScan();
-            },
-            () => {}
-        );
-        // Check flash for SN scanner
-        snHtml5QrCode.getRunningTrackCameraCapabilities().then(c => {
-             const btnF = document.getElementById('btn_sn_flash');
-             if (c && c.torchFeature().isSupported()) btnF.style.display = 'inline-block'; else btnF.style.display = 'none';
-        });
-    } catch(e) {
-        alert("Kamera Error: " + e);
-        stopSnScan();
-    }
+    setTimeout(async () => {
+        snHtml5QrCode = new Html5Qrcode("sn_reader");
+        try {
+            await snHtml5QrCode.start(
+                { facingMode: "environment" }, 
+                { fps: 10, qrbox: { width: 250, height: 250 } }, 
+                (txt) => {
+                    if(currentSnInput) {
+                        currentSnInput.value = txt;
+                        currentSnInput.classList.add('bg-green-100');
+                        setTimeout(() => currentSnInput.classList.remove('bg-green-100'), 500);
+                    }
+                    stopSnScan();
+                },
+                () => {}
+            );
+            snHtml5QrCode.getRunningTrackCameraCapabilities().then(c => {
+                 const btnF = document.getElementById('btn_sn_flash');
+                 if (c && c.torchFeature().isSupported()) btnF.style.display = 'inline-block'; else btnF.style.display = 'none';
+            });
+        } catch(e) {
+            alert("Kamera Error: " + e);
+            stopSnScan();
+        }
+    }, 300);
 }
 
 function stopSnScan() {
     if(snHtml5QrCode) snHtml5QrCode.stop().then(() => {
         document.getElementById('sn_scanner_modal').classList.add('hidden');
         snHtml5QrCode.clear();
-    }).catch(() => document.getElementById('sn_scanner_modal').classList.add('hidden'));
+        snHtml5QrCode = null;
+    }).catch(() => {
+        document.getElementById('sn_scanner_modal').classList.add('hidden');
+        snHtml5QrCode = null;
+    });
 }
 
 async function toggleSnFlash() {
     if (snHtml5QrCode) {
-        // Toggle logic manual (isFlashOn global might conflict, so use try/catch toggle)
-        // Simplification: Assume off, turn on. If failed, ignore.
-        try {
-            await snHtml5QrCode.applyVideoConstraints({ advanced: [{ torch: true }] });
-        } catch(e) {
-            await snHtml5QrCode.applyVideoConstraints({ advanced: [{ torch: false }] });
-        }
+        try { await snHtml5QrCode.applyVideoConstraints({ advanced: [{ torch: true }] }); } catch(e) { await snHtml5QrCode.applyVideoConstraints({ advanced: [{ torch: false }] }); }
     }
 }
 
-// --- CART LOGIC ---
+// ... (Existing Cart Logic: addToCart, renderCart, etc.) ...
 function addToCart() {
     const sku = document.getElementById('inp_sku').value;
     const name = document.getElementById('inp_name').value;
     const qty = parseInt(document.getElementById('inp_qty').value);
-    
     if(!sku || !name || !qty || qty <= 0) { alert("Lengkapi Data!"); return; }
-
     let sns = [];
     let validSn = true;
-    document.querySelectorAll('.sn-field').forEach(i => {
-        if(!i.value.trim()) validSn = false;
-        sns.push(i.value.trim());
-    });
+    document.querySelectorAll('.sn-field').forEach(i => { if(!i.value.trim()) validSn = false; sns.push(i.value.trim()); });
     if(!validSn) { alert("Lengkapi semua SN! Gunakan tombol Generate jika tidak ada barcode SN."); return; }
-
-    cart.push({
-        sku, name, qty, sns,
-        buy_price: document.getElementById('inp_buy').value,
-        sell_price: document.getElementById('inp_sell').value,
-        unit: document.getElementById('inp_unit').value,
-        category: document.getElementById('inp_cat').value,
-        notes: document.getElementById('inp_notes').value
-    });
-    
+    cart.push({ sku, name, qty, sns, buy_price: document.getElementById('inp_buy').value, sell_price: document.getElementById('inp_sell').value, unit: document.getElementById('inp_unit').value, category: document.getElementById('inp_cat').value, notes: document.getElementById('inp_notes').value });
     renderCart();
     $('#product_select').val(null).trigger('change');
     document.getElementById('inp_sku').value = '';
@@ -520,32 +508,16 @@ function addToCart() {
     document.getElementById('inp_qty').value = '';
     document.getElementById('sn_wrapper').classList.add('hidden');
 }
-
 function renderCart() {
-    const tb = document.getElementById('cart_body');
-    tb.innerHTML = '';
-    if(cart.length === 0) {
-        tb.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-400">Kosong</td></tr>';
-        document.getElementById('btn_submit').disabled = true;
-        return;
-    }
+    const tb = document.getElementById('cart_body'); tb.innerHTML = '';
+    if(cart.length === 0) { tb.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-400">Kosong</td></tr>'; document.getElementById('btn_submit').disabled = true; return; }
     document.getElementById('btn_submit').disabled = false;
-    
     cart.forEach((item, idx) => {
         const sub = item.qty * parseInt(item.buy_price.replace(/\D/g,'')||0);
-        tb.innerHTML += `
-            <tr class="border-b">
-                <td class="p-2 font-bold">${item.name}<br><small>${item.sku}</small></td>
-                <td class="p-2 text-center">${item.qty}</td>
-                <td class="p-2 text-xs font-mono max-w-xs break-all">${item.sns.join(', ')}</td>
-                <td class="p-2 text-right">Rp ${new Intl.NumberFormat('id-ID').format(sub)}</td>
-                <td class="p-2 text-center"><button type="button" onclick="cart.splice(${idx},1);renderCart()" class="text-red-500"><i class="fas fa-trash"></i></button></td>
-            </tr>
-        `;
+        tb.innerHTML += `<tr class="border-b"><td class="p-2 font-bold">${item.name}<br><small>${item.sku}</small></td><td class="p-2 text-center">${item.qty}</td><td class="p-2 text-xs font-mono max-w-xs break-all">${item.sns.join(', ')}</td><td class="p-2 text-right">Rp ${new Intl.NumberFormat('id-ID').format(sub)}</td><td class="p-2 text-center"><button type="button" onclick="cart.splice(${idx},1);renderCart()" class="text-red-500"><i class="fas fa-trash"></i></button></td></tr>`;
     });
     document.getElementById('cart_json').value = JSON.stringify(cart);
 }
-
 function validateCart() { return cart.length > 0; }
 function fmtRupiah(i) { let v = i.value.replace(/\D/g, ''); i.value = v ? new Intl.NumberFormat('id-ID').format(v) : ''; }
 function fmtMoney(v) { return v ? new Intl.NumberFormat('id-ID').format(v) : ''; }

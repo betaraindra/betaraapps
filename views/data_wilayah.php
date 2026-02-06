@@ -150,6 +150,7 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
                         <thead class="bg-white text-gray-500 border-b border-gray-200">
                             <tr>
                                 <th class="p-2 pl-4 w-1/3">Nama Barang</th>
+                                <th class="p-2 text-center w-16">Unit</th>
                                 <th class="p-2 text-center text-green-600">Masuk</th>
                                 <th class="p-2 text-center text-red-600">Keluar</th>
                                 <th class="p-2 pr-4 text-right text-purple-700 font-bold bg-purple-50">Terpakai</th>
@@ -157,12 +158,15 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
                         </thead>
                         <tbody class="divide-y divide-gray-100">
                             <?php if(empty($top_items)): ?>
-                                <tr><td colspan="4" class="p-4 text-center text-gray-400 italic">Belum ada pergerakan material pada periode ini.</td></tr>
+                                <tr><td colspan="5" class="p-4 text-center text-gray-400 italic">Belum ada pergerakan material pada periode ini.</td></tr>
                             <?php else: ?>
                                 <?php foreach($top_items as $item): ?>
                                 <tr class="hover:bg-gray-50">
                                     <td class="p-2 pl-4 font-medium text-gray-700 truncate max-w-[150px]" title="<?= htmlspecialchars($item['name']) ?>">
                                         <?= htmlspecialchars($item['name']) ?>
+                                    </td>
+                                    <td class="p-2 text-center text-gray-500 text-[10px]">
+                                        <?= htmlspecialchars($item['unit']) ?>
                                     </td>
                                     <td class="p-2 text-center text-green-600 font-medium">
                                         <?= $item['qty_in'] > 0 ? '+'.$item['qty_in'] : '-' ?>
@@ -171,7 +175,7 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
                                         <?= $item['qty_out'] > 0 ? '-'.$item['qty_out'] : '-' ?>
                                     </td>
                                     <td class="p-2 pr-4 text-right font-bold text-purple-700 bg-purple-50">
-                                        <?= $item['qty_used'] > 0 ? $item['qty_used'] : '-' ?> <span class="text-[9px] font-normal text-gray-400"><?= $item['unit'] ?></span>
+                                        <?= $item['qty_used'] > 0 ? $item['qty_used'] : '-' ?>
                                     </td>
                                 </tr>
                                 <?php endforeach; ?>

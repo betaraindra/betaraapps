@@ -134,27 +134,44 @@ $modal_products = $available_products->fetchAll();
 
 // --- 1. OPTIMIZED DATA STOK FISIK (Menggunakan JOIN aggregation) ---
 if ($tab === 'stock') {
+    // UPDATE LOGIC: Memisahkan Qty Out Biasa (Jual/Trf) vs Qty Out Aktivitas (Pemakaian)
+    // Tujuannya agar Nilai Aset bisa dihitung dari (Ready + Terpakai) jika diinginkan
     $sql_stock = "
         SELECT p.sku, p.name, p.unit, p.buy_price,
+               -- Total Masuk
                COALESCE(SUM(CASE WHEN i.type = 'IN' THEN i.quantity ELSE 0 END), 0) as qty_in,
-               COALESCE(SUM(CASE WHEN i.type = 'OUT' THEN i.quantity ELSE 0 END), 0) as qty_out
+               
+               -- Total Keluar (SEMUA)
+               COALESCE(SUM(CASE WHEN i.type = 'OUT' THEN i.quantity ELSE 0 END), 0) as qty_out_total,
+               
+               -- Keluar Khusus Aktivitas/Pemakaian
+               COALESCE(SUM(CASE 
+                    WHEN i.type = 'OUT' AND (i.notes LIKE 'Aktivitas:%' OR i.notes LIKE '%[PEMAKAIAN]%') 
+                    THEN i.quantity ELSE 0 
+               END), 0) as qty_used
+               
         FROM products p
         JOIN inventory_transactions i ON p.id = i.product_id
         WHERE i.warehouse_id = ?
         AND (p.name LIKE ? OR p.sku LIKE ?)
         GROUP BY p.id
-        HAVING (qty_in - qty_out) > 0 OR (qty_in > 0 OR qty_out > 0)
+        HAVING qty_in > 0
         ORDER BY p.name ASC
     ";
     $stmt_stock = $pdo->prepare($sql_stock);
     $stmt_stock->execute([$id, "%$q%", "%$q%"]);
     $stocks = $stmt_stock->fetchAll();
     
-    // Hitung Total Aset (PHP Side calculation is fast enough for < 5000 rows)
+    // Hitung Total Aset 
+    // RULE: Aset Keuangan Wilayah = Unit Ready + Unit Terpakai (Aktivitas)
+    // Unit Terpakai dianggap masih aset wilayah (Internal), tidak hilang nilainya.
     $total_asset_value = 0;
     foreach($stocks as $s) {
-        $curr_qty = $s['qty_in'] - $s['qty_out'];
-        $total_asset_value += ($curr_qty * $s['buy_price']);
+        $ready = $s['qty_in'] - $s['qty_out_total'];
+        $used = $s['qty_used'];
+        $asset_basis = $ready + $used; // Aset = Ready + Terpakai
+        
+        $total_asset_value += ($asset_basis * $s['buy_price']);
     }
 }
 
@@ -281,8 +298,8 @@ if ($tab === 'activity') {
         </button>
 
         <?php if($tab === 'stock'): ?>
-        <div class="bg-blue-100 text-blue-800 px-4 py-2 rounded text-center border border-blue-200">
-            <div class="text-xs font-bold uppercase">Nilai Aset Fisik</div>
+        <div class="bg-blue-100 text-blue-800 px-4 py-2 rounded text-center border border-blue-200 shadow-sm">
+            <div class="text-xs font-bold uppercase">Total Aset (Ready + Terpakai)</div>
             <div class="font-bold text-lg"><?= formatRupiah($total_asset_value) ?></div>
         </div>
         <?php endif; ?>
@@ -323,7 +340,7 @@ if ($tab === 'activity') {
 <div class="flex border-b border-gray-200 mb-6 bg-white rounded-t-lg overflow-x-auto">
     <a href="?page=detail_gudang&id=<?= $id ?>&tab=stock&start=<?= $start_date ?>&end=<?= $end_date ?>&q=<?= h($q) ?>" 
        class="flex-1 py-3 text-center text-sm font-bold border-b-2 hover:bg-gray-50 whitespace-nowrap px-4 <?= $tab=='stock' ? 'border-blue-600 text-blue-600 bg-blue-50' : 'border-transparent text-gray-500' ?>">
-       <i class="fas fa-boxes mr-2"></i> Stok Fisik
+       <i class="fas fa-boxes mr-2"></i> Stok Fisik & Aset
     </a>
     <a href="?page=detail_gudang&id=<?= $id ?>&tab=activity&start=<?= $start_date ?>&end=<?= $end_date ?>&q=<?= h($q) ?>" 
        class="flex-1 py-3 text-center text-sm font-bold border-b-2 hover:bg-gray-50 whitespace-nowrap px-4 <?= $tab=='activity' ? 'border-purple-600 text-purple-600 bg-purple-50' : 'border-transparent text-gray-500' ?>">
@@ -344,40 +361,58 @@ if ($tab === 'activity') {
     
     <!-- TAB 1: STOK FISIK (OPTIMIZED) -->
     <?php if($tab == 'stock'): ?>
-        <h3 class="font-bold text-gray-800 mb-4 border-b pb-2">Posisi Stok Gudang (<?= count($stocks) ?> Item)</h3>
+        <h3 class="font-bold text-gray-800 mb-4 border-b pb-2">Posisi Stok & Aset Wilayah</h3>
         <div class="overflow-x-auto">
             <table class="w-full text-sm text-left border-collapse">
                 <thead class="bg-gray-100 text-gray-700">
                     <tr>
                         <th class="p-3 border-b">SKU</th>
                         <th class="p-3 border-b">Nama Barang</th>
-                        <th class="p-3 border-b text-right text-green-600">Total Masuk</th>
-                        <th class="p-3 border-b text-right text-red-600">Total Keluar</th>
-                        <th class="p-3 border-b text-right bg-blue-50 text-blue-800 font-bold">Stok Akhir</th>
-                        <th class="p-3 border-b text-center">Satuan</th>
-                        <th class="p-3 border-b text-right">Nilai Aset (Rp)</th>
+                        <th class="p-3 border-b text-right text-green-600" title="Total semua barang yang pernah masuk">Total Masuk</th>
+                        <th class="p-3 border-b text-right text-purple-600" title="Barang dipakai untuk aktivitas internal">Terpakai (Akt)</th>
+                        <th class="p-3 border-b text-right text-red-600" title="Barang keluar dijual/transfer (Bukan aktivitas)">Keluar Lain</th>
+                        <th class="p-3 border-b text-right bg-blue-100 text-blue-800 font-bold" title="Barang fisik tersedia di rak">Unit Ready</th>
+                        <th class="p-3 border-b text-center">Sat</th>
+                        <th class="p-3 border-b text-right font-bold text-gray-800" title="(Ready + Terpakai) x Harga Beli">Nilai Aset (Rp)</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y">
                     <?php foreach($stocks as $s): 
-                        $final = $s['qty_in'] - $s['qty_out'];
-                        $val = $final * $s['buy_price'];
+                        // Perhitungan:
+                        // Ready = Total In - Total Out (Semua)
+                        // Asset Basis = Ready + Used (Aktivitas)
+                        // Keluar Lain = Total Out - Used
+                        
+                        $ready_stock = $s['qty_in'] - $s['qty_out_total'];
+                        $used_stock = $s['qty_used'];
+                        $other_out = $s['qty_out_total'] - $used_stock;
+                        
+                        // Nilai Aset = (Stok Ready + Stok Terpakai) * Harga
+                        // Asumsi: Barang terpakai aktivitas adalah aset tertanam di wilayah
+                        $asset_qty = $ready_stock + $used_stock;
+                        $asset_value = $asset_qty * $s['buy_price'];
                     ?>
                     <tr class="hover:bg-gray-50">
                         <td class="p-3 font-mono text-xs"><?= h($s['sku']) ?></td>
                         <td class="p-3 font-medium"><?= h($s['name']) ?></td>
-                        <td class="p-3 text-right text-green-600"><?= number_format($s['qty_in']) ?></td>
-                        <td class="p-3 text-right text-red-600"><?= number_format($s['qty_out']) ?></td>
-                        <td class="p-3 text-right font-bold bg-blue-50 text-blue-800 text-lg"><?= number_format($final) ?></td>
+                        <td class="p-3 text-right text-green-600 font-medium"><?= number_format($s['qty_in']) ?></td>
+                        <td class="p-3 text-right text-purple-600 font-bold"><?= number_format($used_stock) ?></td>
+                        <td class="p-3 text-right text-red-600"><?= number_format($other_out) ?></td>
+                        <td class="p-3 text-right font-bold bg-blue-50 text-blue-800 text-lg"><?= number_format($ready_stock) ?></td>
                         <td class="p-3 text-center text-xs text-gray-500"><?= h($s['unit']) ?></td>
-                        <td class="p-3 text-right"><?= formatRupiah($val) ?></td>
+                        <td class="p-3 text-right font-bold"><?= formatRupiah($asset_value) ?></td>
                     </tr>
                     <?php endforeach; ?>
                     <?php if(empty($stocks)): ?>
-                        <tr><td colspan="7" class="p-8 text-center text-gray-400">Tidak ada stok barang di gudang ini sesuai filter.</td></tr>
+                        <tr><td colspan="8" class="p-8 text-center text-gray-400">Tidak ada stok barang di gudang ini sesuai filter.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
+            <p class="text-xs text-gray-500 mt-3 italic">
+                * <b>Unit Ready</b>: Stok fisik yang tersedia di gudang.<br>
+                * <b>Terpakai (Akt)</b>: Barang yang sudah digunakan untuk aktivitas wilayah.<br>
+                * <b>Nilai Aset</b>: Dihitung dari (Unit Ready + Terpakai) x Harga Beli. Pemakaian internal tidak mengurangi nilai aset wilayah.
+            </p>
         </div>
     
     <!-- TAB 2: AKTIVITAS / PEMAKAIAN -->

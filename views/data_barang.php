@@ -389,12 +389,12 @@ if (isset($_GET['edit_id'])) {
 <!-- SPLIT LAYOUT -->
 <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 page-content-wrapper">
     <!-- LEFT: FORM (1 COL) -->
-    <div class="lg:col-span-1 no-print">
+    <div class="lg:col-span-1 no-print order-1 lg:order-1">
         <?php include 'views/data_barang_form.php'; ?>
     </div>
 
     <!-- RIGHT: TABLE (3 COLS) -->
-    <div class="lg:col-span-3">
+    <div class="lg:col-span-3 order-2 lg:order-2">
         <div class="bg-white rounded-lg shadow overflow-hidden">
             <div class="overflow-x-auto">
                 <table class="w-full text-xs text-left border-collapse border border-gray-300">
@@ -607,7 +607,12 @@ async function initCamera() {
     html5QrCode = new Html5Qrcode("reader");
     try {
         await html5QrCode.start({ facingMode: currentFacingMode }, { fps: 10, qrbox: { width: 250, height: 250 } }, (d)=>{ checkAndFillProduct(d); stopScan(); }, ()=>{});
-        html5QrCode.getRunningTrackCameraCapabilities().then(c=>{ if(c.torchFeature().isSupported()) document.getElementById('btn_flash').classList.remove('hidden'); });
+        try {
+            const capabilities = html5QrCode.getRunningTrackCameraCapabilities();
+            if (capabilities && capabilities.torchFeature().isSupported()) {
+                document.getElementById('btn_flash').classList.remove('hidden');
+            }
+        } catch(e) {}
     } catch(e) { alert("Cam Error: "+e); stopScan(); }
 }
 function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }); }

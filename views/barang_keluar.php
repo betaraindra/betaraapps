@@ -25,32 +25,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                 if ($qty == 0) throw new Exception("SN untuk {$item['name']} kosong.");
 
                 $notes = $item['notes'];
-                if($dest_wh_id) $notes .= " (Mutasi ke $dest_wh_name)";
-                $notes .= " [SN: " . implode(', ', $item['sns']) . "]";
-
-                $stmtTrx = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
-                $stmtTrx->execute([$_POST['date'], $prod['id'], $wh_id, $qty, $_POST['reference'], $notes, $_SESSION['user_id']]);
-                $trx_out_id = $pdo->lastInsertId();
-
-                $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$qty, $prod['id']]);
-
-                $snStmt = $pdo->prepare("UPDATE product_serials SET status = 'SOLD', out_transaction_id = ? WHERE product_id = ? AND serial_number = ? AND warehouse_id = ? AND status = 'AVAILABLE'");
-                foreach ($item['sns'] as $sn) {
-                    $snStmt->execute([$trx_out_id, $prod['id'], $sn, $wh_id]);
-                    if ($snStmt->rowCount() == 0) throw new Exception("SN $sn tidak tersedia di Gudang $wh_name (Mungkin sudah terjual/beda gudang).");
-                }
-
+                
+                // === LOGIC MUTASI INTERNAL (PERPINDAHAN ASET) ===
                 if (!empty($dest_wh_id) && $_POST['out_type'] === 'INTERNAL') {
+                    // Hitung Nilai Aset yang dipindahkan (Qty * Harga Beli)
+                    $asset_value_moved = $qty * $prod['buy_price'];
+                    $formatted_val = number_format($asset_value_moved, 0, ',', '.');
+                    
+                    // Note untuk Pengirim (OUT)
+                    $notes_out = $notes . " (Mutasi Aset ke $dest_wh_name - Nilai: Rp $formatted_val)";
+                    $notes_out .= " [SN: " . implode(', ', $item['sns']) . "]";
+
+                    // 1. Simpan Transaksi OUT (Gudang Asal)
+                    $stmtTrx = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
+                    $stmtTrx->execute([$_POST['date'], $prod['id'], $wh_id, $qty, $_POST['reference'], $notes_out, $_SESSION['user_id']]);
+                    $trx_out_id = $pdo->lastInsertId();
+
+                    // 2. Update Stok Fisik (Source)
+                    $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$qty, $prod['id']]);
+
+                    // 3. Update Status SN (Source -> Transit/Sold logic handled by next step)
+                    $snStmt = $pdo->prepare("UPDATE product_serials SET status = 'SOLD', out_transaction_id = ? WHERE product_id = ? AND serial_number = ? AND warehouse_id = ? AND status = 'AVAILABLE'");
+                    foreach ($item['sns'] as $sn) {
+                        $snStmt->execute([$trx_out_id, $prod['id'], $sn, $wh_id]);
+                        if ($snStmt->rowCount() == 0) throw new Exception("SN $sn tidak tersedia di Gudang $wh_name.");
+                    }
+
+                    // 4. Update Stok Fisik (Dest)
                     $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?")->execute([$qty, $prod['id']]);
+                    
+                    // Note untuk Penerima (IN)
                     $ref_in = $_POST['reference'] . '-TRF';
-                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'IN', ?, ?, ?, ?, 'Mutasi Masuk dari $wh_name', ?)")
-                        ->execute([$_POST['date'], $prod['id'], $dest_wh_id, $qty, $ref_in, $_SESSION['user_id']]);
+                    $notes_in = "Mutasi Masuk Aset dari $wh_name (Nilai: Rp $formatted_val)";
+                    
+                    // 5. Simpan Transaksi IN (Gudang Tujuan)
+                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'IN', ?, ?, ?, ?, ?, ?)")
+                        ->execute([$_POST['date'], $prod['id'], $dest_wh_id, $qty, $ref_in, $notes_in, $_SESSION['user_id']]);
                     $trx_in_id = $pdo->lastInsertId();
                     
+                    // 6. Pindahkan SN ke Gudang Tujuan (Status AVAILABLE)
                     $snMove = $pdo->prepare("UPDATE product_serials SET status = 'AVAILABLE', warehouse_id = ?, in_transaction_id = ? WHERE product_id = ? AND serial_number = ?");
                     foreach ($item['sns'] as $sn) $snMove->execute([$dest_wh_id, $trx_in_id, $prod['id'], $sn]);
+                
                 } 
+                // === LOGIC PENJUALAN EKSTERNAL ===
                 elseif ($_POST['out_type'] === 'EXTERNAL') {
+                    $notes .= " [SN: " . implode(', ', $item['sns']) . "]";
+                    
+                    // 1. Simpan Transaksi OUT
+                    $stmtTrx = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
+                    $stmtTrx->execute([$_POST['date'], $prod['id'], $wh_id, $qty, $_POST['reference'], $notes, $_SESSION['user_id']]);
+                    $trx_out_id = $pdo->lastInsertId();
+
+                    // 2. Update Stok
+                    $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$qty, $prod['id']]);
+
+                    // 3. Update Status SN
+                    $snStmt = $pdo->prepare("UPDATE product_serials SET status = 'SOLD', out_transaction_id = ? WHERE product_id = ? AND serial_number = ? AND warehouse_id = ? AND status = 'AVAILABLE'");
+                    foreach ($item['sns'] as $sn) {
+                        $snStmt->execute([$trx_out_id, $prod['id'], $sn, $wh_id]);
+                        if ($snStmt->rowCount() == 0) throw new Exception("SN $sn tidak tersedia di Gudang $wh_name.");
+                    }
+
+                    // 4. Catat Keuangan (Pendapatan)
                     $val = $qty * $prod['sell_price'];
                     $accId = $pdo->query("SELECT id FROM accounts WHERE code='4001'")->fetchColumn(); 
                     if($accId && $val > 0) {
@@ -101,13 +138,22 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
             <div id="reader" class="w-full h-full"></div>
             
             <!-- Controls Overlay -->
-            <div class="absolute bottom-4 left-0 right-0 flex justify-center gap-4 z-20">
-                <button type="button" onclick="switchCamera()" class="bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Ganti Kamera">
-                    <i class="fas fa-sync-alt"></i>
-                </button>
-                <button type="button" onclick="toggleFlash()" id="btn_flash" class="hidden bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Flash / Senter">
-                    <i class="fas fa-bolt"></i>
-                </button>
+            <div class="absolute bottom-4 left-0 right-0 z-20 flex flex-col items-center gap-2 px-4">
+                <!-- ZOOM SLIDER -->
+                <div id="zoom_control" class="hidden w-full max-w-xs flex items-center gap-2 bg-black/50 px-3 py-1 rounded-full text-white">
+                    <i class="fas fa-search-minus text-xs"></i>
+                    <input type="range" id="zoom_slider" min="1" max="5" step="0.1" value="1" class="w-full h-1 bg-gray-400 rounded-lg appearance-none cursor-pointer" oninput="applyZoom(this.value)">
+                    <i class="fas fa-search-plus text-xs"></i>
+                </div>
+
+                <div class="flex justify-center gap-4">
+                    <button type="button" onclick="switchCamera()" class="bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Ganti Kamera">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+                    <button type="button" onclick="toggleFlash()" id="btn_flash" class="hidden bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Flash / Senter">
+                        <i class="fas fa-bolt"></i>
+                    </button>
+                </div>
             </div>
 
             <button onclick="stopScan()" class="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-full shadow-lg hover:bg-red-700 z-50">
@@ -144,9 +190,10 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
                     </label>
                     <label class="flex items-center gap-2 cursor-pointer">
                         <input type="radio" name="out_type" value="INTERNAL" checked onchange="toggleDestWarehouse()">
-                        <span class="font-bold text-orange-700">Internal / Mutasi</span>
+                        <span class="font-bold text-orange-700">Internal / Mutasi Aset (Pindah Gudang)</span>
                     </label>
                 </div>
+                <p id="hint_internal" class="text-xs text-orange-600 mt-1 italic"><i class="fas fa-info-circle"></i> Memindahkan stok dan nilai aset ke gudang lain tanpa mencatat Penjualan/Pendapatan.</p>
             </div>
 
             <!-- PILIH GUDANG -->
@@ -160,7 +207,7 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
                 </div>
 
                 <div id="dest_wh_container" class="bg-green-50 p-3 rounded border border-green-200">
-                    <label class="block text-xs font-bold text-green-800 mb-1">Gudang Tujuan (Untuk Mutasi)</label>
+                    <label class="block text-xs font-bold text-green-800 mb-1">Gudang Tujuan (Penerima Aset)</label>
                     <select name="dest_warehouse_id" class="w-full border p-2 rounded bg-white font-bold">
                         <option value="">-- Pilih Gudang Tujuan --</option>
                         <?php foreach($warehouses as $w): ?><option value="<?= $w['id'] ?>"><?= $w['name'] ?></option><?php endforeach; ?>
@@ -277,6 +324,7 @@ $('#warehouse_id').on('change', function() {
 function toggleDestWarehouse() {
     const type = document.querySelector('input[name="out_type"]:checked').value;
     document.getElementById('dest_wh_container').style.display = (type === 'INTERNAL') ? 'block' : 'none';
+    document.getElementById('hint_internal').style.display = (type === 'INTERNAL') ? 'block' : 'none';
 }
 
 $('#product_select').on('select2:select', function (e) {
@@ -405,7 +453,17 @@ async function initCamera() {
     if(html5QrCode) { try{ await html5QrCode.stop(); html5QrCode.clear(); }catch(e){} }
 
     html5QrCode = new Html5Qrcode("reader");
-    const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+    const config = { 
+        fps: 15, 
+        qrbox: { width: 250, height: 250 },
+        aspectRatio: 1.0,
+        videoConstraints: {
+            width: { min: 640, ideal: 1280, max: 1920 }, // High Res
+            height: { min: 480, ideal: 720, max: 1080 },
+            facingMode: currentFacingMode,
+            focusMode: "continuous"
+        }
+    };
     
     try {
         await html5QrCode.start(
@@ -426,8 +484,33 @@ async function initCamera() {
             } else {
                 flashBtn.classList.add('hidden');
             }
+            
+            // ZOOM SETUP
+            if (capabilities && capabilities.zoomFeature().isSupported()) {
+                const zoomControl = document.getElementById('zoom_control');
+                const zoomSlider = document.getElementById('zoom_slider');
+                const zoomCap = capabilities.zoomFeature();
+                
+                zoomControl.classList.remove('hidden');
+                zoomSlider.min = zoomCap.min;
+                zoomSlider.max = zoomCap.max;
+                zoomSlider.step = zoomCap.step;
+                zoomSlider.value = zoomCap.value || 1;
+            } else {
+                document.getElementById('zoom_control').classList.add('hidden');
+            }
         } catch(e) {}
     } catch (err) { alert("Camera Error: " + err); stopScan(); }
+}
+
+async function applyZoom(val) {
+    if (html5QrCode) {
+        try {
+            await html5QrCode.applyVideoConstraints({
+                advanced: [{ zoom: parseFloat(val) }]
+            });
+        } catch (e) { console.error("Zoom fail:", e); }
+    }
 }
 
 async function switchCamera() {

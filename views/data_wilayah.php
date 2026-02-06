@@ -84,23 +84,30 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
             $stmt_act->execute([$wh_id, $start_date, $end_date]);
             $activity_count = $stmt_act->fetchColumn() ?: 0;
 
-            // D. TOP 10 PENGGUNAAN MATERIAL PER WILAYAH (PERIODE INI)
+            // D. TOP 10 PENGGUNAAN MATERIAL PER WILAYAH
+            // UPDATE: Menghitung Ready Stock (Global) dan Usage (Period)
             $sql_top = "
                 SELECT 
                     p.name, p.unit,
-                    COALESCE(SUM(CASE WHEN i.type='IN' THEN i.quantity ELSE 0 END), 0) as qty_in,
-                    COALESCE(SUM(CASE WHEN i.type='OUT' THEN i.quantity ELSE 0 END), 0) as qty_out,
-                    COALESCE(SUM(CASE WHEN i.type='OUT' AND (i.notes LIKE 'Aktivitas:%' OR i.notes LIKE '%[PEMAKAIAN]%') THEN i.quantity ELSE 0 END), 0) as qty_used
+                    -- Metrics Periode Ini (Filtered Date)
+                    COALESCE(SUM(CASE WHEN i.date BETWEEN ? AND ? AND i.type='IN' THEN i.quantity ELSE 0 END), 0) as qty_in,
+                    COALESCE(SUM(CASE WHEN i.date BETWEEN ? AND ? AND i.type='OUT' THEN i.quantity ELSE 0 END), 0) as qty_out,
+                    COALESCE(SUM(CASE WHEN i.date BETWEEN ? AND ? AND i.type='OUT' AND (i.notes LIKE 'Aktivitas:%' OR i.notes LIKE '%[PEMAKAIAN]%') THEN i.quantity ELSE 0 END), 0) as qty_used,
+                    -- Metrics Global (Total Saldo Akhir / Ready Stock)
+                    (COALESCE(SUM(CASE WHEN i.type='IN' THEN i.quantity ELSE 0 END), 0) - 
+                     COALESCE(SUM(CASE WHEN i.type='OUT' THEN i.quantity ELSE 0 END), 0)) as ready_stock
                 FROM inventory_transactions i
                 JOIN products p ON i.product_id = p.id
-                WHERE i.warehouse_id = ? AND i.date BETWEEN ? AND ?
+                WHERE i.warehouse_id = ?
                 GROUP BY p.id, p.name, p.unit
-                HAVING qty_in > 0 OR qty_out > 0
-                ORDER BY qty_used DESC, qty_out DESC
+                -- Tampilkan jika ada aktivitas di periode ini ATAU jika stok ready > 0
+                HAVING qty_used > 0 OR qty_in > 0 OR qty_out > 0
+                ORDER BY qty_used DESC, ready_stock DESC
                 LIMIT 10
             ";
             $stmt_top = $pdo->prepare($sql_top);
-            $stmt_top->execute([$wh_id, $start_date, $end_date]);
+            // Params: start, end (IN), start, end (OUT), start, end (USED), wh_id
+            $stmt_top->execute([$start_date, $end_date, $start_date, $end_date, $start_date, $end_date, $wh_id]);
             $top_items = $stmt_top->fetchAll();
         ?>
         <div class="bg-white rounded-lg shadow-lg overflow-hidden border border-gray-100 flex flex-col hover:shadow-xl transition-shadow duration-300">
@@ -150,7 +157,7 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
                         <thead class="bg-white text-gray-500 border-b border-gray-200">
                             <tr>
                                 <th class="p-2 pl-4 w-1/3">Nama Barang</th>
-                                <th class="p-2 text-center w-16">Unit</th>
+                                <th class="p-2 text-center w-20 text-blue-600 font-bold">Ready</th>
                                 <th class="p-2 text-center text-green-600">Masuk</th>
                                 <th class="p-2 text-center text-red-600">Keluar</th>
                                 <th class="p-2 pr-4 text-right text-purple-700 font-bold bg-purple-50">Terpakai</th>
@@ -165,8 +172,9 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
                                     <td class="p-2 pl-4 font-medium text-gray-700 truncate max-w-[150px]" title="<?= htmlspecialchars($item['name']) ?>">
                                         <?= htmlspecialchars($item['name']) ?>
                                     </td>
-                                    <td class="p-2 text-center text-gray-500 text-[10px]">
-                                        <?= htmlspecialchars($item['unit']) ?>
+                                    <!-- KOLOM READY STOCK -->
+                                    <td class="p-2 text-center text-blue-700 font-bold text-[10px]">
+                                        <?= number_format($item['ready_stock']) ?> <?= htmlspecialchars($item['unit']) ?>
                                     </td>
                                     <td class="p-2 text-center text-green-600 font-medium">
                                         <?= $item['qty_in'] > 0 ? '+'.$item['qty_in'] : '-' ?>

@@ -114,16 +114,25 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
         <!-- CAMERA VIEWPORT (SHARED) -->
         <div id="scanner_area" class="hidden mb-6 relative bg-black rounded-lg border-4 border-gray-900 overflow-hidden shadow-2xl group">
             <div class="absolute top-2 left-2 bg-black/50 text-white px-2 py-1 rounded text-xs z-30" id="scan_target_label">Scan SKU Produk</div>
-            <div id="reader" class="w-full h-64 md:h-80 bg-black"></div>
+            <div id="reader" class="w-full h-64 md:h-96 bg-black"></div>
             
             <!-- Controls Overlay -->
-            <div class="absolute bottom-4 left-0 right-0 flex justify-center gap-4 z-20">
-                <button type="button" onclick="switchCamera()" class="bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Ganti Kamera">
-                    <i class="fas fa-sync-alt"></i>
-                </button>
-                <button type="button" onclick="toggleFlash()" id="btn_flash" class="hidden bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Flash / Senter">
-                    <i class="fas fa-bolt"></i>
-                </button>
+            <div class="absolute bottom-4 left-0 right-0 z-20 flex flex-col items-center gap-2 px-4">
+                <!-- ZOOM SLIDER -->
+                <div id="zoom_control" class="hidden w-full max-w-xs flex items-center gap-2 bg-black/50 px-3 py-1 rounded-full text-white">
+                    <i class="fas fa-search-minus text-xs"></i>
+                    <input type="range" id="zoom_slider" min="1" max="5" step="0.1" value="1" class="w-full h-1 bg-gray-400 rounded-lg appearance-none cursor-pointer" oninput="applyZoom(this.value)">
+                    <i class="fas fa-search-plus text-xs"></i>
+                </div>
+
+                <div class="flex justify-center gap-4">
+                    <button type="button" onclick="switchCamera()" class="bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Ganti Kamera">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+                    <button type="button" onclick="toggleFlash()" id="btn_flash" class="hidden bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30" title="Flash / Senter">
+                        <i class="fas fa-bolt"></i>
+                    </button>
+                </div>
             </div>
 
             <!-- Close Button -->
@@ -326,9 +335,8 @@ document.getElementById('inp_sku').addEventListener('keypress', function (e) {
     }
 });
 
-// --- FIX: ROBUST INIT CAMERA FOR MAIN ---
+// --- FIX & ENHANCE: HIGH RES CAMERA + ZOOM ---
 async function initCamera(type) {
-    // Shared Scanner Area for Main Product
     const readerElem = document.getElementById("reader");
     if(!readerElem) return alert("Element kamera tidak ditemukan");
 
@@ -342,32 +350,75 @@ async function initCamera(type) {
         html5QrCode = null;
     }
 
-    // Delay slighty to ensure DOM ready if toggling
     setTimeout(async () => {
         html5QrCode = new Html5Qrcode("reader");
+        
+        // Config Resolusi Tinggi untuk mencegah Blur
+        const config = { 
+            fps: 15, 
+            qrbox: { width: 250, height: 250 },
+            aspectRatio: 1.0,
+            videoConstraints: {
+                width: { min: 640, ideal: 1280, max: 1920 }, // Force HD/FHD
+                height: { min: 480, ideal: 720, max: 1080 },
+                facingMode: currentFacingMode,
+                focusMode: "continuous" // Try force autofocus
+            }
+        };
+
         try {
             await html5QrCode.start(
                 { facingMode: currentFacingMode }, 
-                { fps: 10, qrbox: { width: 250, height: 250 } }, 
+                config, 
                 (decodedText) => {
                     stopScan();
                     handleScanResult(decodedText);
                 },
                 () => {}
             );
-            // Flash check (FIX: getRunningTrackCameraCapabilities is sync, not promise)
+            
+            // Capabilities check (Zoom & Flash)
             try {
                 const capabilities = html5QrCode.getRunningTrackCameraCapabilities();
+                
+                // FLASH
                 if (capabilities && capabilities.torchFeature().isSupported()) {
                     document.getElementById('btn_flash').classList.remove('hidden');
                 }
+                
+                // ZOOM
+                if (capabilities && capabilities.zoomFeature().isSupported()) {
+                    const zoomControl = document.getElementById('zoom_control');
+                    const zoomSlider = document.getElementById('zoom_slider');
+                    const zoomCap = capabilities.zoomFeature();
+                    
+                    zoomControl.classList.remove('hidden');
+                    zoomSlider.min = zoomCap.min;
+                    zoomSlider.max = zoomCap.max;
+                    zoomSlider.step = zoomCap.step;
+                    zoomSlider.value = zoomCap.value || 1;
+                } else {
+                    document.getElementById('zoom_control').classList.add('hidden');
+                }
+                
             } catch(e) {}
         } catch (err) {
             console.error(err);
-            alert("Gagal kamera: " + err);
+            alert("Gagal akses kamera: " + err);
             stopScan();
         }
     }, 300);
+}
+
+// APPLY ZOOM
+async function applyZoom(val) {
+    if (html5QrCode) {
+        try {
+            await html5QrCode.applyVideoConstraints({
+                advanced: [{ zoom: parseFloat(val) }]
+            });
+        } catch (e) { console.error("Zoom fail:", e); }
+    }
 }
 
 async function switchCamera() {
@@ -454,7 +505,7 @@ async function openSnScanner(btn) {
         try {
             await snHtml5QrCode.start(
                 { facingMode: "environment" }, 
-                { fps: 10, qrbox: { width: 250, height: 250 } }, 
+                { fps: 15, qrbox: { width: 250, height: 250 } }, // Higher FPS
                 (txt) => {
                     if(currentSnInput) {
                         currentSnInput.value = txt;

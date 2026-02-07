@@ -264,10 +264,39 @@ if ($view_type == 'CUSTOM') {
         $params[] = "%$c_q%"; $params[] = "%$c_q%";
     }
     
-    $sql .= " ORDER BY f.date DESC";
+    // Sort ASC agar sama dengan ALL_TRANSAKSI (kronologis untuk running balance)
+    $sql .= " ORDER BY f.date ASC, f.created_at ASC";
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     $custom_results = $stmt->fetchAll();
+
+    // --- PRE-PROCESS CUSTOM DATA (SAMA SEPERTI ALL_TRANSAKSI) ---
+    // Agar bisa menggunakan struktur tampilan tabel yang sama
+    foreach ($custom_results as $row) {
+        $month_key = date('Y-m', strtotime($row['date']));
+        $grouped_data[$month_key][] = $row;
+
+        // Hitung Grand Total In/Out
+        if ($row['type'] == 'INCOME') $grand_totals['in'] += $row['amount'];
+        else $grand_totals['out'] += $row['amount'];
+
+        // Hitung Grand Total Wilayah (Net: Income - Expense)
+        $row_desc_str = (string)($row['description'] ?? '');
+        $row_wil_net = 0;
+        
+        foreach($all_warehouses as $wh) {
+            $is_tagged = strpos($row_desc_str, "[Wilayah: " . $wh['name'] . "]") !== false;
+            
+            if ($is_tagged) {
+                // Jika Income: Positif, Jika Expense: Negatif
+                $val = ($row['type'] == 'INCOME') ? $row['amount'] : -($row['amount']);
+                
+                $grand_wh_totals[$wh['id']] += $val;
+                $row_wil_net += $val;
+            }
+        }
+        $grand_totals['wilayah_net'] += $row_wil_net;
+    }
 }
 ?>
 
@@ -372,7 +401,7 @@ if ($view_type == 'CUSTOM') {
 
         <div class="flex gap-2">
             <button class="bg-indigo-600 text-white px-4 py-2 rounded font-bold text-sm hover:bg-indigo-700">Filter</button>
-            <?php if($view_type == 'ALL_TRANSAKSI'): ?>
+            <?php if($view_type == 'ALL_TRANSAKSI' || $view_type == 'CUSTOM'): ?>
                 <button type="button" onclick="exportToExcel()" class="bg-green-600 text-white px-4 py-2 rounded font-bold text-sm hover:bg-green-700"><i class="fas fa-file-excel"></i> Excel</button>
                 <button type="button" onclick="savePDF()" class="bg-red-600 text-white px-4 py-2 rounded font-bold text-sm hover:bg-red-700"><i class="fas fa-file-pdf"></i> PDF</button>
             <?php else: ?>
@@ -392,8 +421,8 @@ if ($view_type == 'CUSTOM') {
         <hr class="border-black mb-4">
     </div>
 
-    <!-- 1. VIEW: ALL TRANSAKSI -->
-    <?php if ($view_type == 'ALL_TRANSAKSI'): 
+    <!-- 1. VIEW: ALL TRANSAKSI & CUSTOM -->
+    <?php if ($view_type == 'ALL_TRANSAKSI' || $view_type == 'CUSTOM'): 
         $wh_count = count($all_warehouses);
     ?>
     <div class="overflow-x-auto">
@@ -739,37 +768,6 @@ if ($view_type == 'CUSTOM') {
         <p class="text-xs text-gray-500 mt-2 italic">* Data diambil berdasarkan tag [Wilayah: NamaGudang] pada deskripsi transaksi.</p>
     </div>
 
-    <!-- 6. VIEW: CUSTOM -->
-    <?php elseif ($view_type == 'CUSTOM'): ?>
-    <div class="overflow-x-auto">
-        <table class="w-full text-sm border-collapse border border-gray-400">
-            <thead class="bg-gray-800 text-white">
-                <tr>
-                    <th class="p-3 border border-gray-600">Tanggal</th>
-                    <th class="p-3 border border-gray-600">Akun</th>
-                    <th class="p-3 border border-gray-600">Tipe</th>
-                    <th class="p-3 border border-gray-600 text-right">Jumlah</th>
-                    <th class="p-3 border border-gray-600">Deskripsi</th>
-                    <th class="p-3 border border-gray-600">User</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach($custom_results as $row): ?>
-                <tr class="hover:bg-gray-100 border-b border-gray-300">
-                    <td class="p-3 border-r"><?= date('d/m/Y', strtotime($row['date'])) ?></td>
-                    <td class="p-3 border-r font-bold text-gray-700"><?= $row['acc_name'] ?> <span class="text-xs font-normal text-gray-500">(<?= $row['code'] ?>)</span></td>
-                    <td class="p-3 border-r text-center"><span class="px-2 py-1 rounded text-xs <?= $row['type']=='INCOME'?'bg-green-100 text-green-800':'bg-red-100 text-red-800' ?>"><?= $row['type'] ?></span></td>
-                    <td class="p-3 border-r text-right font-mono"><?= formatRupiah($row['amount']) ?></td>
-                    <td class="p-3 border-r"><?= htmlspecialchars($row['description']) ?></td>
-                    <td class="p-3 text-center text-xs"><?= $row['username'] ?></td>
-                </tr>
-                <?php endforeach; ?>
-                <?php if(empty($custom_results)): ?>
-                    <tr><td colspan="6" class="p-6 text-center text-gray-500">Data tidak ditemukan sesuai filter.</td></tr>
-                <?php endif; ?>
-            </tbody>
-        </table>
-    </div>
     <?php endif; ?>
 
 </div>

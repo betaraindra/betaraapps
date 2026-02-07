@@ -12,7 +12,7 @@ if (!isLoggedIn()) {
 
 $action = $_GET['action'] ?? '';
 
-// === GET AVAILABLE SERIAL NUMBERS ===
+// === GET AVAILABLE SERIAL NUMBERS (ARRAY STRING) ===
 if ($action === 'get_available_sns') {
     $prod_id = $_GET['product_id'] ?? 0;
     $wh_id = $_GET['warehouse_id'] ?? 0;
@@ -29,6 +29,38 @@ if ($action === 'get_available_sns') {
     $sns = $stmt->fetchAll(PDO::FETCH_COLUMN);
     
     echo json_encode($sns);
+    exit;
+}
+
+// === GET MANAGEABLE SERIAL NUMBERS (ID & VALUE) ===
+// Digunakan untuk Edit SN di Data Barang
+if ($action === 'get_manageable_sns') {
+    $prod_id = $_GET['product_id'] ?? 0;
+    
+    if (empty($prod_id)) {
+        echo json_encode([]);
+        exit;
+    }
+
+    // Hanya ambil yang status AVAILABLE sesuai permintaan
+    $stmt = $pdo->prepare("SELECT id, serial_number, warehouse_id FROM product_serials 
+                           WHERE product_id = ? AND status = 'AVAILABLE' 
+                           ORDER BY created_at DESC");
+    $stmt->execute([$prod_id]);
+    $data = $stmt->fetchAll();
+    
+    // Fetch warehouse names for better context
+    $result = [];
+    foreach($data as $row) {
+        $wh_name = $pdo->query("SELECT name FROM warehouses WHERE id = {$row['warehouse_id']}")->fetchColumn() ?: '-';
+        $result[] = [
+            'id' => $row['id'],
+            'sn' => $row['serial_number'],
+            'wh_name' => $wh_name
+        ];
+    }
+    
+    echo json_encode($result);
     exit;
 }
 

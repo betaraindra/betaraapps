@@ -22,7 +22,7 @@ $titles = [
     'ARUS_KAS'      => 'Laporan Arus Kas (Rincian Akun)',
     'ANGGARAN'      => 'Laporan Realisasi Pengeluaran vs Anggaran',
     'WILAYAH'       => 'Laporan Profitabilitas per Wilayah/Gudang',
-    'CUSTOM'        => 'Laporan Custom'
+    'CUSTOM'        => 'Laporan Custom (Filter Lengkap)'
 ];
 $current_title = $titles[$view_type] ?? 'Laporan Internal';
 
@@ -243,12 +243,20 @@ if ($view_type == 'WILAYAH') {
     }
 }
 
-// --- 5. CUSTOM (DYNAMIC FILTER) ---
+// --- 5. CUSTOM (DYNAMIC FILTER LENGKAP) ---
 $custom_results = [];
 if ($view_type == 'CUSTOM') {
+    // Parameter Filter
     $c_q = $_GET['q'] ?? '';
     $c_acc = $_GET['account_id'] ?? 'ALL';
     $c_type = $_GET['type'] ?? 'ALL';
+    
+    // Filter Baru
+    $c_user = $_GET['filter_user_id'] ?? 'ALL';
+    $c_wh = $_GET['filter_warehouse_id'] ?? 'ALL';
+    $c_min = cleanNumber($_GET['min_amount'] ?? 0);
+    $c_max = cleanNumber($_GET['max_amount'] ?? 0);
+    $c_sort = $_GET['sort_order'] ?? 'date_asc';
     
     $sql = "SELECT f.*, COALESCE(a.code, 'UNK') as code, COALESCE(a.name, 'Unknown') as acc_name, COALESCE(u.username, 'System') as username
             FROM finance_transactions f
@@ -257,21 +265,46 @@ if ($view_type == 'CUSTOM') {
             WHERE f.date BETWEEN ? AND ?";
     $params = [$start, $end];
 
+    // Filter Logic
     if ($c_acc !== 'ALL') { $sql .= " AND f.account_id = ?"; $params[] = $c_acc; }
     if ($c_type !== 'ALL') { $sql .= " AND f.type = ?"; $params[] = $c_type; }
+    if ($c_user !== 'ALL') { $sql .= " AND f.user_id = ?"; $params[] = $c_user; }
+    
+    // Range Nominal
+    if ($c_min > 0) { $sql .= " AND f.amount >= ?"; $params[] = $c_min; }
+    if ($c_max > 0) { $sql .= " AND f.amount <= ?"; $params[] = $c_max; }
+
+    // Keyword Search
     if (!empty($c_q)) {
         $sql .= " AND (f.description LIKE ? OR a.name LIKE ?)";
         $params[] = "%$c_q%"; $params[] = "%$c_q%";
     }
+
+    // Filter Wilayah (Tag Description)
+    if ($c_wh !== 'ALL') {
+        $stmt_wh_name = $pdo->prepare("SELECT name FROM warehouses WHERE id = ?");
+        $stmt_wh_name->execute([$c_wh]);
+        $wh_target_name = $stmt_wh_name->fetchColumn();
+        if ($wh_target_name) {
+            $sql .= " AND f.description LIKE ?";
+            $params[] = "%[Wilayah: $wh_target_name]%";
+        }
+    }
     
-    // Sort ASC agar sama dengan ALL_TRANSAKSI (kronologis untuk running balance)
-    $sql .= " ORDER BY f.date ASC, f.created_at ASC";
+    // Sorting Logic
+    switch($c_sort) {
+        case 'date_desc': $sql .= " ORDER BY f.date DESC, f.created_at DESC"; break;
+        case 'amount_desc': $sql .= " ORDER BY f.amount DESC"; break;
+        case 'amount_asc': $sql .= " ORDER BY f.amount ASC"; break;
+        default: $sql .= " ORDER BY f.date ASC, f.created_at ASC"; // Default (date_asc)
+    }
+
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     $custom_results = $stmt->fetchAll();
 
     // --- PRE-PROCESS CUSTOM DATA (SAMA SEPERTI ALL_TRANSAKSI) ---
-    // Agar bisa menggunakan struktur tampilan tabel yang sama
+    // Agar bisa menggunakan struktur tampilan tabel yang sama (Grouping, Grand Total)
     foreach ($custom_results as $row) {
         $month_key = date('Y-m', strtotime($row['date']));
         $grouped_data[$month_key][] = $row;
@@ -335,7 +368,7 @@ if ($view_type == 'CUSTOM') {
         <a href="?page=laporan_internal&view=ARUS_KAS" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='ARUS_KAS'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Arus Kas (Akun)</a>
         <a href="?page=laporan_internal&view=ANGGARAN" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='ANGGARAN'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Anggaran</a>
         <a href="?page=laporan_internal&view=WILAYAH" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='WILAYAH'?'bg-purple-600 text-white':'bg-purple-50 text-purple-600 hover:bg-purple-100'?>">Per Wilayah</a>
-        <a href="?page=laporan_internal&view=CUSTOM" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='CUSTOM'?'bg-gray-800 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Custom</a>
+        <a href="?page=laporan_internal&view=CUSTOM" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='CUSTOM'?'bg-gray-800 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Custom (Filter+)</a>
     </div>
 
     <!-- FILTER FORM DINAMIS -->
@@ -366,7 +399,7 @@ if ($view_type == 'CUSTOM') {
                 <input type="text" name="q" value="<?= htmlspecialchars($_GET['q']??'') ?>" class="border p-2 rounded text-sm w-full" placeholder="Ket/Akun...">
             </div>
             
-            <?php if($view_type == 'ALL_TRANSAKSI'): ?>
+            <!-- FILTER TAMBAHAN UNTUK ALL_TRANSAKSI & CUSTOM -->
             <div>
                 <label class="block text-xs font-bold text-gray-600 mb-1">Filter Wilayah</label>
                 <select name="filter_warehouse_id" class="border p-2 rounded text-sm w-full bg-white">
@@ -376,7 +409,6 @@ if ($view_type == 'CUSTOM') {
                     <?php endforeach; ?>
                 </select>
             </div>
-            <?php endif; ?>
 
             <div>
                 <label class="block text-xs font-bold text-gray-600 mb-1">Filter Akun</label>
@@ -388,6 +420,45 @@ if ($view_type == 'CUSTOM') {
                 </select>
             </div>
             <?php endif; ?>
+
+            <!-- FILTER KHUSUS VIEW CUSTOM (Advanced) -->
+            <?php if($view_type == 'CUSTOM'): ?>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Tipe Transaksi</label>
+                    <select name="type" class="border p-2 rounded text-sm w-full bg-white">
+                        <option value="ALL">Semua</option>
+                        <option value="INCOME" <?= ($_GET['type']??'') == 'INCOME' ? 'selected' : '' ?>>Pemasukan</option>
+                        <option value="EXPENSE" <?= ($_GET['type']??'') == 'EXPENSE' ? 'selected' : '' ?>>Pengeluaran</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Filter Admin/User</label>
+                    <select name="filter_user_id" class="border p-2 rounded text-sm w-full bg-white">
+                        <option value="ALL">-- Semua User --</option>
+                        <?php foreach($all_users as $u): ?>
+                            <option value="<?= $u['id'] ?>" <?= ($_GET['filter_user_id']??'') == $u['id'] ? 'selected' : '' ?>><?= $u['username'] ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Min Nominal</label>
+                    <input type="text" name="min_amount" value="<?= $_GET['min_amount'] ?? '' ?>" class="border p-2 rounded text-sm w-24" placeholder="0" onkeyup="formatRupiah(this)">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Max Nominal</label>
+                    <input type="text" name="max_amount" value="<?= $_GET['max_amount'] ?? '' ?>" class="border p-2 rounded text-sm w-24" placeholder="∞" onkeyup="formatRupiah(this)">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Urutan Data</label>
+                    <select name="sort_order" class="border p-2 rounded text-sm w-full bg-white">
+                        <option value="date_asc" <?= ($_GET['sort_order']??'') == 'date_asc' ? 'selected' : '' ?>>Tgl Terlama (A-Z)</option>
+                        <option value="date_desc" <?= ($_GET['sort_order']??'') == 'date_desc' ? 'selected' : '' ?>>Tgl Terbaru (Z-A)</option>
+                        <option value="amount_desc" <?= ($_GET['sort_order']??'') == 'amount_desc' ? 'selected' : '' ?>>Nominal Terbesar</option>
+                        <option value="amount_asc" <?= ($_GET['sort_order']??'') == 'amount_asc' ? 'selected' : '' ?>>Nominal Terkecil</option>
+                    </select>
+                </div>
+            <?php endif; ?>
+
         <?php endif; ?>
 
         <div>

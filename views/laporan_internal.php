@@ -44,10 +44,11 @@ if ($view_type == 'ALL_TRANSAKSI') {
     $f_q = $_GET['q'] ?? '';
     $f_wh_id = $_GET['filter_warehouse_id'] ?? 'ALL'; 
 
-    $sql = "SELECT f.*, a.code, a.name as acc_name, u.username
+    // UPDATE: Menggunakan LEFT JOIN agar data tetap muncul meski Akun/User terhapus
+    $sql = "SELECT f.*, COALESCE(a.code, 'UNK') as code, COALESCE(a.name, 'Unknown Account') as acc_name, COALESCE(u.username, 'System') as username
             FROM finance_transactions f
-            JOIN accounts a ON f.account_id = a.id
-            JOIN users u ON f.user_id = u.id
+            LEFT JOIN accounts a ON f.account_id = a.id
+            LEFT JOIN users u ON f.user_id = u.id
             WHERE f.date BETWEEN ? AND ?";
     
     $params = [$start, $end];
@@ -123,7 +124,7 @@ if ($view_type == 'ARUS_KAS') {
     // Group Pemasukan per Akun
     $stmt_in = $pdo->prepare("SELECT a.code, a.name, SUM(f.amount) as total 
                               FROM finance_transactions f 
-                              JOIN accounts a ON f.account_id=a.id 
+                              LEFT JOIN accounts a ON f.account_id=a.id 
                               WHERE f.type='INCOME' AND f.date BETWEEN ? AND ? 
                               GROUP BY a.id, a.code, a.name ORDER BY total DESC"); 
     $stmt_in->execute([$start, $end]); 
@@ -132,7 +133,7 @@ if ($view_type == 'ARUS_KAS') {
     // Group Pengeluaran per Akun
     $stmt_out = $pdo->prepare("SELECT a.code, a.name, SUM(f.amount) as total 
                                FROM finance_transactions f 
-                               JOIN accounts a ON f.account_id=a.id 
+                               LEFT JOIN accounts a ON f.account_id=a.id 
                                WHERE f.type='EXPENSE' AND f.date BETWEEN ? AND ? 
                                GROUP BY a.id, a.code, a.name ORDER BY total DESC"); 
     $stmt_out->execute([$start, $end]); 
@@ -171,7 +172,7 @@ if ($view_type == 'ANGGARAN') {
     // Ambil Detail per Akun Pengeluaran
     $sql_det = "SELECT a.code, a.name, SUM(f.amount) as total 
                 FROM finance_transactions f
-                JOIN accounts a ON f.account_id = a.id
+                LEFT JOIN accounts a ON f.account_id = a.id
                 WHERE f.type='EXPENSE' AND f.date BETWEEN ? AND ? $wh_clause
                 GROUP BY a.code, a.name ORDER BY total DESC";
     $stmt_det = $pdo->prepare($sql_det);
@@ -218,10 +219,10 @@ if ($view_type == 'CUSTOM') {
     $c_acc = $_GET['account_id'] ?? 'ALL';
     $c_type = $_GET['type'] ?? 'ALL';
     
-    $sql = "SELECT f.*, a.code, a.name as acc_name, u.username
+    $sql = "SELECT f.*, COALESCE(a.code, 'UNK') as code, COALESCE(a.name, 'Unknown') as acc_name, COALESCE(u.username, 'System') as username
             FROM finance_transactions f
-            JOIN accounts a ON f.account_id = a.id
-            JOIN users u ON f.user_id = u.id
+            LEFT JOIN accounts a ON f.account_id = a.id
+            LEFT JOIN users u ON f.user_id = u.id
             WHERE f.date BETWEEN ? AND ?";
     $params = [$start, $end];
 

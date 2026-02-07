@@ -18,96 +18,179 @@ if(!$warehouse) {
     exit; 
 }
 
-// --- LOGIC BARU: HANDLE SIMPAN AKTIVITAS (PEMAKAIAN MULTI-ITEM) ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
-    validate_csrf();
+// --- HANDLE POST REQUESTS (Activity Actions) ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
-    $act_date = $_POST['act_date'];
-    $act_desc_main = trim($_POST['act_desc']);
-    $act_ref = trim($_POST['act_ref']); // Misal ID Pelanggan
-    $cart_json = $_POST['activity_cart_json'];
-    $cart_items = json_decode($cart_json, true);
-
-    if (empty($cart_items) || !is_array($cart_items)) {
-        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: Tidak ada barang yang dipilih.'];
-    } else {
+    // 1. DELETE AKTIVITAS (ROLLBACK STOK & SN)
+    if (isset($_POST['delete_activity'])) {
+        validate_csrf();
+        $trx_id = $_POST['trx_id'];
+        
         $pdo->beginTransaction();
         try {
-            // Generate Auto Reference jika kosong (Satu Ref untuk semua item di sesi ini)
-            if(empty($act_ref)) $act_ref = "ACT/" . date('ymd') . "/" . rand(100,999);
+            // Ambil Data Transaksi
+            $stmt = $pdo->prepare("SELECT product_id, quantity, notes FROM inventory_transactions WHERE id = ? AND warehouse_id = ? AND type='OUT'");
+            $stmt->execute([$trx_id, $id]);
+            $trx = $stmt->fetch();
             
-            // Ambil ID Akun "Pengeluaran Wilayah (2009)"
-            // Jika tidak ada, fallback ke Pengeluaran Material (2105) atau Operasional (2002)
-            $accStmt = $pdo->query("SELECT id FROM accounts WHERE code = '2009' LIMIT 1");
-            $accId = $accStmt->fetchColumn();
-            if (!$accId) {
-                $accId = $pdo->query("SELECT id FROM accounts WHERE code = '2105' LIMIT 1")->fetchColumn();
-            }
+            if (!$trx) throw new Exception("Transaksi tidak ditemukan atau tidak valid.");
 
-            $success_count = 0;
+            // 1. Kembalikan Stok Produk
+            $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?")->execute([$trx['quantity'], $trx['product_id']]);
 
-            foreach ($cart_items as $item) {
-                $prod_id = $item['id'];
-                $qty = (float)$item['qty'];
-                $notes_item = isset($item['notes']) ? trim($item['notes']) : '';
+            // 2. Kembalikan Status SN menjadi AVAILABLE
+            // Cari SN yang terikat dengan transaksi OUT ini
+            $stmtSn = $pdo->prepare("UPDATE product_serials SET status='AVAILABLE', out_transaction_id=NULL WHERE out_transaction_id = ?");
+            $stmtSn->execute([$trx_id]);
+            
+            // 3. Hapus Record Transaksi
+            $pdo->prepare("DELETE FROM inventory_transactions WHERE id = ?")->execute([$trx_id]);
 
-                // Validasi Stok Per Item & Ambil Harga Beli (HPP)
-                $stmtCheck = $pdo->prepare("
-                    SELECT p.name, p.buy_price,
-                           (COALESCE(SUM(CASE WHEN i.type = 'IN' THEN i.quantity ELSE 0 END), 0) -
-                            COALESCE(SUM(CASE WHEN i.type = 'OUT' THEN i.quantity ELSE 0 END), 0)) as current_stock
-                    FROM products p
-                    JOIN inventory_transactions i ON p.id = i.product_id
-                    WHERE i.warehouse_id = ? AND p.id = ?
-                    GROUP BY p.id
-                ");
-                $stmtCheck->execute([$id, $prod_id]);
-                $stockData = $stmtCheck->fetch();
-                
-                if (!$stockData) {
-                    throw new Exception("Barang ID $prod_id tidak ditemukan di gudang ini.");
-                }
-                
-                if ($stockData['current_stock'] < $qty) {
-                    throw new Exception("Stok {$stockData['name']} tidak cukup (Sisa: {$stockData['current_stock']}).");
-                }
-
-                // Format Catatan: Gabungan Deskripsi Utama + Note per Item
-                $final_notes = "Aktivitas: " . $act_desc_main;
-                if (!empty($notes_item)) {
-                    $final_notes .= " (" . $notes_item . ")";
-                }
-                
-                // 1. Simpan Transaksi OUT (Inventori)
-                $stmtIns = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
-                $stmtIns->execute([$act_date, $prod_id, $id, $qty, $act_ref, $final_notes, $_SESSION['user_id']]);
-                
-                // 2. Simpan Transaksi Keuangan (Expense) -> Mengurangi Nilai Aset Wilayah
-                // Nilai = Qty * Harga Beli
-                $total_value = $qty * $stockData['buy_price'];
-                
-                if ($accId && $total_value > 0) {
-                    // Tag Wilayah wajib ada agar masuk filter Laporan Wilayah
-                    $fin_desc = "[PEMAKAIAN] {$stockData['name']} ($qty) - $act_desc_main [Wilayah: {$warehouse['name']}]";
-                    
-                    $stmtFin = $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, 'EXPENSE', ?, ?, ?, ?)");
-                    $stmtFin->execute([$act_date, $accId, $total_value, $fin_desc, $_SESSION['user_id']]);
-                }
-
-                $success_count++;
-            }
+            // 4. Log Aktivitas
+            logActivity($pdo, 'ROLLBACK_ACTIVITY', "Rollback Aktivitas Gudang ID $id. Item ID {$trx['product_id']} Qty {$trx['quantity']} dikembalikan.");
 
             $pdo->commit();
-            $_SESSION['flash'] = ['type'=>'success', 'message'=>"$success_count item aktivitas berhasil dicatat. Stok & Keuangan diperbarui."];
-
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>'Aktivitas dihapus. Stok dan SN telah dikembalikan (Rollback).'];
         } catch (Exception $e) {
             $pdo->rollBack();
-            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: ' . $e->getMessage()];
+            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal Rollback: ' . $e->getMessage()];
         }
+        echo "<script>window.location='?page=detail_gudang&id=$id&tab=activity';</script>";
+        exit;
     }
-    
-    echo "<script>window.location='?page=detail_gudang&id=$id&tab=activity';</script>";
-    exit;
+
+    // 2. EDIT AKTIVITAS (Update Notes/Ref)
+    if (isset($_POST['edit_activity_save'])) {
+        validate_csrf();
+        $trx_id = $_POST['trx_id'];
+        $new_ref = $_POST['reference'];
+        $new_note = $_POST['notes'];
+        
+        try {
+            $pdo->prepare("UPDATE inventory_transactions SET reference = ?, notes = ? WHERE id = ?")->execute([$new_ref, $new_note, $trx_id]);
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>'Data aktivitas diperbarui.'];
+        } catch (Exception $e) {
+            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal update: ' . $e->getMessage()];
+        }
+        echo "<script>window.location='?page=detail_gudang&id=$id&tab=activity';</script>";
+        exit;
+    }
+
+    // 3. SIMPAN AKTIVITAS BARU (Existing Logic)
+    if (isset($_POST['save_activity'])) {
+        validate_csrf();
+        
+        $act_date = $_POST['act_date'];
+        $act_desc_main = trim($_POST['act_desc']);
+        $act_ref = trim($_POST['act_ref']); // Misal ID Pelanggan
+        $cart_json = $_POST['activity_cart_json'];
+        $cart_items = json_decode($cart_json, true);
+
+        if (empty($cart_items) || !is_array($cart_items)) {
+            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: Tidak ada barang yang dipilih.'];
+        } else {
+            $pdo->beginTransaction();
+            try {
+                // Generate Auto Reference jika kosong (Satu Ref untuk semua item di sesi ini)
+                if(empty($act_ref)) $act_ref = "ACT/" . date('ymd') . "/" . rand(100,999);
+                
+                // Ambil ID Akun "Pengeluaran Wilayah (2009)"
+                // Jika tidak ada, fallback ke Pengeluaran Material (2105) atau Operasional (2002)
+                $accStmt = $pdo->query("SELECT id FROM accounts WHERE code = '2009' LIMIT 1");
+                $accId = $accStmt->fetchColumn();
+                if (!$accId) {
+                    $accId = $pdo->query("SELECT id FROM accounts WHERE code = '2105' LIMIT 1")->fetchColumn();
+                }
+
+                $success_count = 0;
+
+                foreach ($cart_items as $item) {
+                    $prod_id = $item['id'];
+                    $qty = (float)$item['qty'];
+                    $notes_item = isset($item['notes']) ? trim($item['notes']) : '';
+
+                    // Validasi Stok Per Item & Ambil Harga Beli (HPP)
+                    $stmtCheck = $pdo->prepare("
+                        SELECT p.name, p.buy_price,
+                               (COALESCE(SUM(CASE WHEN i.type = 'IN' THEN i.quantity ELSE 0 END), 0) -
+                                COALESCE(SUM(CASE WHEN i.type = 'OUT' THEN i.quantity ELSE 0 END), 0)) as current_stock
+                        FROM products p
+                        JOIN inventory_transactions i ON p.id = i.product_id
+                        WHERE i.warehouse_id = ? AND p.id = ?
+                        GROUP BY p.id
+                    ");
+                    $stmtCheck->execute([$id, $prod_id]);
+                    $stockData = $stmtCheck->fetch();
+                    
+                    if (!$stockData) {
+                        throw new Exception("Barang ID $prod_id tidak ditemukan di gudang ini.");
+                    }
+                    
+                    if ($stockData['current_stock'] < $qty) {
+                        throw new Exception("Stok {$stockData['name']} tidak cukup (Sisa: {$stockData['current_stock']}).");
+                    }
+
+                    // Format Catatan: Gabungan Deskripsi Utama + Note per Item
+                    $final_notes = "Aktivitas: " . $act_desc_main;
+                    if (!empty($notes_item)) {
+                        $final_notes .= " (" . $notes_item . ")";
+                    }
+                    
+                    // 1. Simpan Transaksi OUT (Inventori)
+                    $stmtIns = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
+                    $stmtIns->execute([$act_date, $prod_id, $id, $qty, $act_ref, $final_notes, $_SESSION['user_id']]);
+                    $trx_id = $pdo->lastInsertId(); // Ambil ID Transaksi Baru
+                    
+                    // UPDATE: Kurangi Stok Fisik
+                    $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$qty, $prod_id]);
+
+                    // UPDATE: Set Status SN menjadi SOLD/USED
+                    // Logikanya: Ambil SN Available sejumlah Qty di gudang ini, lalu update.
+                    // Jika di form input aktivitas belum support pilih SN spesifik (masih auto FIFO), kita ambil random available.
+                    // TODO: Idealnya input aktivitas juga support pilih SN spesifik seperti Barang Keluar.
+                    // Di bawah ini asumsi AUTO-PICK SN (FIFO) untuk simplifikasi jika SN tidak dikirim dari FE.
+                    
+                    $stmtGetSn = $pdo->prepare("SELECT id FROM product_serials WHERE product_id = ? AND warehouse_id = ? AND status = 'AVAILABLE' LIMIT $qty");
+                    $stmtGetSn->execute([$prod_id, $id]);
+                    $sn_ids_to_update = $stmtGetSn->fetchAll(PDO::FETCH_COLUMN);
+                    
+                    if(count($sn_ids_to_update) < $qty) {
+                        // Seharusnya tidak terjadi karena sudah cek stok di atas, tapi untuk safety:
+                        throw new Exception("Inkonsistensi Data: Jumlah SN Available kurang dari Stok tercatat.");
+                    }
+
+                    $stmtUpdateSn = $pdo->prepare("UPDATE product_serials SET status='SOLD', out_transaction_id=? WHERE id=?");
+                    foreach($sn_ids_to_update as $sn_row_id) {
+                        $stmtUpdateSn->execute([$trx_id, $sn_row_id]);
+                    }
+
+                    // 2. Simpan Transaksi Keuangan (Expense) -> Mengurangi Nilai Aset Wilayah
+                    // Nilai = Qty * Harga Beli
+                    $total_value = $qty * $stockData['buy_price'];
+                    
+                    if ($accId && $total_value > 0) {
+                        // Tag Wilayah wajib ada agar masuk filter Laporan Wilayah
+                        $fin_desc = "[PEMAKAIAN] {$stockData['name']} ($qty) - $act_desc_main [Wilayah: {$warehouse['name']}]";
+                        
+                        $stmtFin = $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, 'EXPENSE', ?, ?, ?, ?)");
+                        $stmtFin->execute([$act_date, $accId, $total_value, $fin_desc, $_SESSION['user_id']]);
+                    }
+
+                    $success_count++;
+                }
+
+                $pdo->commit();
+                $_SESSION['flash'] = ['type'=>'success', 'message'=>"$success_count item aktivitas berhasil dicatat. Stok & Keuangan diperbarui."];
+
+            } catch (Exception $e) {
+                $pdo->rollBack();
+                $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: ' . $e->getMessage()];
+            }
+        }
+        
+        echo "<script>window.location='?page=detail_gudang&id=$id&tab=activity';</script>";
+        exit;
+    }
 }
 
 // --- FILTER ---
@@ -378,17 +461,9 @@ if ($tab === 'activity') {
                 </thead>
                 <tbody class="divide-y">
                     <?php foreach($stocks as $s): 
-                        // Perhitungan:
-                        // Ready = Total In - Total Out (Semua)
-                        // Asset Basis = Ready + Used (Aktivitas)
-                        // Keluar Lain = Total Out - Used
-                        
                         $ready_stock = $s['qty_in'] - $s['qty_out_total'];
                         $used_stock = $s['qty_used'];
                         $other_out = $s['qty_out_total'] - $used_stock;
-                        
-                        // Nilai Aset = (Stok Ready + Stok Terpakai) * Harga
-                        // Asumsi: Barang terpakai aktivitas adalah aset tertanam di wilayah
                         $asset_qty = $ready_stock + $used_stock;
                         $asset_value = $asset_qty * $s['buy_price'];
                     ?>
@@ -424,18 +499,25 @@ if ($tab === 'activity') {
             <table class="w-full text-sm text-left border-collapse">
                 <thead class="bg-purple-100 text-purple-900">
                     <tr>
-                        <th class="p-3 border-b">Tanggal</th>
-                        <th class="p-3 border-b">Ref (Pelanggan/Tiket)</th>
+                        <th class="p-3 border-b w-24">Tanggal</th>
+                        <th class="p-3 border-b w-32">Ref</th>
                         <th class="p-3 border-b">Barang (SKU)</th>
-                        <th class="p-3 border-b text-right">Jumlah</th>
+                        <th class="p-3 border-b w-20 text-right">Jumlah</th>
+                        <th class="p-3 border-b w-48">Serial Number (SN)</th>
                         <th class="p-3 border-b">Detail Aktivitas</th>
-                        <th class="p-3 border-b text-center">User</th>
+                        <th class="p-3 border-b w-24 text-center">User</th>
+                        <th class="p-3 border-b w-20 text-center">Aksi</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y">
                     <?php foreach($activities as $act): 
-                        // Bersihkan prefix "Aktivitas:" dari display jika mau, tapi biarkan saja untuk jelas
                         $desc = str_replace("Aktivitas:", "<b>Aktivitas:</b>", h($act['notes']));
+                        
+                        // FETCH SN
+                        $stmtSn = $pdo->prepare("SELECT serial_number FROM product_serials WHERE out_transaction_id = ? ORDER BY serial_number ASC");
+                        $stmtSn->execute([$act['id']]);
+                        $sns = $stmtSn->fetchAll(PDO::FETCH_COLUMN);
+                        $sn_string = !empty($sns) ? implode(', ', $sns) : '-';
                     ?>
                     <tr class="hover:bg-gray-50">
                         <td class="p-3 whitespace-nowrap"><?= date('d/m/Y', strtotime($act['date'])) ?></td>
@@ -445,12 +527,25 @@ if ($tab === 'activity') {
                             <div class="text-xs text-gray-500"><?= h($act['sku']) ?></div>
                         </td>
                         <td class="p-3 text-right font-bold text-red-600"><?= number_format($act['quantity']) ?></td>
-                        <td class="p-3 text-gray-700"><?= $desc ?></td>
+                        <td class="p-3 font-mono text-[10px] text-gray-600 break-all"><?= h($sn_string) ?></td>
+                        <td class="p-3 text-gray-700 text-xs"><?= $desc ?></td>
                         <td class="p-3 text-center text-xs text-gray-500"><?= h($act['username']) ?></td>
+                        <td class="p-3 text-center">
+                            <div class="flex justify-center gap-1">
+                                <button type="button" onclick='openEditActivity(<?= json_encode($act) ?>)' class="text-blue-500 hover:text-blue-700 p-1 rounded hover:bg-blue-50" title="Edit Catatan"><i class="fas fa-edit"></i></button>
+                                
+                                <form method="POST" onsubmit="return confirm('Yakin Hapus (Rollback)? Stok akan dikembalikan & SN akan Available kembali.')">
+                                    <?= csrf_field() ?>
+                                    <input type="hidden" name="delete_activity" value="1">
+                                    <input type="hidden" name="trx_id" value="<?= $act['id'] ?>">
+                                    <button class="text-red-500 hover:text-red-700 p-1 rounded hover:bg-red-50" title="Hapus & Kembalikan Stok"><i class="fas fa-trash-alt"></i></button>
+                                </form>
+                            </div>
+                        </td>
                     </tr>
                     <?php endforeach; ?>
                     <?php if(empty($activities)): ?>
-                        <tr><td colspan="6" class="p-12 text-center text-gray-400">Belum ada data aktivitas/pemakaian pada periode ini.</td></tr>
+                        <tr><td colspan="8" class="p-12 text-center text-gray-400">Belum ada data aktivitas/pemakaian pada periode ini.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -673,7 +768,42 @@ if ($tab === 'activity') {
     </div>
 </div>
 
+<!-- MODAL EDIT AKTIVITAS -->
+<div id="modalEditActivity" class="hidden fixed inset-0 bg-black bg-opacity-50 z-[60] flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
+        <button onclick="document.getElementById('modalEditActivity').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
+            <i class="fas fa-times text-xl"></i>
+        </button>
+        <h3 class="text-xl font-bold mb-4 border-b pb-2 text-blue-700">
+            <i class="fas fa-edit"></i> Edit Catatan Aktivitas
+        </h3>
+        
+        <form method="POST">
+            <?= csrf_field() ?>
+            <input type="hidden" name="edit_activity_save" value="1">
+            <input type="hidden" name="trx_id" id="edit_trx_id">
+            
+            <div class="mb-4">
+                <label class="block text-sm font-bold text-gray-700 mb-1">Referensi</label>
+                <input type="text" name="reference" id="edit_reference" class="w-full border p-2 rounded text-sm">
+            </div>
+            
+            <div class="mb-4">
+                <label class="block text-sm font-bold text-gray-700 mb-1">Catatan / Detail</label>
+                <textarea name="notes" id="edit_notes" class="w-full border p-2 rounded text-sm" rows="3"></textarea>
+            </div>
+            
+            <div class="bg-yellow-50 p-2 text-xs text-yellow-800 rounded mb-4">
+                Note: Mengubah jumlah item atau SN tidak diizinkan di sini. Silakan Hapus (Rollback) dan input ulang jika ada kesalahan jumlah.
+            </div>
+
+            <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700">Simpan Perubahan</button>
+        </form>
+    </div>
+</div>
+
 <script>
+// --- ACTIVTY CART LOGIC ---
 let activityCart = [];
 
 function addActivityItem() {
@@ -761,5 +891,12 @@ function validateActivityForm() {
     }
     document.getElementById('activity_cart_json').value = JSON.stringify(activityCart);
     return confirm("Simpan aktivitas ini? Stok gudang akan berkurang.");
+}
+
+function openEditActivity(data) {
+    document.getElementById('edit_trx_id').value = data.id;
+    document.getElementById('edit_reference').value = data.reference;
+    document.getElementById('edit_notes').value = data.notes;
+    document.getElementById('modalEditActivity').classList.remove('hidden');
 }
 </script>

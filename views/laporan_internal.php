@@ -38,7 +38,7 @@ $all_users = $pdo->query("SELECT id, username FROM users ORDER BY username ASC")
 // --- 0. SEMUA TRANSAKSI (GABUNGAN) ---
 $combined_data = [];
 $grouped_data = [];
-$grand_totals = ['in'=>0, 'out'=>0, 'wilayah_total'=>0];
+$grand_totals = ['in'=>0, 'out'=>0, 'wilayah_net'=>0];
 $grand_wh_totals = []; 
 foreach($all_warehouses as $wh) $grand_wh_totals[$wh['id']] = 0;
 
@@ -87,21 +87,26 @@ if ($view_type == 'ALL_TRANSAKSI') {
         $month_key = date('Y-m', strtotime($row['date']));
         $grouped_data[$month_key][] = $row;
 
-        // Hitung Grand Total
+        // Hitung Grand Total In/Out
         if ($row['type'] == 'INCOME') $grand_totals['in'] += $row['amount'];
         else $grand_totals['out'] += $row['amount'];
 
-        // Hitung Grand Total Wilayah
+        // Hitung Grand Total Wilayah (Net: Income - Expense)
         $row_desc_str = (string)($row['description'] ?? '');
-        $row_wil_total = 0;
+        $row_wil_net = 0;
+        
         foreach($all_warehouses as $wh) {
             $is_tagged = strpos($row_desc_str, "[Wilayah: " . $wh['name'] . "]") !== false;
-            $val = $is_tagged ? $row['amount'] : 0;
             
-            $grand_wh_totals[$wh['id']] += $val;
-            if($val > 0) $row_wil_total += $val;
+            if ($is_tagged) {
+                // Jika Income: Positif, Jika Expense: Negatif
+                $val = ($row['type'] == 'INCOME') ? $row['amount'] : -($row['amount']);
+                
+                $grand_wh_totals[$wh['id']] += $val;
+                $row_wil_net += $val;
+            }
         }
-        $grand_totals['wilayah_total'] += $row_wil_total;
+        $grand_totals['wilayah_net'] += $row_wil_net;
     }
 }
 
@@ -216,7 +221,6 @@ if ($view_type == 'WILAYAH') {
     foreach ($all_warehouses as $wh) {
         $wh_name = $wh['name'];
         // Cari transaksi yang tag [Wilayah: NamaGudang]
-        // Note: Ini bergantung pada konvensi penamaan di deskripsi transaksi
         
         $rev = $pdo->prepare("SELECT SUM(amount) FROM finance_transactions WHERE type='INCOME' AND date BETWEEN ? AND ? AND description LIKE ?");
         $rev->execute([$start, $end, "%[Wilayah: $wh_name]%"]);
@@ -399,11 +403,12 @@ if ($view_type == 'CUSTOM') {
                     <th rowspan="3" class="p-1 border border-black text-center align-middle w-16">Tanggal</th>
                     <th rowspan="3" class="p-1 border border-black text-center align-middle w-16">Reference</th>
                     <th rowspan="3" class="p-1 border border-black align-middle w-48 text-center">URAIAN</th>
-                    <th rowspan="3" class="p-1 border border-black text-center w-24 align-middle">TOTAL PEMBAGIAN WIL<br>(RP)</th>
+                    
                     <th colspan="2" class="p-1 border border-black text-center">PEMASUKAN</th>
                     <th colspan="2" class="p-1 border border-black text-center">PENGELUARAN</th>
                     <th rowspan="3" class="p-1 border border-black text-center w-24 align-middle">Sisa Saldo / Selisih Perbulan</th>
-                    <th colspan="<?= $wh_count ?>" class="p-1 border border-black text-center">INPUT PEMBAGIAN PENGELUARAN BERDASARKAN WILAYAH</th>
+                    <th rowspan="3" class="p-1 border border-black text-center w-24 align-middle">TOTAL PEMBAGIAN WIL<br>(RP)</th>
+                    <th colspan="<?= $wh_count ?>" class="p-1 border border-black text-center">INPUT PEMBAGIAN PENGELUARAN BERDASARKAN WILAYAH (INCOME/EXPENSE)</th>
                 </tr>
                 <tr>
                     <th rowspan="2" class="p-1 border border-black text-center w-24">PER HARI</th>
@@ -423,14 +428,17 @@ if ($view_type == 'CUSTOM') {
                 <?php if(!empty($grouped_data)): ?>
                 <tr class="bg-blue-200 font-bold text-gray-900 border-b-2 border-black">
                     <td colspan="3" class="p-1 border-r border-black text-center text-sm">TOTAL PERIODE</td>
-                    <td class="p-1 border-r border-black text-right"><?= formatRupiah($grand_totals['wilayah_total']) ?></td>
                     <td class="p-1 border-r border-black text-right text-green-900"><?= formatRupiah($grand_totals['in']) ?></td>
                     <td class="p-1 border-r border-black bg-gray-300"></td>
                     <td class="p-1 border-r border-black text-right text-red-900"><?= formatRupiah($grand_totals['out']) ?></td>
                     <td class="p-1 border-r border-black bg-gray-300"></td>
                     <td class="p-1 border-r border-black text-right text-blue-900"><?= formatRupiah($grand_totals['in'] - $grand_totals['out']) ?></td>
-                    <?php foreach($all_warehouses as $wh): ?>
-                        <td class="p-1 border-r border-black text-right bg-blue-100"><?= isset($grand_wh_totals[$wh['id']]) && $grand_wh_totals[$wh['id']] > 0 ? formatRupiah($grand_wh_totals[$wh['id']]) : '-' ?></td>
+                    <td class="p-1 border-r border-black text-right <?= $grand_totals['wilayah_net'] < 0 ? 'text-red-900' : 'text-blue-900' ?>"><?= formatRupiah($grand_totals['wilayah_net']) ?></td>
+                    <?php foreach($all_warehouses as $wh): 
+                        $val = $grand_wh_totals[$wh['id']] ?? 0;
+                        $color = $val < 0 ? 'text-red-700' : ($val > 0 ? 'text-green-700' : 'text-gray-600');
+                    ?>
+                        <td class="p-1 border-r border-black text-right bg-blue-100 <?= $color ?>"><?= $val != 0 ? formatRupiah($val) : '-' ?></td>
                     <?php endforeach; ?>
                 </tr>
                 <?php endif; ?>
@@ -460,17 +468,26 @@ if ($view_type == 'CUSTOM') {
                                 $sum_month_out += $amount;
                             }
                             
-                            // Wilayah Calculation
+                            // Wilayah Calculation Logic: Income (+) Expense (-)
                             $row_desc_str = (string)($row['description'] ?? '');
-                            $row_wil_total = 0;
+                            $row_wil_net = 0; // Netto untuk baris ini
                             $wh_amounts = [];
+                            
                             foreach($all_warehouses as $wh) {
                                 $is_tagged = strpos($row_desc_str, "[Wilayah: " . $wh['name'] . "]") !== false;
-                                $val = $is_tagged ? $amount : 0;
+                                
+                                // Jika Tagged:
+                                // Jika INCOME -> Positif
+                                // Jika EXPENSE -> Negatif
+                                $val = 0;
+                                if ($is_tagged) {
+                                    $val = ($row['type'] == 'INCOME') ? $amount : -$amount;
+                                }
+                                
                                 $wh_amounts[$wh['id']] = $val;
                                 
-                                if($val > 0) {
-                                    $row_wil_total += $val;
+                                if($val != 0) {
+                                    $row_wil_net += $val;
                                     $sum_month_wh[$wh['id']] += $val;
                                 }
                             }
@@ -479,15 +496,20 @@ if ($view_type == 'CUSTOM') {
                             <td class="p-1 border-r border-black text-center whitespace-nowrap"><?= date('d/m/Y', strtotime($row['date'])) ?></td>
                             <td class="p-1 border-r border-black text-center font-mono text-[10px]"><?= $row['code'] ?></td>
                             <td class="p-1 border-r border-black truncate max-w-xs" title="<?= htmlspecialchars($row['description']) ?>"><?= htmlspecialchars($row['description']) ?></td>
-                            <td class="p-1 border-r border-black text-right font-bold text-red-700 bg-red-50"><?= $row_wil_total > 0 ? formatRupiah($row_wil_total) : '-' ?></td>
+                            
                             <td class="p-1 border-r border-black text-right <?= $row['type'] == 'INCOME' ? 'text-green-700 font-bold' : '' ?>"><?= $row['type'] == 'INCOME' ? formatRupiah($amount) : '-' ?></td>
                             <td class="p-1 border-r border-black text-right text-gray-600 bg-gray-50"><?= formatRupiah($month_in_run) ?></td>
                             <td class="p-1 border-r border-black text-right <?= $row['type'] == 'EXPENSE' ? 'text-red-700 font-bold' : '' ?>"><?= $row['type'] == 'EXPENSE' ? formatRupiah($amount) : '-' ?></td>
                             <td class="p-1 border-r border-black text-right text-gray-600 bg-gray-50"><?= formatRupiah($month_out_run) ?></td>
                             <td class="p-1 border-r border-black text-right font-bold text-blue-800 bg-blue-50"><?= formatRupiah($month_in_run - $month_out_run) ?></td>
-                            <?php foreach($all_warehouses as $wh): ?>
-                                <td class="p-1 border-r border-black text-right text-[10px] <?= $wh_amounts[$wh['id']] > 0 ? 'text-red-600 font-bold' : 'text-gray-300' ?>">
-                                    <?= $wh_amounts[$wh['id']] > 0 ? formatRupiah($wh_amounts[$wh['id']]) : '-' ?>
+                            <td class="p-1 border-r border-black text-right font-bold <?= $row_wil_net < 0 ? 'text-red-700' : ($row_wil_net > 0 ? 'text-green-700' : 'text-gray-400') ?> bg-gray-50"><?= $row_wil_net != 0 ? formatRupiah($row_wil_net) : '-' ?></td>
+                            
+                            <?php foreach($all_warehouses as $wh): 
+                                $val = $wh_amounts[$wh['id']];
+                                $color = $val < 0 ? 'text-red-600 font-bold' : ($val > 0 ? 'text-green-600 font-bold' : 'text-gray-300');
+                            ?>
+                                <td class="p-1 border-r border-black text-right text-[10px] <?= $color ?>">
+                                    <?= $val != 0 ? formatRupiah($val) : '-' ?>
                                 </td>
                             <?php endforeach; ?>
                         </tr>
@@ -504,23 +526,28 @@ if ($view_type == 'CUSTOM') {
                         <td colspan="3" class="p-1 border-r border-black text-center text-[10px] uppercase">
                             MUTASI ALL TRANSAKSI PERIODE <?= $month_name_disp ?>
                         </td>
-                        <td class="p-1 border-r border-black bg-gray-400"></td> 
                         
                         <!-- Summary Income -->
-                        <td class="p-1 border-r border-black bg-gray-400"></td> 
                         <td class="p-1 border-r border-black text-right text-green-800 bg-green-100"><?= formatRupiah($sum_month_in) ?></td>
+                        <td class="p-1 border-r border-black bg-gray-400"></td> 
                         
                         <!-- Summary Expense -->
-                        <td class="p-1 border-r border-black bg-gray-400"></td> 
                         <td class="p-1 border-r border-black text-right text-red-800 bg-red-100"><?= formatRupiah($sum_month_out) ?></td>
+                        <td class="p-1 border-r border-black bg-gray-400"></td> 
                         
                         <!-- Net -->
                         <td class="p-1 border-r border-black text-right text-blue-900 bg-blue-200"><?= formatRupiah($month_net) ?></td>
                         
+                        <!-- Summary Total Wilayah (Empty Placeholder or Sum Net) -->
+                        <td class="p-1 border-r border-black bg-gray-400"></td>
+                        
                         <!-- Summary Wilayah -->
-                        <?php foreach($all_warehouses as $wh): ?>
-                            <td class="p-1 border-r border-black text-right text-[10px] bg-gray-200 <?= $sum_month_wh[$wh['id']] > 0 ? 'text-red-700' : '' ?>">
-                                <?= $sum_month_wh[$wh['id']] > 0 ? formatRupiah($sum_month_wh[$wh['id']]) : '-' ?>
+                        <?php foreach($all_warehouses as $wh): 
+                            $val = $sum_month_wh[$wh['id']];
+                            $color = $val < 0 ? 'text-red-700' : ($val > 0 ? 'text-green-800' : 'text-gray-600');
+                        ?>
+                            <td class="p-1 border-r border-black text-right text-[10px] bg-gray-200 <?= $color ?>">
+                                <?= $val != 0 ? formatRupiah($val) : '-' ?>
                             </td>
                         <?php endforeach; ?>
                     </tr>

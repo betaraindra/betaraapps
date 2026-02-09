@@ -510,7 +510,7 @@ if (isset($_GET['edit_id'])) {
             <span class="text-gray-600"><i class="fas fa-info-circle"></i> Default hanya menampilkan SN <b>Available</b>.</span>
             <label class="flex items-center gap-2 cursor-pointer bg-white px-2 py-1 rounded border border-gray-300 shadow-sm">
                 <input type="checkbox" id="show_all_sn_history" onchange="reloadSnList()" class="accent-purple-600">
-                <span class="font-bold text-purple-700">Tampilkan Semua (Termasuk Terjual)</span>
+                <span class="font-bold text-purple-700">Tampilkan Semua (Termasuk Terpakai/Terjual)</span>
             </label>
         </div>
 

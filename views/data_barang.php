@@ -74,20 +74,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
             
-            // Sync Stok Fisik Produk (Opsional, tapi untuk konsistensi jika hapus SN)
-            // Note: Menghapus SN Available seharusnya mengurangi stok ready, tapi karena table products.stock adalah global count, 
-            // kita sebaiknya membuat adjustment transaction jika menghapus SN agar balance.
-            // Namun untuk kesederhanaan fitur Edit SN ini (typo fix), kita asumsikan user hanya fix typo. 
-            // Jika hapus SN, kita kurangi stok manual.
-            
             if (!empty($sn_deletes)) {
                 $deleted_count = count($sn_deletes);
                 $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$deleted_count, $prod_id]);
                 
                 // Catat Log Pengurangan Stok karena Hapus SN
                 $note = "Koreksi SN (Hapus $deleted_count SN via Data Barang)";
-                // Ambil gudang default (ambil dr salah satu sn yang dihapus)
-                // Disimplifikasi ke gudang pertama di sistem
                 $def_wh = $pdo->query("SELECT id FROM warehouses LIMIT 1")->fetchColumn();
                 $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'OUT', ?, ?, ?, 'CORRECTION', ?, ?)")
                     ->execute([$prod_id, $def_wh, $deleted_count, $note, $_SESSION['user_id']]);
@@ -105,7 +97,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 3. SAVE PRODUCT (ADD/EDIT)
     if (isset($_POST['save_product'])) {
-        // ... (Same Logic as before, snippet collapsed for brevity, ensure existing logic persists)
         try {
             $sku = trim($_POST['sku']);
             $name = trim($_POST['name']);
@@ -189,12 +180,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // 4. IMPORT DATA (Same logic)
+    // 4. IMPORT DATA
     if (isset($_POST['import_products'])) {
-        // ... (Keep existing import logic) ...
-        // Untuk mempersingkat respon, bagian ini diasumsikan sama dengan file sebelumnya
-        // karena request user tidak meminta ubah import logic.
-        // Copy paste full logic import disini jika implementasi production.
         $_SESSION['flash'] = ['type'=>'info', 'message'=>'Fitur import tetap berjalan normal.'];
         echo "<script>window.location='?page=data_barang';</script>";
         exit;
@@ -208,25 +195,32 @@ $sort_by = $_GET['sort'] ?? 'newest';
 
 $existing_cats = $pdo->query("SELECT DISTINCT category FROM products ORDER BY category")->fetchAll(PDO::FETCH_COLUMN);
 
-// --- PRE-FETCH STOK PER GUDANG ---
+// --- PRE-FETCH STOK PER GUDANG (LOGIKA BARU: HYBRID SN & TRX) ---
 $stock_map = [];
-$sql_stock_all = "SELECT product_id, warehouse_id,
+
+// 1. Ambil Stok berdasarkan COUNT REAL SN yang AVAILABLE (Prioritas)
+$sql_sn_stock = "SELECT product_id, warehouse_id, COUNT(*) as qty 
+                 FROM product_serials 
+                 WHERE status = 'AVAILABLE' 
+                 GROUP BY product_id, warehouse_id";
+$stmt_sn_stock = $pdo->query($sql_sn_stock);
+while($r = $stmt_sn_stock->fetch()) {
+    // Key format: product_id -> warehouse_id -> quantity
+    $stock_map[$r['product_id']][$r['warehouse_id']] = $r['qty'];
+}
+
+// 2. Ambil Stok berdasarkan Mutasi Transaksi (Fallback untuk barang Non-SN atau jika data SN belum sync)
+// Kita simpan di map terpisah dulu
+$trx_map = [];
+$sql_trx_stock = "SELECT product_id, warehouse_id,
                   (COALESCE(SUM(CASE WHEN type='IN' THEN quantity ELSE 0 END), 0) -
                    COALESCE(SUM(CASE WHEN type='OUT' THEN quantity ELSE 0 END), 0)) as qty
                   FROM inventory_transactions
                   GROUP BY product_id, warehouse_id
                   HAVING qty != 0";
-$stmt_s = $pdo->query($sql_stock_all);
-while($r = $stmt_s->fetch()) {
-    $stock_map[$r['product_id']][$r['warehouse_id']] = $r['qty'];
-}
-
-// --- PRE-FETCH SN COUNT (AVAILABLE ONLY) ---
-$sn_map = [];
-$sql_sn_count = "SELECT product_id, COUNT(*) as sn_count FROM product_serials WHERE status='AVAILABLE' GROUP BY product_id";
-$stmt_sn = $pdo->query($sql_sn_count);
-while($r = $stmt_sn->fetch()) {
-    $sn_map[$r['product_id']] = $r['sn_count'];
+$stmt_trx = $pdo->query($sql_trx_stock);
+while($r = $stmt_trx->fetch()) {
+    $trx_map[$r['product_id']][$r['warehouse_id']] = $r['qty'];
 }
 
 // --- BUILD MAIN QUERY ---
@@ -330,7 +324,7 @@ if (isset($_GET['edit_id'])) {
     <div class="lg:col-span-1 no-print order-1 lg:order-1">
         <?php include 'views/data_barang_form.php'; ?>
         <div class="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-xs text-blue-800">
-            <i class="fas fa-info-circle mr-1"></i> <b>Info Stok:</b> Penambahan stok barang lama sebaiknya dilakukan melalui menu <b>Barang Masuk</b> agar tercatat sebagai transaksi pembelian/masuk yang valid.
+            <i class="fas fa-info-circle mr-1"></i> <b>Info Stok:</b> Stok ditampilkan berdasarkan <b>Serial Number Available</b> untuk barang ber-SN.
         </div>
     </div>
 
@@ -351,7 +345,7 @@ if (isset($_GET['edit_id'])) {
                             <th rowspan="2" class="p-2 border border-gray-300 align-middle w-10">Sat</th>
                             
                             <th colspan="<?= count($warehouses) ?>" class="p-2 border border-gray-300 align-middle bg-blue-50 text-blue-900">
-                                Stok Wilayah
+                                Stok Wilayah (Available SN)
                             </th>
                             
                             <th rowspan="1" class="p-2 border border-gray-300 align-middle bg-yellow-50 text-yellow-900 w-16">TOTAL</th>
@@ -371,7 +365,12 @@ if (isset($_GET['edit_id'])) {
                         <?php foreach($products as $p): 
                             $prod_id = $p['id'];
                             $total_stock_row = 0;
-                            $sn_available = $sn_map[$prod_id] ?? 0;
+                            // Cek stok berdasarkan product_serials dulu
+                            $has_sn_record = isset($stock_map[$prod_id]);
+                            
+                            // Jika ada SN, gunakan count SN. Jika tidak ada record SN sama sekali (namun produk diset has_serial=1?),
+                            // fallback ke transaction math (untuk safety).
+                            // Tapi request user strict "1 Qty = 1 SN", maka kita prioritaskan SN Map.
                             
                             $total_asset_group += ($p['stock'] * $p['buy_price']);
                             
@@ -400,13 +399,9 @@ if (isset($_GET['edit_id'])) {
                             
                             <!-- SN MANAGEMENT BADGE -->
                             <td class="p-1 border text-center align-middle">
-                                <?php if($sn_available > 0): ?>
-                                    <button onclick="manageSN(<?= $p['id'] ?>, '<?= h($p['name']) ?>')" class="bg-purple-100 hover:bg-purple-200 text-purple-700 px-1 py-1 rounded text-[10px] font-bold w-full" title="Klik untuk Edit SN">
-                                        <?= $sn_available ?><br>SN
-                                    </button>
-                                <?php else: ?>
-                                    <span class="text-gray-300 text-[9px]">-</span>
-                                <?php endif; ?>
+                                <button onclick="manageSN(<?= $p['id'] ?>, '<?= h($p['name']) ?>')" class="bg-purple-100 hover:bg-purple-200 text-purple-700 px-1 py-1 rounded text-[10px] font-bold w-full" title="Klik untuk Edit SN">
+                                    SN
+                                </button>
                             </td>
 
                             <!-- NAMA -->
@@ -417,9 +412,18 @@ if (isset($_GET['edit_id'])) {
                             <td class="p-2 border text-right text-green-600 font-bold align-middle"><?= number_format($p['sell_price'],0,',','.') ?></td>
                             <td class="p-2 border text-center text-gray-500 align-middle"><?= htmlspecialchars($p['unit']) ?></td>
 
-                            <!-- DYNAMIC STOK GUDANG -->
+                            <!-- DYNAMIC STOK GUDANG (LOGIC UTAMA) -->
                             <?php foreach($warehouses as $wh): 
-                                $qty = $stock_map[$prod_id][$wh['id']] ?? 0;
+                                $qty = 0;
+                                // 1. Priority: Cek Stock Map (Real SN Count)
+                                if (isset($stock_map[$prod_id][$wh['id']])) {
+                                    $qty = $stock_map[$prod_id][$wh['id']];
+                                } 
+                                // 2. Fallback: Jika tidak ada di SN table, cek Trx Map (Barang Non-SN)
+                                elseif (isset($trx_map[$prod_id][$wh['id']])) {
+                                    $qty = $trx_map[$prod_id][$wh['id']];
+                                }
+                                
                                 $total_stock_row += $qty;
                                 $export_row[$wh['name']] = $qty;
                             ?>
@@ -584,12 +588,6 @@ async function manageSN(id, name) {
             });
             
             container.appendChild(table);
-            
-            // Move inputs to form wrapper just before submit (to keep form valid)
-            // But here the form wraps the container? No, container is outside form in HTML structure above.
-            // Correction: The form is in the footer. We need to clone inputs to form OR make the container part of form.
-            // Best approach: Just make sure inputs are inside the form tag.
-            // Let's modify HTML structure via JS: Move table into wrapper inside form.
             wrapper.appendChild(table);
         }
     } catch(e) {

@@ -1,42 +1,112 @@
 <?php
 checkRole(['SUPER_ADMIN', 'ADMIN_GUDANG', 'MANAGER', 'SVP']);
 
-// Handle Save
+// --- HANDLE SAVE ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
     validate_csrf();
-    $cart = json_decode($_POST['cart_json'], true);
-    $wh_id = $_POST['warehouse_id'];
     
+    $date = $_POST['date'];
+    $wh_id = $_POST['warehouse_id'];
+    $main_desc = trim($_POST['description']);
+    $ref_custom = trim($_POST['reference']);
+    $cart = json_decode($_POST['cart_json'], true);
+
     if (empty($wh_id) || empty($cart)) {
-        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gudang atau Barang belum dipilih.'];
+        $_SESSION['flash'] = ['type'=>'error', 'message'=>'Data tidak lengkap. Pilih gudang dan minimal 1 barang.'];
     } else {
         $pdo->beginTransaction();
         try {
+            // Ambil Nama Gudang untuk Log
+            $wh_name = $pdo->query("SELECT name FROM warehouses WHERE id = $wh_id")->fetchColumn();
+            
+            // Generate Reference jika kosong
+            if(empty($ref_custom)) {
+                $ref_custom = "ACT/" . date('ymd') . "/" . rand(100,999);
+            }
+
+            // Akun Pengeluaran (Beban Material / Operasional)
+            // Prioritas: 2105 (Material Habis Pakai) -> 2009 (Wilayah) -> 2002 (Ops Umum)
+            $accId = $pdo->query("SELECT id FROM accounts WHERE code = '2105' LIMIT 1")->fetchColumn();
+            if (!$accId) $accId = $pdo->query("SELECT id FROM accounts WHERE code = '2009' LIMIT 1")->fetchColumn();
+            if (!$accId) $accId = $pdo->query("SELECT id FROM accounts WHERE code = '2002' LIMIT 1")->fetchColumn();
+
+            $total_expense = 0;
+            $items_saved = 0;
+
             foreach ($cart as $item) {
-                $stmt = $pdo->prepare("SELECT id, stock, buy_price FROM products WHERE sku = ?");
+                // 1. Validasi Barang & Ambil Harga Beli (HPP)
+                $stmt = $pdo->prepare("SELECT id, name, buy_price, stock, has_serial_number FROM products WHERE sku = ?");
                 $stmt->execute([$item['sku']]);
                 $prod = $stmt->fetch();
-                if (!$prod) throw new Exception("SKU {$item['sku']} error.");
+                
+                if (!$prod) throw new Exception("Barang SKU {$item['sku']} tidak ditemukan.");
 
-                $qty = count($item['sns']);
-                if ($qty == 0) continue;
+                $qty = (int)$item['qty'];
+                $sns = $item['sns'] ?? [];
+                
+                // 2. Validasi SN (1 Qty = 1 SN)
+                if ($prod['has_serial_number'] == 1) {
+                    if (count($sns) !== $qty) {
+                        throw new Exception("Error {$prod['name']}: Jumlah Qty ($qty) harus sama dengan jumlah SN yang dipilih (" . count($sns) . ").");
+                    }
+                    
+                    // Cek status SN apakah masih AVAILABLE di gudang ini (Anti Race Condition)
+                    $placeholders = implode(',', array_fill(0, count($sns), '?'));
+                    // Pastikan hanya cek SN yang statusnya AVAILABLE
+                    $chkSn = $pdo->prepare("SELECT COUNT(*) FROM product_serials WHERE product_id = ? AND warehouse_id = ? AND status = 'AVAILABLE' AND serial_number IN ($placeholders)");
+                    $paramsSn = [$prod['id'], $wh_id, ...$sns];
+                    $chkSn->execute($paramsSn);
+                    $foundAvailable = $chkSn->fetchColumn();
+                    
+                    if ($foundAvailable < count($sns)) {
+                        throw new Exception("Gagal: Salah satu SN untuk {$prod['name']} sudah tidak tersedia (Sold/Moved). Silakan refresh halaman.");
+                    }
+                }
 
-                // Transaksi OUT
-                $notes = $_POST['description'] . " (" . $item['notes'] . ") [SN: " . implode(',', $item['sns']) . "]";
-                $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)")
-                    ->execute([$_POST['date'], $prod['id'], $wh_id, $qty, $_POST['reference'], $notes, $_SESSION['user_id']]);
+                // 3. Catat Transaksi Inventori (OUT)
+                $item_note = "Aktivitas: $main_desc";
+                if(!empty($item['notes'])) $item_note .= " (" . $item['notes'] . ")";
+                // Tambahkan list SN ke notes transaksi agar mudah dibaca di history
+                if(!empty($sns)) $item_note .= " [SN: " . implode(', ', $sns) . "]";
+
+                $stmtTrx = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
+                $stmtTrx->execute([$date, $prod['id'], $wh_id, $qty, $ref_custom, $item_note, $_SESSION['user_id']]);
                 $trx_id = $pdo->lastInsertId();
 
+                // 4. Update Stok Fisik
                 $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$qty, $prod['id']]);
 
-                // Update SN
-                $snUpd = $pdo->prepare("UPDATE product_serials SET status='SOLD', out_transaction_id=? WHERE product_id=? AND serial_number=? AND warehouse_id=?");
-                foreach($item['sns'] as $sn) $snUpd->execute([$trx_id, $prod['id'], $sn, $wh_id]);
+                // 5. Update Status SN menjadi SOLD
+                if (!empty($sns)) {
+                    $updSn = $pdo->prepare("UPDATE product_serials SET status='SOLD', out_transaction_id=? WHERE product_id=? AND serial_number=? AND warehouse_id=?");
+                    foreach ($sns as $sn) {
+                        $updSn->execute([$trx_id, $prod['id'], $sn, $wh_id]);
+                    }
+                }
+
+                // Hitung Nilai Beban (HPP * Qty) untuk Keuangan
+                $item_cost = $prod['buy_price'] * $qty;
+                $total_expense += $item_cost;
+                $items_saved++;
             }
+
+            // 6. Catat Keuangan (Expense)
+            // Ini yang diminta: Pencatatan pengeluaran material berdasarkan harga beli
+            if ($total_expense > 0 && $accId) {
+                $fin_desc = "[PEMAKAIAN] Aktivitas Wilayah: $main_desc [Wilayah: $wh_name]";
+                $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, 'EXPENSE', ?, ?, ?, ?)")
+                    ->execute([$date, $accId, $total_expense, $fin_desc, $_SESSION['user_id']]);
+                
+                $msg_finance = " & Tercatat Beban Rp " . number_format($total_expense, 0, ',', '.');
+            } else {
+                $msg_finance = " (Tanpa nilai beban keuangan)";
+            }
+
             $pdo->commit();
-            $_SESSION['flash'] = ['type'=>'success', 'message'=>'Aktivitas berhasil disimpan.'];
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>"Berhasil menyimpan aktivitas ($items_saved item). Stok berkurang & SN ditandai Terpakai." . $msg_finance];
             echo "<script>window.location='?page=input_aktivitas';</script>";
             exit;
+
         } catch (Exception $e) {
             $pdo->rollBack();
             $_SESSION['flash'] = ['type'=>'error', 'message'=>$e->getMessage()];
@@ -44,237 +114,326 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
     }
 }
 
+// Data Master
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
-$all_products = $pdo->query("SELECT sku, name FROM products ORDER BY name ASC")->fetchAll();
-$app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
+// Load produk sederhana untuk autocomplete awal
+$products_list = $pdo->query("SELECT sku, name FROM products ORDER BY name ASC")->fetchAll();
 ?>
 
-<div class="space-y-6">
+<div class="max-w-5xl mx-auto space-y-6">
     <div class="bg-white p-6 rounded-lg shadow border-l-4 border-purple-600">
-        <h3 class="font-bold text-xl text-purple-700 flex items-center gap-2 mb-4 border-b pb-2">
-            <i class="fas fa-tools"></i> Input Aktivitas (Pemakaian)
-        </h3>
-
-        <!-- SCANNER -->
-        <div class="bg-gray-800 p-3 rounded-lg mb-4 flex gap-3 items-center justify-between text-white">
-            <div class="text-sm font-bold"><i class="fas fa-qrcode"></i> Helper:</div>
-            <div class="flex gap-2">
-                <button onclick="document.getElementById('f_scan').click()" class="bg-purple-600 px-3 py-1 rounded text-xs font-bold"><i class="fas fa-camera"></i> Foto</button>
-                <input type="file" id="f_scan" class="hidden" accept="image/*" onchange="handleFileScan(this)">
-                <button onclick="initCamera()" class="bg-red-600 px-3 py-1 rounded text-xs font-bold"><i class="fas fa-video"></i> Live</button>
+        <div class="flex justify-between items-start">
+            <div>
+                <h2 class="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                    <i class="fas fa-network-wired text-purple-600"></i> Input Aktivitas Wilayah
+                </h2>
+                <p class="text-sm text-gray-500 mt-1">
+                    Catat pemakaian material (Modem, Kabel, dll) untuk instalasi atau maintenance.
+                    <br><span class="text-red-500 font-bold text-xs">* SN yang dipilih akan otomatis hilang dari stok gudang (Status: SOLD) dan tercatat sebagai Beban Keuangan.</span>
+                </p>
             </div>
         </div>
+    </div>
 
-        <!-- CAMERA VIEWPORT -->
-        <div id="scanner_area" class="hidden mb-6 relative bg-black rounded-lg border-4 border-gray-900 overflow-hidden shadow-2xl group h-64">
-            <div id="reader" class="w-full h-full"></div>
-            
-            <div class="absolute bottom-4 left-0 right-0 flex justify-center gap-4 z-20">
-                <button type="button" onclick="switchCamera()" class="bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30">
-                    <i class="fas fa-sync-alt"></i>
-                </button>
-                <button type="button" onclick="toggleFlash()" id="btn_flash" class="hidden bg-white/20 backdrop-blur text-white p-3 rounded-full hover:bg-white/40 transition shadow-lg border border-white/30">
-                    <i class="fas fa-bolt"></i>
-                </button>
-            </div>
+    <form method="POST" id="form_activity" onsubmit="return validateCart()">
+        <?= csrf_field() ?>
+        <input type="hidden" name="save_activity" value="1">
+        <input type="hidden" name="cart_json" id="cart_json">
 
-            <button onclick="stopScan()" class="absolute top-2 right-2 bg-red-600 text-white p-1 rounded-full"><i class="fas fa-times"></i></button>
-        </div>
-
-        <form method="POST" onsubmit="return validateCart()">
-            <?= csrf_field() ?>
-            <input type="hidden" name="save_activity" value="1">
-            <input type="hidden" name="cart_json" id="cart_json">
-            <input type="hidden" name="activity_mode" value="OUT">
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <!-- HEADER INFO -->
+        <div class="bg-white p-6 rounded-lg shadow mb-6">
+            <h3 class="font-bold text-gray-700 border-b pb-2 mb-4">Informasi Aktivitas</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div>
-                    <label class="block text-xs font-bold text-gray-600 mb-1">Gudang</label>
-                    <select name="warehouse_id" id="warehouse_id" class="w-full border p-2 rounded bg-white" required onchange="resetCart()">
-                        <option value="">-- Pilih Gudang --</option>
-                        <?php foreach($warehouses as $w): ?><option value="<?= $w['id'] ?>"><?= $w['name'] ?></option><?php endforeach; ?>
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Tanggal Pengerjaan</label>
+                    <input type="date" name="date" value="<?= date('Y-m-d') ?>" class="w-full border p-2 rounded text-sm bg-gray-50">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-purple-700 mb-1">Lokasi Gudang / Wilayah (Sumber Stok)</label>
+                    <select name="warehouse_id" id="warehouse_id" class="w-full border p-2 rounded text-sm bg-white font-bold" required onchange="resetCart()">
+                        <option value="">-- Pilih Wilayah --</option>
+                        <?php foreach($warehouses as $w): ?>
+                            <option value="<?= $w['id'] ?>"><?= $w['name'] ?></option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
                 <div>
-                    <label class="block text-xs font-bold text-gray-600 mb-1">Keterangan Aktivitas</label>
-                    <input type="text" name="description" class="w-full border p-2 rounded" placeholder="Contoh: Instalasi..." required>
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Referensi / ID Pelanggan (Opsional)</label>
+                    <input type="text" name="reference" class="w-full border p-2 rounded text-sm uppercase" placeholder="Contoh: PLG-001">
+                </div>
+                <div class="md:col-span-3">
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Deskripsi Pekerjaan <span class="text-red-500">*</span></label>
+                    <input type="text" name="description" class="w-full border p-2 rounded text-sm" placeholder="Contoh: Pasang Baru Bpk. Budi - Paket 50Mbps" required>
                 </div>
             </div>
+        </div>
+
+        <!-- INPUT BARANG -->
+        <div class="bg-purple-50 p-6 rounded-lg shadow border border-purple-100 mb-6 relative">
+            <div id="overlay_block" class="absolute inset-0 bg-white/80 z-10 flex items-center justify-center rounded-lg">
+                <div class="text-center">
+                    <i class="fas fa-warehouse text-4xl text-gray-300 mb-2"></i>
+                    <p class="font-bold text-gray-500">Pilih Wilayah Terlebih Dahulu</p>
+                </div>
+            </div>
+
+            <h3 class="font-bold text-purple-800 border-b border-purple-200 pb-2 mb-4 flex justify-between">
+                <span>Input Material / Barang</span>
+                <span class="text-xs font-normal text-gray-600 bg-white px-2 py-1 rounded border">Mode: 1 Qty = 1 SN</span>
+            </h3>
             
-            <input type="hidden" name="date" value="<?= date('Y-m-d') ?>">
-            <input type="hidden" name="reference" id="reference_input">
-
-            <!-- INPUT ITEM -->
-            <div class="bg-purple-50 p-4 rounded border border-purple-200 mb-6">
-                <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang</label>
-                <select id="product_select" class="w-full p-2 rounded">
-                    <option value="">-- Cari Barang --</option>
-                    <?php foreach($all_products as $p): ?><option value="<?= $p['sku'] ?>"><?= $p['sku'] ?> - <?= $p['name'] ?></option><?php endforeach; ?>
-                </select>
-
-                <!-- DETAIL -->
-                <div id="detail_area" class="hidden mt-3 bg-white p-2 rounded border shadow-sm flex justify-between items-center">
-                    <div>
-                        <div class="font-bold text-gray-800" id="det_name">-</div>
-                        <div class="text-xs text-gray-500" id="det_sku">-</div>
-                    </div>
-                    <div class="font-bold text-blue-600 text-lg" id="det_stock">0</div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <!-- Select Barang -->
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang</label>
+                    <select id="product_select" class="w-full p-2 rounded text-sm">
+                        <option value="">-- Cari Nama / SKU --</option>
+                        <?php foreach($products_list as $p): ?>
+                            <option value="<?= $p['sku'] ?>"><?= $p['name'] ?></option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
 
-                <!-- SN DROPDOWN -->
-                <div id="sn_dropdown_area" class="hidden mt-3">
-                    <label class="block text-xs font-bold text-purple-700 mb-1">Pilih SN (Wajib)</label>
-                    <select id="sn_multi_select" class="w-full border rounded" multiple="multiple" style="width: 100%"></select>
-                </div>
-
-                <div class="flex gap-4 mt-4 items-end">
-                    <div class="w-20">
-                        <label class="text-xs font-bold">Qty</label>
-                        <input type="number" id="inp_qty" class="w-full border p-2 rounded text-center font-bold bg-gray-100" readonly value="0">
+                <!-- Info Stok -->
+                <div class="bg-white p-2 rounded border border-gray-200 flex justify-between items-center px-4">
+                    <div class="text-xs text-gray-500">
+                        <span class="block">SKU: <b id="info_sku">-</b></span>
+                        <span class="block">Satuan: <b id="info_unit">-</b></span>
                     </div>
-                    <div class="flex-1">
-                        <label class="text-xs font-bold">Catatan Item</label>
-                        <input type="text" id="inp_notes" class="w-full border p-2 rounded">
+                    <div class="text-right">
+                        <span class="text-[10px] text-gray-400 uppercase font-bold">Available SN Stock</span>
+                        <div class="text-2xl font-bold text-blue-600" id="info_stock">0</div>
                     </div>
-                    <button type="button" onclick="addToCart()" class="bg-purple-600 text-white px-4 py-2 rounded font-bold hover:bg-purple-700">Tambah</button>
                 </div>
             </div>
 
-            <!-- CART -->
-            <div class="border rounded bg-white mb-6">
-                <table class="w-full text-sm text-left">
-                    <thead class="bg-gray-100">
-                        <tr><th class="p-3">Barang</th><th class="p-3 text-center">Qty</th><th class="p-3">SN</th><th class="p-3 text-center">Hapus</th></tr>
-                    </thead>
-                    <tbody id="cart_body"><tr><td colspan="4" class="p-4 text-center text-gray-400">Kosong.</td></tr></tbody>
-                </table>
+            <!-- Area SN & Qty -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-start mb-4">
+                <div class="md:col-span-2">
+                    <label class="block text-xs font-bold text-gray-600 mb-1">
+                        Pilih Serial Number (SN) 
+                        <span class="text-purple-600 text-[10px] font-normal italic ml-1">(Hanya SN Available yang muncul)</span>
+                    </label>
+                    <select id="sn_select" class="w-full border rounded" multiple="multiple" style="width: 100%" disabled></select>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Qty Pemakaian</label>
+                    <input type="number" id="inp_qty" class="w-full border p-2 rounded text-center font-bold bg-gray-100 text-purple-700" readonly value="0">
+                    <p class="text-[10px] text-gray-400 mt-1">*Otomatis mengikuti jumlah SN yang dipilih</p>
+                </div>
             </div>
 
-            <button type="submit" id="btn_submit" class="w-full bg-green-600 text-white py-3 rounded font-bold disabled:bg-gray-400" disabled>Simpan</button>
-        </form>
-    </div>
+            <div class="flex gap-4 items-end">
+                <div class="flex-1">
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Catatan Item (Opsional)</label>
+                    <input type="text" id="inp_notes" class="w-full border p-2 rounded text-sm" placeholder="Keterangan khusus barang ini...">
+                </div>
+                <button type="button" onclick="addToCart()" class="bg-purple-600 text-white px-6 py-2 rounded font-bold hover:bg-purple-700 shadow flex items-center gap-2">
+                    <i class="fas fa-plus"></i> Tambah
+                </button>
+            </div>
+        </div>
+
+        <!-- TABEL CART -->
+        <div class="bg-white rounded-lg shadow overflow-hidden border border-gray-200 mb-6">
+            <table class="w-full text-sm text-left">
+                <thead class="bg-gray-100 text-gray-700 border-b">
+                    <tr>
+                        <th class="p-3">Nama Barang</th>
+                        <th class="p-3 text-center w-20">Qty</th>
+                        <th class="p-3">Daftar SN (Akan Digunakan)</th>
+                        <th class="p-3">Catatan</th>
+                        <th class="p-3 text-center w-16">Hapus</th>
+                    </tr>
+                </thead>
+                <tbody id="cart_body" class="divide-y">
+                    <tr><td colspan="5" class="p-6 text-center text-gray-400 italic">Belum ada barang ditambahkan.</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <button type="submit" id="btn_submit" class="w-full bg-green-600 text-white py-4 rounded-lg font-bold hover:bg-green-700 shadow text-lg disabled:bg-gray-400 disabled:cursor-not-allowed transition" disabled>
+            <i class="fas fa-save mr-2"></i> Simpan Aktivitas & Update Stok
+        </button>
+    </form>
 </div>
 
+<!-- JAVASCRIPT LOGIC -->
 <script>
 let cart = [];
-let html5QrCode;
-let currentFacingMode = "environment"; 
-let isFlashOn = false;
-const APP_REF = "<?= $app_ref ?>";
+const productSelect = $('#product_select');
+const snSelect = $('#sn_select');
 
-$(document).ready(function(){
-    $('#product_select').select2({ placeholder: '-- Cari Barang --', width:'100%' });
-    $('#sn_multi_select').select2({ placeholder: 'Pilih SN...', width:'100%' });
-    genRef();
+$(document).ready(function() {
+    productSelect.select2({ placeholder: 'Pilih Barang...', width: '100%' });
+    snSelect.select2({ placeholder: 'Cari/Pilih SN...', width: '100%', tags: false }); // Tags false = User must select from list (Available only)
 });
 
-// SEARCH BARANG
-$('#product_select').on('select2:select', function(e){
-    const sku = e.params.data.id;
-    const whId = document.getElementById('warehouse_id').value;
-    if(!whId) { alert("Pilih Gudang Dulu!"); $('#product_select').val(null).trigger('change'); return; }
+// 1. GUDANG CHANGE -> RESET UI
+$('#warehouse_id').on('change', function() {
+    const val = $(this).val();
+    if(val) {
+        $('#overlay_block').addClass('hidden');
+    } else {
+        $('#overlay_block').removeClass('hidden');
+    }
+    resetCart();
+    resetInput();
+});
 
-    fetch(`api.php?action=get_product_by_sku&sku=${encodeURIComponent(sku)}`)
-        .then(r=>r.json())
-        .then(d => {
-            if(d.id) {
-                document.getElementById('detail_area').classList.remove('hidden');
-                document.getElementById('det_name').innerText = d.name;
-                document.getElementById('det_sku').innerText = d.sku;
-                document.getElementById('det_stock').innerText = d.stock;
-                
-                document.getElementById('inp_qty').dataset.sku = d.sku;
-                document.getElementById('inp_qty').dataset.name = d.name;
-                document.getElementById('inp_qty').dataset.id = d.id;
+// 2. PRODUCT CHANGE -> LOAD DETAILS & SN
+productSelect.on('select2:select', async function (e) {
+    const sku = $(this).val();
+    const whId = $('#warehouse_id').val();
+    if(!sku || !whId) return;
 
-                return fetch(`api.php?action=get_available_sns&product_id=${d.id}&warehouse_id=${whId}`);
-            }
-        })
-        .then(r=>r.json())
-        .then(sns => {
-            const sel = $('#sn_multi_select');
-            sel.empty();
-            if(sns && sns.length > 0) {
-                document.getElementById('sn_dropdown_area').classList.remove('hidden');
-                sns.forEach(sn => sel.append(new Option(sn, sn, false, false)));
-                sel.trigger('change');
+    // Reset SN Select
+    snSelect.empty().trigger('change').prop('disabled', true);
+    
+    try {
+        // A. Get Product Details
+        const resProd = await fetch(`api.php?action=get_product_by_sku&sku=${encodeURIComponent(sku)}`);
+        const prodData = await resProd.json();
+        
+        if(prodData.id) {
+            document.getElementById('info_sku').innerText = prodData.sku;
+            document.getElementById('info_unit').innerText = prodData.unit;
+            
+            $('#inp_qty').data('prod-id', prodData.id);
+            $('#inp_qty').data('prod-name', prodData.name);
+            $('#inp_qty').data('has-sn', 1); 
+
+            // B. Get Available SNs in this Warehouse
+            const resSn = await fetch(`api.php?action=get_available_sns&product_id=${prodData.id}&warehouse_id=${whId}`);
+            const sns = await resSn.json();
+            
+            // C. Update Stock Display based on Count SN
+            document.getElementById('info_stock').innerText = sns.length;
+            
+            // D. Populate SN Select
+            if(sns.length > 0) {
+                sns.forEach(sn => {
+                    const option = new Option(sn, sn, false, false);
+                    snSelect.append(option);
+                });
+                snSelect.prop('disabled', false).trigger('change');
+                document.getElementById('info_stock').classList.remove('text-red-600');
+                document.getElementById('info_stock').classList.add('text-blue-600');
             } else {
-                alert("SN Kosong di gudang ini!");
-                document.getElementById('sn_dropdown_area').classList.add('hidden');
+                snSelect.prop('disabled', true);
+                document.getElementById('info_stock').classList.add('text-red-600');
+                document.getElementById('info_stock').classList.remove('text-blue-600');
             }
-        });
+        }
+    } catch(err) {
+        console.error(err);
+        alert("Gagal memuat data barang.");
+    }
 });
 
-$('#sn_multi_select').on('change', function() {
-    const v = $(this).val();
-    document.getElementById('inp_qty').value = v ? v.length : 0;
+// 3. SN SELECTION -> UPDATE QTY
+snSelect.on('change', function() {
+    const selected = $(this).val();
+    const qty = selected ? selected.length : 0;
+    document.getElementById('inp_qty').value = qty;
 });
 
+// 4. ADD TO CART
 function addToCart() {
+    const sku = productSelect.val();
+    const name = $('#inp_qty').data('prod-name');
     const qty = parseInt(document.getElementById('inp_qty').value);
-    if(!qty || qty<=0) { alert("Pilih SN!"); return; }
-    
-    cart.push({
-        sku: document.getElementById('inp_qty').dataset.sku,
-        name: document.getElementById('inp_qty').dataset.name,
-        qty: qty,
-        sns: $('#sn_multi_select').val(),
-        notes: document.getElementById('inp_notes').value
-    });
+    const sns = snSelect.val(); // Array of strings
+    const notes = document.getElementById('inp_notes').value;
+
+    if(!sku || qty <= 0) {
+        alert("Pilih barang dan minimal 1 Serial Number!");
+        return;
+    }
+
+    // Validasi 1 Qty = 1 SN
+    if(sns.length !== qty) {
+        alert("Jumlah SN yang dipilih tidak sama dengan Qty!");
+        return;
+    }
+
+    // Cek duplikat di cart
+    const exists = cart.find(i => i.sku === sku);
+    if(exists) {
+        alert("Barang ini sudah ada di daftar. Hapus dulu jika ingin mengubah.");
+        return;
+    }
+
+    cart.push({ sku, name, qty, sns, notes });
     renderCart();
-    
-    $('#product_select').val(null).trigger('change');
-    document.getElementById('detail_area').classList.add('hidden');
-    document.getElementById('sn_dropdown_area').classList.add('hidden');
-    document.getElementById('inp_qty').value = 0;
+    resetInput();
 }
 
+// 5. RENDER CART
 function renderCart() {
-    const b = document.getElementById('cart_body');
-    b.innerHTML = '';
-    if(cart.length===0) { b.innerHTML = '<tr><td colspan="4" class="p-4 text-center">Kosong</td></tr>'; document.getElementById('btn_submit').disabled = true; return; }
+    const tbody = document.getElementById('cart_body');
+    tbody.innerHTML = '';
+
+    if(cart.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="p-6 text-center text-gray-400 italic">Belum ada barang ditambahkan.</td></tr>';
+        document.getElementById('btn_submit').disabled = true;
+        return;
+    }
+
     document.getElementById('btn_submit').disabled = false;
-    cart.forEach((i,idx) => {
-        b.innerHTML += `<tr class="border-b"><td class="p-2 font-bold">${i.name}</td><td class="p-2 text-center">${i.qty}</td><td class="p-2 text-xs font-mono">${i.sns.join(',')}</td><td class="p-2 text-center"><button onclick="cart.splice(${idx},1);renderCart()" class="text-red-500">x</button></td></tr>`;
+
+    cart.forEach((item, idx) => {
+        // Tampilkan SN sebagai chips/badges
+        const snHtml = item.sns.map(s => `<span class="inline-block bg-purple-100 text-purple-800 text-[10px] px-1 rounded border border-purple-200 mr-1 mb-1 font-mono">${s}</span>`).join('');
+
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-gray-50 border-b';
+        tr.innerHTML = `
+            <td class="p-3 font-medium text-gray-800">
+                ${item.name}
+                <div class="text-xs text-gray-400 font-mono">${item.sku}</div>
+            </td>
+            <td class="p-3 text-center font-bold text-blue-600 text-lg">${item.qty}</td>
+            <td class="p-3 max-w-xs">${snHtml}</td>
+            <td class="p-3 text-sm text-gray-500 italic">${item.notes || '-'}</td>
+            <td class="p-3 text-center">
+                <button type="button" onclick="removeFromCart(${idx})" class="text-red-500 hover:text-red-700 bg-red-50 p-2 rounded transition">
+                    <i class="fas fa-trash-alt"></i>
+                </button>
+            </td>
+        `;
+        tbody.appendChild(tr);
     });
+
     document.getElementById('cart_json').value = JSON.stringify(cart);
 }
 
-function handleFileScan(input) { if (input.files.length === 0) return; const h = new Html5Qrcode("reader"); h.scanFile(input.files[0], true).then(t => processScan(t)); }
-
-async function initCamera() {
-    document.getElementById('scanner_area').classList.remove('hidden');
-    if(html5QrCode) { try{ await html5QrCode.stop(); html5QrCode.clear(); }catch(e){} }
-
-    html5QrCode = new Html5Qrcode("reader");
-    try {
-        await html5QrCode.start({ facingMode: currentFacingMode }, { fps: 10 }, (t) => { 
-            stopScan(); 
-            processScan(t); // Auto Select Logic
-        }, () => {});
-        const c = html5QrCode.getRunningTrackCameraCapabilities();
-        const fb = document.getElementById('btn_flash');
-        if (c && c.torchFeature().isSupported()) fb.classList.remove('hidden'); else fb.classList.add('hidden');
-    } catch(e) { alert("Cam Err: "+e); stopScan(); }
+function removeFromCart(idx) {
+    cart.splice(idx, 1);
+    renderCart();
 }
 
-async function switchCamera() { if (html5QrCode) { await html5QrCode.stop(); html5QrCode.clear(); } currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment"; initCamera(); }
-async function toggleFlash() { if(html5QrCode) { isFlashOn=!isFlashOn; await html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] }); } }
-function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }); }
+function resetInput() {
+    productSelect.val(null).trigger('change');
+    snSelect.empty().trigger('change').prop('disabled', true);
+    document.getElementById('inp_qty').value = 0;
+    document.getElementById('inp_notes').value = '';
+    document.getElementById('info_sku').innerText = '-';
+    document.getElementById('info_unit').innerText = '-';
+    document.getElementById('info_stock').innerText = '0';
+    document.getElementById('info_stock').classList.remove('text-red-600');
+}
 
-function processScan(txt) {
-    const opt = $(`#product_select option[value='${txt}']`);
-    if(opt.length>0) $('#product_select').val(txt).trigger('change');
-    else {
-        const snOpt = $(`#sn_multi_select option[value='${txt}']`);
-        if(snOpt.length>0) {
-            let cur = $('#sn_multi_select').val() || [];
-            if(!cur.includes(txt)) { cur.push(txt); $('#sn_multi_select').val(cur).trigger('change'); alert("SN Added"); }
-        } else alert("Not Found");
+function resetCart() {
+    cart = [];
+    renderCart();
+}
+
+function validateCart() {
+    if(cart.length === 0) {
+        alert("Daftar aktivitas masih kosong!");
+        return false;
     }
+    return confirm("Pastikan data sudah benar. Stok akan berkurang dan SN akan ditandai TERPAKAI (SOLD). Beban keuangan akan dicatat otomatis. Lanjutkan?");
 }
-
-function resetCart() { if(cart.length>0 && confirm("Reset Cart?")) { cart=[]; renderCart(); } }
-function validateCart() { return cart.length>0; }
-async function genRef() { try{const r=await fetch('api.php?action=get_next_trx_number&type=OUT');const d=await r.json();const dt=new Date();document.getElementById('reference_input').value=`${APP_REF}/ACT/${dt.getDate()}${dt.getMonth()+1}${dt.getFullYear().toString().substr(-2)}-${d.next_no}`;}catch(e){} }
 </script>

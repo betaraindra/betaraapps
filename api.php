@@ -13,6 +13,7 @@ if (!isLoggedIn()) {
 $action = $_GET['action'] ?? '';
 
 // === GET AVAILABLE SERIAL NUMBERS (ARRAY STRING) ===
+// Digunakan di dropdown Select2 untuk transaksi (Hanya Available)
 if ($action === 'get_available_sns') {
     $prod_id = $_GET['product_id'] ?? 0;
     $wh_id = $_GET['warehouse_id'] ?? 0;
@@ -34,29 +35,52 @@ if ($action === 'get_available_sns') {
 
 // === GET MANAGEABLE SERIAL NUMBERS (ID & VALUE) ===
 // Digunakan untuk Edit SN di Data Barang
+// UPDATE: Supports 'show_all' parameter
 if ($action === 'get_manageable_sns') {
     $prod_id = $_GET['product_id'] ?? 0;
+    $show_all = isset($_GET['show_all']) && $_GET['show_all'] == '1';
     
     if (empty($prod_id)) {
         echo json_encode([]);
         exit;
     }
 
-    // Hanya ambil yang status AVAILABLE sesuai permintaan
-    $stmt = $pdo->prepare("SELECT id, serial_number, warehouse_id FROM product_serials 
-                           WHERE product_id = ? AND status = 'AVAILABLE' 
-                           ORDER BY created_at DESC");
-    $stmt->execute([$prod_id]);
+    if ($show_all) {
+        // Tampilkan semua (Termasuk Sold)
+        $stmt = $pdo->prepare("SELECT id, serial_number, warehouse_id, status, out_transaction_id FROM product_serials 
+                               WHERE product_id = ? 
+                               ORDER BY status ASC, created_at DESC"); // Available first
+        $stmt->execute([$prod_id]);
+    } else {
+        // Default: Hanya Available
+        $stmt = $pdo->prepare("SELECT id, serial_number, warehouse_id, status, out_transaction_id FROM product_serials 
+                               WHERE product_id = ? AND status = 'AVAILABLE' 
+                               ORDER BY created_at DESC");
+        $stmt->execute([$prod_id]);
+    }
+    
     $data = $stmt->fetchAll();
     
     // Fetch warehouse names for better context
     $result = [];
     foreach($data as $row) {
-        $wh_name = $pdo->query("SELECT name FROM warehouses WHERE id = {$row['warehouse_id']}")->fetchColumn() ?: '-';
+        $wh_name = '-';
+        if ($row['warehouse_id']) {
+            $wh_name = $pdo->query("SELECT name FROM warehouses WHERE id = {$row['warehouse_id']}")->fetchColumn() ?: '-';
+        }
+        
+        // Jika SOLD, mungkin ada info tambahan
+        $extra_info = '';
+        if ($row['status'] == 'SOLD' && $row['out_transaction_id']) {
+            $trx_ref = $pdo->query("SELECT reference FROM inventory_transactions WHERE id = {$row['out_transaction_id']}")->fetchColumn();
+            if ($trx_ref) $extra_info = " (Ref: $trx_ref)";
+        }
+
         $result[] = [
             'id' => $row['id'],
             'sn' => $row['serial_number'],
-            'wh_name' => $wh_name
+            'wh_name' => $wh_name . $extra_info,
+            'status' => $row['status']
         ];
     }
     
@@ -89,7 +113,7 @@ if ($action === 'get_warehouse_stock') {
 if ($action === 'get_product_by_sku') {
     $code = trim($_GET['sku'] ?? '');
     
-    // 1. Cek apakah ini Serial Number Unik?
+    // 1. Cek apakah ini Serial Number Unik? (Hanya Available)
     $stmtSn = $pdo->prepare("
         SELECT ps.product_id, ps.serial_number, ps.warehouse_id, 
                p.sku, p.name, p.unit, p.stock as global_stock, p.sell_price, p.buy_price

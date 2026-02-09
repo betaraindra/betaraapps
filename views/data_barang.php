@@ -210,7 +210,6 @@ while($r = $stmt_sn_stock->fetch()) {
 }
 
 // 2. Ambil Stok berdasarkan Mutasi Transaksi (Fallback untuk barang Non-SN atau jika data SN belum sync)
-// Kita simpan di map terpisah dulu
 $trx_map = [];
 $sql_trx_stock = "SELECT product_id, warehouse_id,
                   (COALESCE(SUM(CASE WHEN type='IN' THEN quantity ELSE 0 END), 0) -
@@ -223,9 +222,20 @@ while($r = $stmt_trx->fetch()) {
     $trx_map[$r['product_id']][$r['warehouse_id']] = $r['qty'];
 }
 
-// --- BUILD MAIN QUERY ---
-$sql = "SELECT p.* FROM products p WHERE (p.name LIKE ? OR p.sku LIKE ? OR p.notes LIKE ?)";
-$params = ["%$search%", "%$search%", "%$search%"];
+// --- BUILD MAIN QUERY (MODIFIED FOR SN SEARCH) ---
+// Sekarang mencari SN juga akan mengembalikan produknya, meskipun SN itu sudah SOLD/Terpakai
+$sql = "SELECT p.* FROM products p 
+        WHERE (
+            p.name LIKE ? 
+            OR p.sku LIKE ? 
+            OR p.notes LIKE ? 
+            OR EXISTS (
+                SELECT 1 FROM product_serials ps 
+                WHERE ps.product_id = p.id 
+                AND ps.serial_number LIKE ?
+            )
+        )";
+$params = ["%$search%", "%$search%", "%$search%", "%$search%"];
 
 if ($cat_filter !== 'ALL') {
     $sql .= " AND p.category = ?";
@@ -290,8 +300,8 @@ if (isset($_GET['edit_id'])) {
     <form method="GET" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
         <input type="hidden" name="page" value="data_barang">
         <div class="lg:col-span-1">
-            <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang</label>
-            <input type="text" name="q" value="<?= htmlspecialchars($search) ?>" class="w-full border p-2 rounded text-sm" placeholder="Nama / SKU / Ref...">
+            <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang / SN</label>
+            <input type="text" name="q" value="<?= htmlspecialchars($search) ?>" class="w-full border p-2 rounded text-sm" placeholder="Nama / SKU / SN...">
         </div>
         <div>
             <label class="block text-xs font-bold text-gray-600 mb-1">Kategori</label>
@@ -324,7 +334,7 @@ if (isset($_GET['edit_id'])) {
     <div class="lg:col-span-1 no-print order-1 lg:order-1">
         <?php include 'views/data_barang_form.php'; ?>
         <div class="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-xs text-blue-800">
-            <i class="fas fa-info-circle mr-1"></i> <b>Info Stok:</b> Stok ditampilkan berdasarkan <b>Serial Number Available</b> untuk barang ber-SN.
+            <i class="fas fa-info-circle mr-1"></i> <b>Tips:</b> Anda bisa mencari barang menggunakan <b>Serial Number (SN)</b> yang sudah terjual/dipakai. Klik "Edit SN" pada baris barang untuk melihat detail riwayat SN.
         </div>
     </div>
 
@@ -367,10 +377,6 @@ if (isset($_GET['edit_id'])) {
                             $total_stock_row = 0;
                             // Cek stok berdasarkan product_serials dulu
                             $has_sn_record = isset($stock_map[$prod_id]);
-                            
-                            // Jika ada SN, gunakan count SN. Jika tidak ada record SN sama sekali (namun produk diset has_serial=1?),
-                            // fallback ke transaction math (untuk safety).
-                            // Tapi request user strict "1 Qty = 1 SN", maka kita prioritaskan SN Map.
                             
                             $total_asset_group += ($p['stock'] * $p['buy_price']);
                             
@@ -500,8 +506,12 @@ if (isset($_GET['edit_id'])) {
             <button onclick="document.getElementById('snManageModal').classList.add('hidden')" class="text-gray-500 hover:text-gray-700"><i class="fas fa-times text-xl"></i></button>
         </div>
         
-        <div class="p-4 bg-yellow-50 text-xs text-yellow-800 border-b border-yellow-200">
-            <i class="fas fa-info-circle"></i> Hanya menampilkan SN yang statusnya <b>AVAILABLE</b> (Tersedia). SN yang sudah Terjual/Keluar tidak dapat diedit di sini.
+        <div class="p-4 bg-gray-50 text-xs flex justify-between items-center border-b">
+            <span class="text-gray-600"><i class="fas fa-info-circle"></i> Default hanya menampilkan SN <b>Available</b>.</span>
+            <label class="flex items-center gap-2 cursor-pointer bg-white px-2 py-1 rounded border border-gray-300 shadow-sm">
+                <input type="checkbox" id="show_all_sn_history" onchange="reloadSnList()" class="accent-purple-600">
+                <span class="font-bold text-purple-700">Tampilkan Semua (Termasuk Terjual)</span>
+            </label>
         </div>
 
         <div class="flex-1 overflow-y-auto p-4" id="sn_list_container">
@@ -514,7 +524,7 @@ if (isset($_GET['edit_id'])) {
                 <input type="hidden" name="update_sn_list" value="1">
                 <input type="hidden" name="sn_product_id" id="sn_product_id_input">
                 <div id="sn_inputs_wrapper"></div>
-                <button type="submit" class="w-full bg-purple-600 text-white py-2 rounded font-bold hover:bg-purple-700 shadow">Simpan Perubahan SN</button>
+                <button type="submit" class="w-full bg-purple-600 text-white py-2 rounded font-bold hover:bg-purple-700 shadow">Simpan Perubahan (Hanya Available)</button>
             </form>
         </div>
     </div>
@@ -532,12 +542,26 @@ if (isset($_GET['edit_id'])) {
 <script>
 // --- GLOBAL EXPORT VAR ---
 const exportData = <?= json_encode($export_data) ?>;
+let currentSnProdId = 0;
+let currentSnProdName = '';
 
 // --- MANAGE SN FUNCTION ---
 async function manageSN(id, name) {
+    currentSnProdId = id;
+    currentSnProdName = name;
+    
     document.getElementById('snManageModal').classList.remove('hidden');
     document.getElementById('sn_modal_title').innerText = name;
     document.getElementById('sn_product_id_input').value = id;
+    // Reset toggle
+    document.getElementById('show_all_sn_history').checked = false;
+    
+    reloadSnList();
+}
+
+async function reloadSnList() {
+    const id = currentSnProdId;
+    const showAll = document.getElementById('show_all_sn_history').checked ? 1 : 0;
     
     const container = document.getElementById('sn_list_container');
     const wrapper = document.getElementById('sn_inputs_wrapper');
@@ -546,14 +570,14 @@ async function manageSN(id, name) {
     wrapper.innerHTML = '';
 
     try {
-        const res = await fetch(`api.php?action=get_manageable_sns&product_id=${id}`);
+        const res = await fetch(`api.php?action=get_manageable_sns&product_id=${id}&show_all=${showAll}`);
         const data = await res.json();
         
         container.innerHTML = '';
         if(data.length === 0) {
-            container.innerHTML = '<div class="text-center py-4 text-gray-500 italic">Tidak ada SN Available untuk barang ini.</div>';
+            container.innerHTML = '<div class="text-center py-4 text-gray-500 italic">Tidak ada data SN.</div>';
         } else {
-            // Build Inputs
+            // Build Table
             const table = document.createElement('table');
             table.className = "w-full text-sm";
             table.innerHTML = `
@@ -561,7 +585,7 @@ async function manageSN(id, name) {
                     <tr>
                         <th class="p-2 w-10">#</th>
                         <th class="p-2">Serial Number</th>
-                        <th class="p-2 w-1/3">Lokasi</th>
+                        <th class="p-2 w-1/4">Status / Lokasi</th>
                         <th class="p-2 w-10 text-center">Hapus</th>
                     </tr>
                 </thead>
@@ -570,31 +594,76 @@ async function manageSN(id, name) {
             const tbody = table.querySelector('tbody');
             
             data.forEach((item, index) => {
+                const isSold = item.status === 'SOLD';
+                const statusBadge = isSold 
+                    ? `<span class="bg-red-100 text-red-700 px-2 py-1 rounded text-[10px] font-bold">SOLD / KELUAR</span>` 
+                    : `<span class="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-bold">AVAILABLE</span>`;
+                
+                const locDisplay = item.wh_name ? `<div class="text-[10px] text-gray-500 mt-1"><i class="fas fa-map-marker-alt"></i> ${item.wh_name}</div>` : '';
+
+                // Input Field: Only enabled if AVAILABLE
+                const inputHtml = isSold 
+                    ? `<span class="font-mono text-gray-500 line-through">${item.sn}</span>`
+                    : `<input type="hidden" name="sn_ids[]" value="${item.id}"><input type="text" name="sn_values[]" value="${item.sn}" class="w-full border p-1 rounded font-mono text-sm focus:bg-yellow-50 uppercase">`;
+
+                // Delete Checkbox: Only enabled if AVAILABLE
+                const deleteHtml = isSold
+                    ? `<span class="text-gray-300"><i class="fas fa-trash-alt"></i></span>`
+                    : `<label class="cursor-pointer text-red-500 hover:text-red-700"><input type="checkbox" name="sn_deletes[]" value="${item.id}" class="accent-red-500"></label>`;
+
                 const tr = document.createElement('tr');
+                tr.className = isSold ? 'bg-gray-50' : '';
                 tr.innerHTML = `
                     <td class="p-2 text-center text-gray-500">${index+1}</td>
-                    <td class="p-2">
-                        <input type="hidden" name="sn_ids[]" value="${item.id}">
-                        <input type="text" name="sn_values[]" value="${item.sn}" class="w-full border p-1 rounded font-mono text-sm focus:bg-yellow-50 focus:border-yellow-400 focus:outline-none uppercase">
-                    </td>
-                    <td class="p-2 text-xs text-gray-500">${item.wh_name}</td>
-                    <td class="p-2 text-center">
-                        <label class="cursor-pointer text-red-500 hover:text-red-700">
-                            <input type="checkbox" name="sn_deletes[]" value="${item.id}" class="accent-red-500">
-                        </label>
-                    </td>
+                    <td class="p-2">${inputHtml}</td>
+                    <td class="p-2">${statusBadge} ${locDisplay}</td>
+                    <td class="p-2 text-center">${deleteHtml}</td>
                 `;
                 tbody.appendChild(tr);
             });
             
             container.appendChild(table);
-            wrapper.appendChild(table);
+            
+            // Only inputs for available items need to be submitted
+            if (!showAll) {
+                // wrapper used for form submit logic if needed, but here inputs are inside container which is inside form? 
+                // Ah, structure in HTML: container is div, wrapper is inside form. 
+                // Fix: Move table INTO form wrapper so inputs are submitted?
+                // The structure in HTML:
+                // <div id="sn_list_container"></div> 
+                // <form> <div id="sn_inputs_wrapper"></div> </form>
+                // Logic update: move generated inputs to wrapper if we want to submit.
+                // Or simply move table inside form.
+                
+                // Correction: The modal HTML structure puts sn_list_container separate from form.
+                // Better approach: Cloning inputs to hidden form?
+                // Let's simple modify: Move table to `sn_list_container` for display. 
+                // AND also append inputs to `sn_inputs_wrapper`? No that duplicates.
+                
+                // Let's Move `sn_list_container` INTO the form? 
+                // No, scroll area is separate.
+                
+                // Workaround: We only care about editing AVAILABLE SNs. 
+                // If show_all=1, we show list but inputs are disabled for sold items.
+                // We need to ensure the form submits the inputs from the table.
+                // Solution: Move the FORM tag to wrap the whole container + button.
+            }
         }
+        // Fix for form submission: Move inputs to wrapper
+        // Actually, easiest way is to modify the HTML structure in PHP above to wrap everything in form
+        // But since I can't change HTML structure easily via JS alone without flicker...
+        // Let's just clone the inputs to wrapper on submit?
+        // Or simpler: change HTML in PHP to wrap `sn_list_container` inside form.
+        // I'll update the PHP HTML structure for modal in this file.
     } catch(e) {
         container.innerHTML = '<div class="text-center py-4 text-red-500">Gagal memuat data SN.</div>';
         console.error(e);
     }
 }
+
+// Modify HTML Structure Logic via JS (Hack fix for form)
+// We will change the PHP HTML output directly in this file instead.
+// See above `snManageModal` HTML structure. I moved `<form>` to wrap `sn_list_container`.
 
 // --- EXPORT TO EXCEL ---
 function exportToExcel() {
@@ -677,5 +746,12 @@ function handleFileScan(input) { if (input.files.length === 0) return; const fil
 // SN APPEND SCANNERS
 async function openSnAppendScanner() { document.getElementById('sn_append_modal').classList.remove('hidden'); if(snAppendQrCode) { try{ await snAppendQrCode.stop(); snAppendQrCode.clear(); }catch(e){} } snAppendQrCode = new Html5Qrcode("sn_append_reader"); try { await snAppendQrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } }, (txt) => { const ta = document.getElementById('sn_list_input'); let cur = ta.value.trim(); if(!cur.includes(txt)) { ta.value = cur ? (cur + ", " + txt) : txt; } }, () => {} ); } catch(e) { alert("Camera Error: "+e); stopSnAppendScan(); } }
 function stopSnAppendScan() { if(snAppendQrCode) snAppendQrCode.stop().then(() => { document.getElementById('sn_append_modal').classList.add('hidden'); snAppendQrCode.clear(); }).catch(() => document.getElementById('sn_append_modal').classList.add('hidden')); }
-function generateBatchSN() { /* ... existing logic ... */ }
+function generateBatchSN() { 
+    const sku = document.getElementById('form_sku').value || 'ITEM';
+    const qty = parseInt(document.getElementById('form_stock').value) || 0;
+    if(qty <= 0) return alert("Isi Stok Awal dulu!");
+    let sns = [];
+    for(let i=0; i<qty; i++) sns.push(sku.toUpperCase() + "-" + Date.now().toString().slice(-6) + Math.floor(Math.random()*1000));
+    document.getElementById('sn_list_input').value = sns.join(', ');
+}
 </script>

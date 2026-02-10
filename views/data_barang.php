@@ -150,7 +150,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // --- VALIDASI JUMLAH SN vs STOCK (STRICT MODE) ---
                 $sns = [];
                 if ($initial_stock > 0) {
-                    // Explode dan bersihkan item kosong (misal "sn1, sn2, ")
                     $raw_sns = explode(',', $sn_string);
                     $clean_sns = [];
                     foreach($raw_sns as $s) {
@@ -161,19 +160,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $input_sn_count = count($clean_sns);
 
                     if ($input_sn_count > 0) {
-                        // Jika User memasukkan SN manual (count > 0), jumlahnya WAJIB sama dengan Stok Awal
                         if ($input_sn_count !== $initial_stock) {
                             throw new Exception("Validasi Gagal: Anda memasukkan $input_sn_count Serial Number, tetapi Stok Awal yang diinput adalah $initial_stock. Jumlah harus sama persis! (Periksa pemisah koma)");
                         }
                         $sns = $clean_sns;
                     } else {
-                        // Jika User MENGOSONGKAN SN, maka Auto-Generate
                         for($i=0; $i<$initial_stock; $i++) {
                             $sns[] = "SN" . time() . rand(1000,9999);
                         }
                     }
                 }
-                // ------------------------------------------------
 
                 $pdo->beginTransaction();
 
@@ -248,27 +244,35 @@ if (isset($_GET['edit_id'])) {
         }
     }
 
-    // 2. Fetch Item Setelah Healing
     $stmt = $pdo->prepare("SELECT * FROM products WHERE id=?");
     $stmt->execute([$e_id]);
     $edit_item = $stmt->fetch();
 }
 
-// --- PRE-FETCH STOK PER GUDANG (LOGIKA BARU: HYBRID SN & TRX) ---
+// --- PRE-FETCH STOK PER GUDANG (LOGIKA BARU: TOTAL ASET = READY + USED/SOLD) ---
 $stock_map = [];
 
-// 1. Ambil Stok berdasarkan COUNT REAL SN yang AVAILABLE (Prioritas)
-$sql_sn_stock = "SELECT product_id, warehouse_id, COUNT(*) as qty 
+// 1. Ambil Stok Barang Ber-SN (Breakdown: READY vs USED/SOLD)
+// 'USED' atau 'SOLD' disini artinya barang tersebut ada di gudang ini (last known warehouse)
+// tetapi statusnya sudah dipakai (via Input Aktivitas).
+$sql_sn_stock = "SELECT product_id, warehouse_id, 
+                 SUM(CASE WHEN status = 'AVAILABLE' THEN 1 ELSE 0 END) as ready,
+                 SUM(CASE WHEN status = 'SOLD' THEN 1 ELSE 0 END) as used
                  FROM product_serials 
-                 WHERE status = 'AVAILABLE' 
+                 WHERE warehouse_id IS NOT NULL 
                  GROUP BY product_id, warehouse_id";
 $stmt_sn_stock = $pdo->query($sql_sn_stock);
 while($r = $stmt_sn_stock->fetch()) {
-    // Key format: product_id -> warehouse_id -> quantity
-    $stock_map[$r['product_id']][$r['warehouse_id']] = $r['qty'];
+    $stock_map[$r['product_id']][$r['warehouse_id']] = [
+        'ready' => (int)$r['ready'],
+        'used' => (int)$r['used'],
+        'total' => (int)$r['ready'] + (int)$r['used']
+    ];
 }
 
-// 2. Ambil Stok berdasarkan Mutasi Transaksi (Fallback untuk barang Non-SN atau jika data SN belum sync)
+// 2. Fallback untuk Barang NON-SN (Berdasarkan Transaksi)
+// Untuk Non-SN, kita asumsikan yang tampil hanya Sisa Stok (Ready). 
+// Sulit melacak "Used" Non-SN per gudang tanpa query kompleks history OUT activity.
 $trx_map = [];
 $sql_trx_stock = "SELECT product_id, warehouse_id,
                   (COALESCE(SUM(CASE WHEN type='IN' THEN quantity ELSE 0 END), 0) -
@@ -281,8 +285,7 @@ while($r = $stmt_trx->fetch()) {
     $trx_map[$r['product_id']][$r['warehouse_id']] = $r['qty'];
 }
 
-// --- BUILD MAIN QUERY (MODIFIED FOR SN SEARCH) ---
-// Sekarang mencari SN juga akan mengembalikan produknya, meskipun SN itu sudah SOLD/Terpakai
+// --- BUILD MAIN QUERY ---
 $sql = "SELECT p.* FROM products p 
         WHERE (
             p.name LIKE ? 
@@ -386,7 +389,7 @@ $total_asset_group = 0;
     <div class="lg:col-span-1 no-print order-1 lg:order-1">
         <?php include 'views/data_barang_form.php'; ?>
         <div class="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-xs text-blue-800">
-            <i class="fas fa-info-circle mr-1"></i> <b>Tips:</b> Anda bisa mencari barang menggunakan <b>Serial Number (SN)</b> yang sudah terjual/dipakai. Klik "Edit SN" pada baris barang untuk melihat detail riwayat SN.
+            <i class="fas fa-info-circle mr-1"></i> <b>Info:</b> Stok ditampilkan adalah <b>Total Aset</b> (Ready + Terpakai/Sold untuk Aktivitas).
         </div>
     </div>
 
@@ -407,7 +410,7 @@ $total_asset_group = 0;
                             <th rowspan="2" class="p-2 border border-gray-300 align-middle w-10">Sat</th>
                             
                             <th colspan="<?= count($warehouses) ?>" class="p-2 border border-gray-300 align-middle bg-blue-50 text-blue-900">
-                                Stok Wilayah (Available SN)
+                                Stok Wilayah (Total Aset = Ready + Terpakai)
                             </th>
                             
                             <th rowspan="1" class="p-2 border border-gray-300 align-middle bg-yellow-50 text-yellow-900 w-16">TOTAL</th>
@@ -420,15 +423,13 @@ $total_asset_group = 0;
                                     <?= htmlspecialchars($wh['name']) ?>
                                 </th>
                             <?php endforeach; ?>
-                            <th class="p-1 border border-gray-300 text-center bg-yellow-50 text-[10px]">Stok</th>
+                            <th class="p-1 border border-gray-300 text-center bg-yellow-50 text-[10px]">Aset</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y">
                         <?php foreach($products as $p): 
                             $prod_id = $p['id'];
                             $total_stock_row = 0;
-                            // Cek stok berdasarkan product_serials dulu
-                            $has_sn_record = isset($stock_map[$prod_id]);
                             
                             $total_asset_group += ($p['stock'] * $p['buy_price']);
                             
@@ -472,21 +473,44 @@ $total_asset_group = 0;
 
                             <!-- DYNAMIC STOK GUDANG (LOGIC UTAMA) -->
                             <?php foreach($warehouses as $wh): 
-                                $qty = 0;
-                                // 1. Priority: Cek Stock Map (Real SN Count)
-                                if (isset($stock_map[$prod_id][$wh['id']])) {
-                                    $qty = $stock_map[$prod_id][$wh['id']];
-                                } 
-                                // 2. Fallback: Jika tidak ada di SN table, cek Trx Map (Barang Non-SN)
-                                elseif (isset($trx_map[$prod_id][$wh['id']])) {
-                                    $qty = $trx_map[$prod_id][$wh['id']];
+                                $cell_total = 0;
+                                $cell_ready = 0;
+                                $cell_used = 0;
+                                $is_sn_item = ($p['has_serial_number'] == 1);
+
+                                if ($is_sn_item) {
+                                    // Logic Barang SN: Ambil dari Stock Map (Ready + Used)
+                                    if (isset($stock_map[$prod_id][$wh['id']])) {
+                                        $d = $stock_map[$prod_id][$wh['id']];
+                                        $cell_total = $d['total'];
+                                        $cell_ready = $d['ready'];
+                                        $cell_used = $d['used'];
+                                    }
+                                } else {
+                                    // Logic Non-SN: Ambil dari TRX Map (Only Available logic for Non-SN typically)
+                                    if (isset($trx_map[$prod_id][$wh['id']])) {
+                                        $cell_total = $trx_map[$prod_id][$wh['id']];
+                                        $cell_ready = $cell_total; 
+                                        // Non-SN sulit melacak 'used' per gudang kecuali query complex history
+                                    }
                                 }
                                 
-                                $total_stock_row += $qty;
-                                $export_row[$wh['name']] = $qty;
+                                $total_stock_row += $cell_total;
+                                $export_row[$wh['name']] = $cell_total;
                             ?>
-                                <td class="p-2 border text-center font-medium <?= $qty > 0 ? 'text-gray-800' : 'text-gray-300' ?> align-middle">
-                                    <?= $qty > 0 ? number_format($qty) : '-' ?>
+                                <td class="p-2 border text-center align-middle">
+                                    <?php if($cell_total > 0): ?>
+                                        <div class="font-bold text-gray-800 text-sm"><?= number_format($cell_total) ?></div>
+                                        <?php if($cell_used > 0): ?>
+                                            <!-- Breakdown Detail (Ready | Used) -->
+                                            <div class="text-[9px] text-gray-500 mt-1 whitespace-nowrap bg-gray-100 rounded px-1">
+                                                <span class="text-green-600" title="Ready">R:<?= $cell_ready ?></span> | 
+                                                <span class="text-red-600 font-bold" title="Terpakai/Sold">U:<?= $cell_used ?></span>
+                                            </div>
+                                        <?php endif; ?>
+                                    <?php else: ?>
+                                        <span class="text-gray-300">-</span>
+                                    <?php endif; ?>
                                 </td>
                             <?php endforeach; ?>
                             <?php $export_data[] = $export_row; ?>

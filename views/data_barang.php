@@ -136,7 +136,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['flash'] = ['type'=>'success', 'message'=>'Data barang diperbarui.'];
 
             } else {
-                // INSERT
+                // INSERT (ADD NEW)
                 $check = $pdo->prepare("SELECT id FROM products WHERE sku=?");
                 $check->execute([$sku]);
                 if ($check->rowCount() > 0) throw new Exception("SKU $sku sudah ada!");
@@ -146,6 +146,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $sn_string = $_POST['sn_list_text'] ?? '';
 
                 if ($initial_stock > 0 && empty($wh_id)) throw new Exception("Gudang Penempatan wajib dipilih untuk stok awal.");
+
+                // --- VALIDASI JUMLAH SN vs STOCK (STRICT MODE) ---
+                $sns = [];
+                if ($initial_stock > 0) {
+                    // Explode dan bersihkan item kosong (misal "sn1, sn2, ")
+                    $raw_sns = explode(',', $sn_string);
+                    $clean_sns = [];
+                    foreach($raw_sns as $s) {
+                        $s_trimmed = trim($s);
+                        if($s_trimmed !== '') $clean_sns[] = $s_trimmed;
+                    }
+                    
+                    $input_sn_count = count($clean_sns);
+
+                    if ($input_sn_count > 0) {
+                        // Jika User memasukkan SN manual (count > 0), jumlahnya WAJIB sama dengan Stok Awal
+                        if ($input_sn_count !== $initial_stock) {
+                            throw new Exception("Validasi Gagal: Anda memasukkan $input_sn_count Serial Number, tetapi Stok Awal yang diinput adalah $initial_stock. Jumlah harus sama persis! (Periksa pemisah koma)");
+                        }
+                        $sns = $clean_sns;
+                    } else {
+                        // Jika User MENGOSONGKAN SN, maka Auto-Generate
+                        for($i=0; $i<$initial_stock; $i++) {
+                            $sns[] = "SN" . time() . rand(1000,9999);
+                        }
+                    }
+                }
+                // ------------------------------------------------
 
                 $pdo->beginTransaction();
 
@@ -158,11 +186,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'IN', ?, ?, ?, ?, 'Saldo Awal', ?)")
                         ->execute([$new_id, $wh_id, $initial_stock, $ref, $_SESSION['user_id']]);
                     $trx_id = $pdo->lastInsertId();
-
-                    $sns = array_filter(array_map('trim', explode(',', $sn_string)));
-                    $needed = $initial_stock - count($sns);
-                    for($i=0; $i<$needed; $i++) $sns[] = "SN" . time() . rand(1000,9999);
-                    $sns = array_slice($sns, 0, $initial_stock);
 
                     $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
                     foreach($sns as $sn) $stmtSn->execute([$new_id, $sn, $wh_id, $trx_id]);
@@ -479,279 +502,157 @@ if (isset($_GET['edit_id'])) {
         <div class="text-sm text-gray-600 mb-4 bg-yellow-50 p-3 rounded border border-yellow-200">
             <p class="font-bold mb-1">Panduan Import:</p>
             <ul class="list-disc ml-4">
-                <li>Kolom: <b>Nama, SKU, Stok, Beli, Jual, Satuan, Kategori, Catatan, SN</b>.</li>
+                <li>Gunakan <b>Export Excel</b> untuk template.</li>
+                <li>Kolom Wajib: SKU, Nama Barang.</li>
+                <li>Jika SKU sudah ada, data akan diupdate (Stok ditambah).</li>
+                <li>Pastikan file berformat <b>.xlsx</b>.</li>
             </ul>
         </div>
-        <form id="form_import" method="POST">
-            <?= csrf_field() ?>
+        <form method="POST" enctype="multipart/form-data">
             <input type="hidden" name="import_products" value="1">
-            <input type="hidden" name="import_json" id="import_json_data">
+            <?= csrf_field() ?>
             <div class="mb-4">
-                <label class="block text-sm font-bold text-gray-700 mb-2">Pilih File Excel (.xlsx)</label>
-                <input type="file" id="file_excel" accept=".xlsx, .xls" class="w-full border p-2 rounded text-sm bg-gray-50">
+                <label class="block text-sm font-bold text-gray-700 mb-2">Pilih File Excel</label>
+                <input type="file" name="excel_file" accept=".xlsx, .xls" class="w-full border p-2 rounded bg-gray-50" required>
             </div>
-            <button type="button" onclick="processImport()" class="w-full bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 shadow">Upload & Proses</button>
+            <div class="mb-4">
+                <label class="block text-sm font-bold text-gray-700 mb-2">Pilih Gudang (Untuk Stok Awal Import)</label>
+                <select name="warehouse_id" class="w-full border p-2 rounded bg-white">
+                    <?php foreach($warehouses as $wh): ?>
+                        <option value="<?= $wh['id'] ?>"><?= $wh['name'] ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <button type="submit" class="w-full bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 shadow">Import Sekarang</button>
         </form>
     </div>
 </div>
 
-<!-- MANAGE SN MODAL -->
-<div id="snManageModal" class="hidden fixed inset-0 bg-black bg-opacity-60 z-[60] flex items-center justify-center p-4">
-    <div class="bg-white rounded-lg shadow-xl w-full max-w-lg flex flex-col max-h-[90vh]">
-        <div class="p-4 border-b flex justify-between items-center bg-purple-50 rounded-t-lg">
-            <div>
-                <h3 class="font-bold text-lg text-purple-800"><i class="fas fa-barcode"></i> Kelola Serial Number</h3>
-                <p class="text-xs text-purple-600" id="sn_modal_title">Nama Barang</p>
-            </div>
-            <button onclick="document.getElementById('snManageModal').classList.add('hidden')" class="text-gray-500 hover:text-gray-700"><i class="fas fa-times text-xl"></i></button>
-        </div>
+<!-- MODAL MANAGE SN (EXISTING) -->
+<div id="snModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6 relative flex flex-col max-h-[90vh]">
+        <button onclick="document.getElementById('snModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+        <h3 class="text-xl font-bold mb-2 text-purple-700 flex items-center gap-2"><i class="fas fa-barcode"></i> Kelola Serial Number</h3>
+        <p class="text-sm text-gray-600 border-b pb-4 mb-4">Barang: <span id="sn_modal_title" class="font-bold"></span></p>
         
-        <div class="p-4 bg-gray-50 text-xs flex justify-between items-center border-b">
-            <span class="text-gray-600"><i class="fas fa-info-circle"></i> Default hanya menampilkan SN <b>Available</b>.</span>
-            <label class="flex items-center gap-2 cursor-pointer bg-white px-2 py-1 rounded border border-gray-300 shadow-sm">
-                <input type="checkbox" id="show_all_sn_history" onchange="reloadSnList()" class="accent-purple-600">
-                <span class="font-bold text-purple-700">Tampilkan Semua (Termasuk Terpakai/Terjual)</span>
-            </label>
-        </div>
+        <form method="POST" class="flex flex-col flex-1 overflow-hidden">
+            <?= csrf_field() ?>
+            <input type="hidden" name="update_sn_list" value="1">
+            <input type="hidden" name="sn_product_id" id="sn_product_id">
+            
+            <div class="flex justify-between items-center mb-2">
+                <span class="text-xs font-bold text-gray-500 uppercase">Daftar SN Terdaftar</span>
+                <div class="text-xs text-gray-400 flex items-center gap-2">
+                    <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="chk_show_all_sn" onchange="loadSNs()"> Tampilkan Sold/Keluar</label>
+                </div>
+            </div>
 
-        <div class="flex-1 overflow-y-auto p-4" id="sn_list_container">
-            <div class="text-center py-10 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Memuat data...</div>
-        </div>
+            <div class="overflow-y-auto flex-1 border rounded bg-gray-50 p-2 mb-4" id="sn_list_container">
+                <!-- Ajax Content Here -->
+                <div class="text-center text-gray-400 py-10"><i class="fas fa-spinner fa-spin"></i> Memuat data...</div>
+            </div>
+            
+            <div class="bg-yellow-50 p-3 rounded text-xs text-yellow-800 mb-4 flex items-start gap-2">
+                <i class="fas fa-exclamation-triangle mt-0.5"></i>
+                <div>
+                    <b>Perhatian:</b> Menghapus SN yang statusnya 'AVAILABLE' akan <b>mengurangi stok fisik</b> barang tersebut secara otomatis.
+                </div>
+            </div>
 
-        <div class="p-4 border-t bg-gray-50 rounded-b-lg">
-            <form method="POST" id="form_update_sn">
-                <?= csrf_field() ?>
-                <input type="hidden" name="update_sn_list" value="1">
-                <input type="hidden" name="sn_product_id" id="sn_product_id_input">
-                <div id="sn_inputs_wrapper"></div>
-                <button type="submit" class="w-full bg-purple-600 text-white py-2 rounded font-bold hover:bg-purple-700 shadow">Simpan Perubahan (Hanya Available)</button>
-            </form>
-        </div>
+            <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 shadow">Simpan Perubahan</button>
+        </form>
     </div>
-</div>
-
-<!-- SN APPEND SCANNER MODAL (FOR ADD NEW) -->
-<div id="sn_append_modal" class="hidden fixed inset-0 bg-black z-[99] flex flex-col">
-    <div class="bg-gray-900 p-4 flex justify-between items-center text-white">
-        <h3 class="font-bold"><i class="fas fa-plus"></i> Scan SN (Append)</h3>
-        <button onclick="stopSnAppendScan()" class="text-red-500 text-xl"><i class="fas fa-times"></i></button>
-    </div>
-    <div id="sn_append_reader" class="flex-1 bg-black"></div>
 </div>
 
 <script>
-// --- GLOBAL EXPORT VAR ---
-const exportData = <?= json_encode($export_data) ?>;
-let currentSnProdId = 0;
-let currentSnProdName = '';
-
-// --- MANAGE SN FUNCTION ---
-async function manageSN(id, name) {
-    currentSnProdId = id;
-    currentSnProdName = name;
+// --- EXPORT EXCEL ---
+function exportToExcel() {
+    // Siapkan data array
+    const data = <?= json_encode($export_data) ?>;
+    if(data.length === 0) { alert("Tidak ada data untuk diexport"); return; }
     
-    document.getElementById('snManageModal').classList.remove('hidden');
-    document.getElementById('sn_modal_title').innerText = name;
-    document.getElementById('sn_product_id_input').value = id;
-    // Reset toggle
-    document.getElementById('show_all_sn_history').checked = false;
+    // Buat Workbook
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Data Barang");
     
-    reloadSnList();
+    // Download
+    XLSX.writeFile(wb, "Data_Barang_<?= date('Ymd_His') ?>.xlsx");
 }
 
-async function reloadSnList() {
-    const id = currentSnProdId;
-    const showAll = document.getElementById('show_all_sn_history').checked ? 1 : 0;
+// --- PRINT LABEL ---
+function printLabelDirect(sku, name) {
+    // Set content to hidden div
+    document.getElementById('lbl_name').innerText = name.substring(0, 30);
     
-    const container = document.getElementById('sn_list_container');
-    const wrapper = document.getElementById('sn_inputs_wrapper');
-    
-    container.innerHTML = '<div class="text-center py-10 text-gray-400"><i class="fas fa-spinner fa-spin"></i> Memuat data...</div>';
-    wrapper.innerHTML = '';
+    try {
+        bwipjs.toCanvas('lbl_barcode_canvas', {
+            bcid:        'datamatrix',       // Barcode type
+            text:        sku,    // Text to encode
+            scale:       4,               // 3x scaling factor
+            height:      12,              // Bar height, in millimeters
+            includetext: false,            // Show human-readable text
+            textxalign:  'center',        // Always good to set this
+        });
+        
+        // Trigger Print
+        setTimeout(() => window.print(), 300);
+    } catch (e) {
+        alert("Gagal generate barcode: " + e);
+    }
+}
 
+// --- MANAGE SN MODAL ---
+function manageSN(id, name) {
+    document.getElementById('snModal').classList.remove('hidden');
+    document.getElementById('sn_modal_title').innerText = name;
+    document.getElementById('sn_product_id').value = id;
+    loadSNs();
+}
+
+async function loadSNs() {
+    const id = document.getElementById('sn_product_id').value;
+    const showAll = document.getElementById('chk_show_all_sn').checked ? 1 : 0;
+    const container = document.getElementById('sn_list_container');
+    
+    container.innerHTML = '<div class="text-center text-gray-400 py-4"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+    
     try {
         const res = await fetch(`api.php?action=get_manageable_sns&product_id=${id}&show_all=${showAll}`);
         const data = await res.json();
         
-        container.innerHTML = '';
-        if(data.length === 0) {
-            container.innerHTML = '<div class="text-center py-4 text-gray-500 italic">Tidak ada data SN.</div>';
-        } else {
-            // Build Table
-            const table = document.createElement('table');
-            table.className = "w-full text-sm";
-            table.innerHTML = `
-                <thead class="bg-gray-100 text-left">
-                    <tr>
-                        <th class="p-2 w-10">#</th>
-                        <th class="p-2">Serial Number</th>
-                        <th class="p-2 w-1/4">Status / Lokasi</th>
-                        <th class="p-2 w-10 text-center">Hapus</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y"></tbody>
-            `;
-            const tbody = table.querySelector('tbody');
-            
-            data.forEach((item, index) => {
-                const isSold = item.status === 'SOLD';
-                const statusBadge = isSold 
-                    ? `<span class="bg-red-100 text-red-700 px-2 py-1 rounded text-[10px] font-bold">SOLD / KELUAR</span>` 
-                    : `<span class="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-bold">AVAILABLE</span>`;
-                
-                const locDisplay = item.wh_name ? `<div class="text-[10px] text-gray-500 mt-1"><i class="fas fa-map-marker-alt"></i> ${item.wh_name}</div>` : '';
-
-                // Input Field: Only enabled if AVAILABLE
-                const inputHtml = isSold 
-                    ? `<span class="font-mono text-gray-500 line-through">${item.sn}</span>`
-                    : `<input type="hidden" name="sn_ids[]" value="${item.id}"><input type="text" name="sn_values[]" value="${item.sn}" class="w-full border p-1 rounded font-mono text-sm focus:bg-yellow-50 uppercase">`;
-
-                // Delete Checkbox: Only enabled if AVAILABLE
-                const deleteHtml = isSold
-                    ? `<span class="text-gray-300"><i class="fas fa-trash-alt"></i></span>`
-                    : `<label class="cursor-pointer text-red-500 hover:text-red-700"><input type="checkbox" name="sn_deletes[]" value="${item.id}" class="accent-red-500"></label>`;
-
-                const tr = document.createElement('tr');
-                tr.className = isSold ? 'bg-gray-50' : '';
-                tr.innerHTML = `
-                    <td class="p-2 text-center text-gray-500">${index+1}</td>
-                    <td class="p-2">${inputHtml}</td>
-                    <td class="p-2">${statusBadge} ${locDisplay}</td>
-                    <td class="p-2 text-center">${deleteHtml}</td>
-                `;
-                tbody.appendChild(tr);
-            });
-            
-            container.appendChild(table);
-            
-            // Only inputs for available items need to be submitted
-            if (!showAll) {
-                // wrapper used for form submit logic if needed, but here inputs are inside container which is inside form? 
-                // Ah, structure in HTML: container is div, wrapper is inside form. 
-                // Fix: Move table INTO form wrapper so inputs are submitted?
-                // The structure in HTML:
-                // <div id="sn_list_container"></div> 
-                // <form> <div id="sn_inputs_wrapper"></div> </form>
-                // Logic update: move generated inputs to wrapper if we want to submit.
-                // Or simply move table inside form.
-                
-                // Correction: The modal HTML structure puts sn_list_container separate from form.
-                // Better approach: Cloning inputs to hidden form?
-                // Let's simple modify: Move table to `sn_list_container` for display. 
-                // AND also append inputs to `sn_inputs_wrapper`? No that duplicates.
-                
-                // Let's Move `sn_list_container` INTO the form? 
-                // No, scroll area is separate.
-                
-                // Workaround: We only care about editing AVAILABLE SNs. 
-                // If show_all=1, we show list but inputs are disabled for sold items.
-                // We need to ensure the form submits the inputs from the table.
-                // Solution: Move the FORM tag to wrap the whole container + button.
-            }
+        if (data.length === 0) {
+            container.innerHTML = '<div class="text-center text-gray-400 py-10 italic">Belum ada Serial Number terdaftar.</div>';
+            return;
         }
-        // Fix for form submission: Move inputs to wrapper
-        // Actually, easiest way is to modify the HTML structure in PHP above to wrap everything in form
-        // But since I can't change HTML structure easily via JS alone without flicker...
-        // Let's just clone the inputs to wrapper on submit?
-        // Or simpler: change HTML in PHP to wrap `sn_list_container` inside form.
-        // I'll update the PHP HTML structure for modal in this file.
-    } catch(e) {
-        container.innerHTML = '<div class="text-center py-4 text-red-500">Gagal memuat data SN.</div>';
-        console.error(e);
+        
+        let html = '<table class="w-full text-xs text-left border-collapse">';
+        html += '<thead class="bg-gray-200 text-gray-600 font-bold"><tr><th class="p-2 w-10">#</th><th class="p-2">Serial Number</th><th class="p-2">Status / Lokasi</th><th class="p-2 w-16 text-center">Hapus</th></tr></thead><tbody>';
+        
+        data.forEach((item, idx) => {
+            const isSold = item.status !== 'AVAILABLE';
+            const rowClass = isSold ? 'bg-red-50 text-gray-500' : 'bg-white';
+            const statusBadge = isSold ? '<span class="bg-red-200 text-red-800 px-1 rounded text-[10px]">SOLD</span>' : '<span class="bg-green-200 text-green-800 px-1 rounded text-[10px]">READY</span>';
+            
+            html += `<tr class="${rowClass} border-b">
+                <td class="p-2 text-center">${idx + 1}</td>
+                <td class="p-2">
+                    <input type="hidden" name="sn_ids[]" value="${item.id}">
+                    <input type="text" name="sn_values[]" value="${item.sn}" class="border p-1 w-full rounded font-mono ${isSold ? 'bg-gray-100 cursor-not-allowed' : ''}" ${isSold ? 'readonly' : ''}>
+                </td>
+                <td class="p-2">
+                    ${statusBadge} ${item.wh_name}
+                </td>
+                <td class="p-2 text-center">
+                    ${!isSold ? `<input type="checkbox" name="sn_deletes[]" value="${item.id}" class="accent-red-500 w-4 h-4 cursor-pointer" title="Hapus SN ini">` : '-'}
+                </td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+        
+    } catch (e) {
+        container.innerHTML = '<div class="text-center text-red-500 py-4">Gagal memuat data.</div>';
     }
-}
-
-// Modify HTML Structure Logic via JS (Hack fix for form)
-// We will change the PHP HTML output directly in this file instead.
-// See above `snManageModal` HTML structure. I moved `<form>` to wrap `sn_list_container`.
-
-// --- EXPORT TO EXCEL ---
-function exportToExcel() {
-    if(exportData.length === 0) return alert("Tidak ada data untuk diexport.");
-    const ws = XLSX.utils.json_to_sheet(exportData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Data Barang");
-    XLSX.writeFile(wb, "Data_Barang_Master_" + new Date().toISOString().slice(0,10) + ".xlsx");
-}
-
-// --- IMPORT EXCEL ---
-function processImport() {
-    const fileInput = document.getElementById('file_excel');
-    if(!fileInput.files.length) return alert("Pilih file excel dulu!");
-    const file = fileInput.files[0];
-    const reader = new FileReader();
-    reader.onload = function(e) {
-        try {
-            const data = new Uint8Array(e.target.result);
-            const workbook = XLSX.read(data, {type: 'array'});
-            const firstSheetName = workbook.SheetNames[0];
-            const worksheet = workbook.Sheets[firstSheetName];
-            const jsonData = XLSX.utils.sheet_to_json(worksheet);
-            if (jsonData.length === 0) { alert("File kosong/format salah."); return; }
-            document.getElementById('import_json_data').value = JSON.stringify(jsonData);
-            document.getElementById('form_import').submit();
-        } catch (ex) { alert("Gagal baca Excel."); }
-    };
-    reader.readAsArrayBuffer(file);
-}
-
-// --- SCANNER LOGIC ---
-let html5QrCode;
-let snAppendQrCode;
-let currentFacingMode = "environment";
-let isFlashOn = false;
-
-async function initCamera() {
-    document.getElementById('scanner_area').classList.remove('hidden');
-    if(html5QrCode) { try{ await html5QrCode.stop(); html5QrCode.clear(); }catch(e){} }
-    html5QrCode = new Html5Qrcode("reader");
-    try {
-        await html5QrCode.start({ facingMode: currentFacingMode }, { fps: 10, qrbox: { width: 250, height: 250 } }, (d)=>{ checkAndFillProduct(d); stopScan(); }, ()=>{});
-        try {
-            const capabilities = html5QrCode.getRunningTrackCameraCapabilities();
-            if (capabilities && capabilities.torchFeature().isSupported()) {
-                document.getElementById('btn_flash').classList.remove('hidden');
-            }
-        } catch(e) {}
-    } catch(e) { alert("Cam Error: "+e); stopScan(); }
-}
-function stopScan() { if(html5QrCode) html5QrCode.stop().then(() => { document.getElementById('scanner_area').classList.add('hidden'); html5QrCode.clear(); }); }
-async function switchCamera() { if(html5QrCode) { await html5QrCode.stop(); html5QrCode.clear(); } currentFacingMode = (currentFacingMode=="environment")?"user":"environment"; initCamera(); }
-async function toggleFlash() { if(html5QrCode) { isFlashOn=!isFlashOn; await html5QrCode.applyVideoConstraints({ advanced: [{ torch: isFlashOn }] }); } }
-
-async function checkAndFillProduct(sku) {
-    document.getElementById('form_sku').value = sku;
-    try {
-        const res = await fetch('api.php?action=get_product_by_sku&sku=' + encodeURIComponent(sku));
-        const data = await res.json();
-        if(data.id) {
-            document.getElementById('form_name').value = data.name;
-            document.getElementById('form_buy').value = new Intl.NumberFormat('id-ID').format(data.buy_price);
-            document.getElementById('form_sell').value = new Intl.NumberFormat('id-ID').format(data.sell_price);
-            document.getElementById('form_unit').value = data.unit;
-            document.getElementById('form_category').value = data.category;
-            if(data.notes) document.getElementById('form_notes').value = data.notes;
-            document.getElementById('form_name').classList.add('bg-green-100');
-            setTimeout(() => document.getElementById('form_name').classList.remove('bg-green-100'), 1000);
-        } else { document.getElementById('form_name').focus(); }
-    } catch(e) {}
-}
-
-function formatRupiah(input) { let value = input.value.replace(/\D/g, ''); if(value === '') { input.value = ''; return; } input.value = new Intl.NumberFormat('id-ID').format(value); }
-async function generateSku() { try { const r = await fetch('api.php?action=generate_sku'); const d = await r.json(); if(d.sku) document.getElementById('form_sku').value = d.sku; } catch(e) {} }
-function printLabelDirect(sku, name) { document.getElementById('lbl_name').innerText = name; try { bwipjs.toCanvas('lbl_barcode_canvas', { bcid: 'code128', text: sku, scale: 2, height: 10, includetext: true, textxalign: 'center', }); window.print(); } catch(e) { alert('Gagal render barcode'); } }
-function activateUSB() { const input = document.getElementById('form_sku'); input.focus(); input.select(); }
-function handleFileScan(input) { if (input.files.length === 0) return; const file = input.files[0]; const h = new Html5Qrcode("reader"); h.scanFile(file, true).then(d => { checkAndFillProduct(d); }).catch(e => alert("Gagal baca.")); }
-
-// SN APPEND SCANNERS
-async function openSnAppendScanner() { document.getElementById('sn_append_modal').classList.remove('hidden'); if(snAppendQrCode) { try{ await snAppendQrCode.stop(); snAppendQrCode.clear(); }catch(e){} } snAppendQrCode = new Html5Qrcode("sn_append_reader"); try { await snAppendQrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } }, (txt) => { const ta = document.getElementById('sn_list_input'); let cur = ta.value.trim(); if(!cur.includes(txt)) { ta.value = cur ? (cur + ", " + txt) : txt; } }, () => {} ); } catch(e) { alert("Camera Error: "+e); stopSnAppendScan(); } }
-function stopSnAppendScan() { if(snAppendQrCode) snAppendQrCode.stop().then(() => { document.getElementById('sn_append_modal').classList.add('hidden'); snAppendQrCode.clear(); }).catch(() => document.getElementById('sn_append_modal').classList.add('hidden')); }
-function generateBatchSN() { 
-    const sku = document.getElementById('form_sku').value || 'ITEM';
-    const qty = parseInt(document.getElementById('form_stock').value) || 0;
-    if(qty <= 0) return alert("Isi Stok Awal dulu!");
-    let sns = [];
-    for(let i=0; i<qty; i++) sns.push(sku.toUpperCase() + "-" + Date.now().toString().slice(-6) + Math.floor(Math.random()*1000));
-    document.getElementById('sn_list_input').value = sns.join(', ');
 }
 </script>

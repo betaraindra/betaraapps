@@ -91,12 +91,16 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
             $total_stock_qty = $stmt_qty->fetchColumn() ?: 0;
 
             // C. HITUNG KEUANGAN (BERDASARKAN TAG [Wilayah: Nama])
-            // UPDATE: Exclude Expense tipe 'ASSET' (Pembelian Stok) agar tidak mengurangi Net Profit Operasional
-            // Profit = Income - Operational Expense (Stock purchase is Asset Transfer)
+            // UPDATE: Exclude Expense tipe 'ASSET' DAN Akun Material (2105) agar Net Profit Operasional tidak minus
             $sql_fin = "
                 SELECT 
                     SUM(CASE WHEN f.type='INCOME' THEN f.amount ELSE 0 END) as income,
-                    SUM(CASE WHEN f.type='EXPENSE' AND a.type != 'ASSET' THEN f.amount ELSE 0 END) as expense
+                    SUM(CASE 
+                        WHEN f.type='EXPENSE' 
+                             AND a.type != 'ASSET' 
+                             AND a.code NOT IN ('2105', '3003') -- Exclude Material & Stok
+                        THEN f.amount ELSE 0 
+                    END) as expense
                 FROM finance_transactions f
                 JOIN accounts a ON f.account_id = a.id
                 WHERE f.date BETWEEN ? AND ? 

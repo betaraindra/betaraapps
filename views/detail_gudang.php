@@ -187,8 +187,8 @@ if ($tab === 'finance') {
         if($f['type'] == 'INCOME') {
             $total_rev += $f['amount']; 
         } else {
-            // FIX: Jangan hitung pembelian aset (stok) sebagai pengeluaran profit operasional
-            if ($f['acc_type'] !== 'ASSET') {
+            // FIX: Jangan hitung pembelian aset (stok) dan material (2105) sebagai pengeluaran profit operasional
+            if ($f['acc_type'] !== 'ASSET' && !in_array($f['code'], ['2105', '3003'])) {
                 $total_exp += $f['amount'];
             }
         }
@@ -532,8 +532,8 @@ if ($tab === 'activity') {
                         <td class="p-3 text-gray-600"><?= h($f['description']) ?></td>
                         <td class="p-3 text-right font-bold <?= $f['type']=='INCOME'?'text-green-600':'text-red-600' ?>">
                             <?= $f['type']=='INCOME' ? '+' : '-' ?> <?= formatRupiah($f['amount']) ?>
-                            <?php if($f['acc_type'] === 'ASSET' && $f['type'] === 'EXPENSE'): ?>
-                                <span class="text-[9px] block text-gray-400 italic">(Aset - Excluded from Profit)</span>
+                            <?php if(($f['acc_type'] === 'ASSET' || in_array($f['code'], ['2105','3003'])) && $f['type'] === 'EXPENSE'): ?>
+                                <span class="text-[9px] block text-gray-400 italic">(Aset/Stok - Excluded)</span>
                             <?php endif; ?>
                         </td>
                         <td class="p-3 text-center text-xs text-gray-500"><?= h($f['username']) ?></td>

@@ -118,7 +118,7 @@ $val_img = $edit_item['image_url'] ?? '';
                     <select name="warehouse_id" class="w-full border p-2 rounded bg-white text-xs">
                         <?php if(!$is_edit): ?><option value="">-- Pilih --</option><?php endif; ?>
                         <?php foreach($warehouses as $wh): ?>
-                            <option value="<?= $wh['id'] ?>"><?= $wh['name'] ?></option>
+                            <option value="<?= $wh['id'] ?>" <?= (isset($_GET['wh']) && $_GET['wh'] == $wh['id']) ? 'selected' : '' ?>><?= $wh['name'] ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
@@ -133,7 +133,7 @@ $val_img = $edit_item['image_url'] ?? '';
                 <div id="sn_input_area" class="hidden">
                     <textarea name="sn_list_text" id="sn_list_input" rows="3" class="w-full border p-2 rounded text-xs font-mono uppercase" placeholder="Scan/Ketik SN dipisahkan koma..."></textarea>
                     <div class="flex justify-between mt-1">
-                        <span class="text-[9px] text-gray-500" id="sn_counter">0 SN terinput</span>
+                        <span class="text-[9px] font-bold text-red-600" id="sn_counter">0 SN terinput</span>
                         <div class="flex gap-1">
                             <button type="button" onclick="openSnAppendScanner()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-1 rounded text-[10px]"><i class="fas fa-camera"></i> Scan</button>
                             <button type="button" onclick="generateBatchSN()" class="bg-yellow-100 hover:bg-yellow-200 text-yellow-700 px-2 py-1 rounded text-[10px]"><i class="fas fa-bolt"></i> Auto</button>
@@ -181,11 +181,26 @@ function validateProductForm() {
     const stock = parseInt(document.getElementById('form_stock').value) || 0;
     const wh = document.querySelector('select[name="warehouse_id"]').value;
     
+    // 1. Cek Gudang
     // Jika ada stok awal (bukan edit atau edit dengan perubahan stok), gudang wajib dipilih
     if (stock > 0 && !wh) {
         alert("Pilih Gudang Penempatan untuk stok awal!");
         return false;
     }
+
+    // 2. Cek SN vs Stock (VALIDASI KETAT)
+    const snText = document.getElementById('sn_list_input').value.trim();
+    if (stock > 0 && snText.length > 0) {
+        // Hitung item yang dipisah koma, abaikan string kosong
+        const snList = snText.split(',').filter(item => item.trim() !== '');
+        const snCount = snList.length;
+
+        if (snCount !== stock) {
+            alert(`VALIDASI GAGAL:\n\nAnda memasukkan Stok: ${stock}\nTetapi jumlah SN terdeteksi: ${snCount}\n\nHarap periksa input SN (pisahkan dengan koma). Jumlah harus sama persis!`);
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -198,8 +213,22 @@ function toggleSnInput() {
 // Logic untuk menghitung SN di textarea
 document.getElementById('sn_list_input').addEventListener('input', function() {
     const txt = this.value.trim();
-    const count = txt ? txt.split(',').length : 0;
-    document.getElementById('sn_counter').innerText = count + " SN terinput";
+    const count = txt ? txt.split(',').filter(item => item.trim() !== '').length : 0;
+    const counterEl = document.getElementById('sn_counter');
+    const stock = parseInt(document.getElementById('form_stock').value) || 0;
+    
+    counterEl.innerText = count + " SN terinput";
+    
+    // Visual Feedback
+    if(stock > 0 && count !== stock) {
+        counterEl.classList.remove('text-green-600');
+        counterEl.classList.add('text-red-600');
+        counterEl.innerText += " (Tidak Sesuai)";
+    } else if (stock > 0 && count === stock) {
+        counterEl.classList.remove('text-red-600');
+        counterEl.classList.add('text-green-600');
+        counterEl.innerText += " (Sesuai)";
+    }
 });
 
 // Auto Generate Batch SN

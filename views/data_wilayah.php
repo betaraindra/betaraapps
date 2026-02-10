@@ -69,7 +69,28 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
             $stmt_asset->execute([$wh_id, $wh_id]);
             $asset_value = $stmt_asset->fetchColumn() ?: 0;
 
-            // B. HITUNG KEUANGAN (BERDASARKAN TAG [Wilayah: Nama])
+            // B. HITUNG TOTAL QUANTITY (STOK FISIK) - NEW REQUEST
+            $sql_qty = "
+                SELECT SUM(qty) as total_qty FROM (
+                    -- 1. Qty Barang SN (Available)
+                    SELECT COUNT(*) as qty
+                    FROM product_serials ps
+                    WHERE ps.warehouse_id = ? AND ps.status = 'AVAILABLE'
+
+                    UNION ALL
+
+                    -- 2. Qty Barang Non-SN (Trx IN - OUT)
+                    SELECT SUM(IF(t.type='IN', t.quantity, -t.quantity)) as qty
+                    FROM inventory_transactions t
+                    JOIN products p ON t.product_id = p.id
+                    WHERE t.warehouse_id = ? AND p.has_serial_number = 0
+                ) as grand_qty
+            ";
+            $stmt_qty = $pdo->prepare($sql_qty);
+            $stmt_qty->execute([$wh_id, $wh_id]);
+            $total_stock_qty = $stmt_qty->fetchColumn() ?: 0;
+
+            // C. HITUNG KEUANGAN (BERDASARKAN TAG [Wilayah: Nama])
             $sql_fin = "
                 SELECT 
                     SUM(CASE WHEN type='INCOME' THEN amount ELSE 0 END) as income,
@@ -83,7 +104,7 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
             $fin_data = $stmt_fin->fetch();
             $profit = ($fin_data['income']??0) - ($fin_data['expense']??0);
 
-            // C. HITUNG JUMLAH AKTIVITAS (TRANSAKSI OUT/PEMAKAIAN)
+            // D. HITUNG JUMLAH AKTIVITAS (TRANSAKSI OUT/PEMAKAIAN)
             $sql_act = "
                 SELECT COUNT(*) 
                 FROM inventory_transactions 
@@ -96,17 +117,13 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
             $stmt_act->execute([$wh_id, $start_date, $end_date]);
             $activity_count = $stmt_act->fetchColumn() ?: 0;
 
-            // D. TOP 10 MATERIAL PER WILAYAH
-            // Ready Stock diambil Real-time (SN Available atau Trx Sum)
+            // E. TOP 10 MATERIAL PER WILAYAH
             $sql_top = "
                 SELECT 
                     p.name, p.unit, p.has_serial_number,
-                    -- Metrics Periode Ini (Filtered Date)
                     COALESCE(SUM(CASE WHEN i.date BETWEEN ? AND ? AND i.type='IN' THEN i.quantity ELSE 0 END), 0) as qty_in,
                     COALESCE(SUM(CASE WHEN i.date BETWEEN ? AND ? AND i.type='OUT' THEN i.quantity ELSE 0 END), 0) as qty_out,
                     COALESCE(SUM(CASE WHEN i.date BETWEEN ? AND ? AND i.type='OUT' AND (i.notes LIKE 'Aktivitas:%' OR i.notes LIKE '%[PEMAKAIAN]%') THEN i.quantity ELSE 0 END), 0) as qty_used,
-                    
-                    -- Metrics Global (Real Stock Snapshot)
                     (
                         CASE 
                             WHEN p.has_serial_number = 1 THEN 
@@ -115,21 +132,15 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
                                 (SELECT COALESCE(SUM(IF(t.type='IN', t.quantity, -t.quantity)), 0) FROM inventory_transactions t WHERE t.product_id = p.id AND t.warehouse_id = ?)
                         END
                     ) as ready_stock
-
                 FROM inventory_transactions i
                 JOIN products p ON i.product_id = p.id
                 WHERE i.warehouse_id = ?
                 GROUP BY p.id, p.name, p.unit, p.has_serial_number
-                -- Tampilkan jika ada stok ready ATAU ada aktivitas
                 HAVING ready_stock > 0 OR qty_used > 0 OR qty_in > 0 OR qty_out > 0
                 ORDER BY ready_stock DESC, qty_used DESC
                 LIMIT 10
             ";
             $stmt_top = $pdo->prepare($sql_top);
-            // Params Urutan: 
-            // 1,2 (IN Period), 3,4 (OUT Period), 5,6 (USED Period), 
-            // 7 (Subquery SN WH), 8 (Subquery Trx WH), 
-            // 9 (Main Query WH)
             $stmt_top->execute([
                 $start_date, $end_date, 
                 $start_date, $end_date, 
@@ -151,10 +162,14 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
                 </a>
             </div>
 
-            <!-- Body Statistics (4 Grid) -->
-            <div class="p-4 grid grid-cols-2 md:grid-cols-4 gap-4 border-b border-gray-100 bg-gray-50">
+            <!-- Body Statistics (5 Grid now) -->
+            <div class="p-4 grid grid-cols-2 md:grid-cols-5 gap-4 border-b border-gray-100 bg-gray-50">
                 <div class="text-center border-r border-gray-200 last:border-0 md:border-r">
-                    <p class="text-[10px] text-gray-500 uppercase font-bold">Total Aset Fisik</p>
+                    <p class="text-[10px] text-gray-500 uppercase font-bold">Total Stok (Qty)</p>
+                    <p class="font-bold text-orange-600 text-sm truncate"><?= number_format($total_stock_qty) ?> Unit</p>
+                </div>
+                <div class="text-center border-r border-gray-200 last:border-0 md:border-r">
+                    <p class="text-[10px] text-gray-500 uppercase font-bold">Total Aset (Rp)</p>
                     <p class="font-bold text-blue-600 text-sm truncate"><?= formatRupiah($asset_value) ?></p>
                 </div>
                 <div class="text-center border-r border-gray-200 last:border-0 md:border-r">

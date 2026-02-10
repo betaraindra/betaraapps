@@ -84,6 +84,9 @@ $q = $_GET['q'] ?? '';
 $tab = $_GET['tab'] ?? 'stock'; // stock, history, finance, activity
 
 // --- 1. OPTIMIZED DATA STOK FISIK (Menggunakan JOIN aggregation) ---
+$total_asset_value = 0;
+$total_ready_qty = 0;
+
 if ($tab === 'stock') {
     // UPDATE LOGIC: Unit Ready dihitung real dari tabel SN (Status AVAILABLE) jika barang ber-SN
     // Jika non-SN, fallback ke hitungan Transaksi
@@ -116,7 +119,6 @@ if ($tab === 'stock') {
     $stmt_stock->execute([$id, $id, "%$q%", "%$q%"]);
     $stocks = $stmt_stock->fetchAll();
     
-    $total_asset_value = 0;
     foreach($stocks as $s) {
         $trx_ready = $s['qty_in'] - $s['qty_out_total'];
         
@@ -129,6 +131,7 @@ if ($tab === 'stock') {
         $asset_value = $asset_qty * $s['buy_price'];
         
         $total_asset_value += $asset_value;
+        $total_ready_qty += $ready_stock;
     }
 }
 
@@ -233,8 +236,12 @@ if ($tab === 'activity') {
         </a>
 
         <?php if($tab === 'stock'): ?>
+        <div class="bg-yellow-100 text-yellow-800 px-4 py-2 rounded text-center border border-yellow-200 shadow-sm">
+            <div class="text-xs font-bold uppercase">Total Stok Fisik</div>
+            <div class="font-bold text-lg"><?= number_format($total_ready_qty) ?> <span class="text-xs">Qty</span></div>
+        </div>
         <div class="bg-blue-100 text-blue-800 px-4 py-2 rounded text-center border border-blue-200 shadow-sm">
-            <div class="text-xs font-bold uppercase">Total Aset (Ready + Terpakai)</div>
+            <div class="text-xs font-bold uppercase">Total Nilai Aset</div>
             <div class="font-bold text-lg"><?= formatRupiah($total_asset_value) ?></div>
         </div>
         <?php endif; ?>

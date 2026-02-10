@@ -22,15 +22,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_type'])) {
             $stmt = $pdo->prepare("SELECT * FROM inventory_transactions WHERE id = ?");
             $stmt->execute([$id]);
             $trx = $stmt->fetch();
+            
             if ($trx) {
+                // 1. AUTO DELETE FINANCE (SINKRONISASI)
+                // Cari transaksi keuangan yang dibuat otomatis oleh transaksi barang ini
+                // Mencocokkan: Tanggal, User, dan Pola Deskripsi (Nama Barang + Qty)
+                
+                $prod = $pdo->prepare("SELECT name FROM products WHERE id = ?");
+                $prod->execute([$trx['product_id']]);
+                $prodName = $prod->fetchColumn();
+
+                if ($prodName) {
+                    $qty = (float)$trx['quantity']; // Pastikan float/int bersih
+                    $date = $trx['date'];
+                    $userId = $trx['user_id'];
+                    $finPattern = "";
+
+                    if ($trx['type'] === 'IN') {
+                        // Pola dari barang_masuk.php: "Stok Masuk: Nama (Qty)..."
+                        $finPattern = "Stok Masuk: $prodName ($qty)%";
+                    } elseif ($trx['type'] === 'OUT') {
+                        // Pola dari barang_keluar.php: "Penjualan: Nama (Qty)..."
+                        $finPattern = "Penjualan: $prodName ($qty)%";
+                    }
+
+                    if (!empty($finPattern)) {
+                        // Hapus 1 record keuangan yang cocok (Limit 1 untuk safety)
+                        $delFin = $pdo->prepare("DELETE FROM finance_transactions WHERE date = ? AND user_id = ? AND description LIKE ? LIMIT 1");
+                        $delFin->execute([$date, $userId, $finPattern]);
+                    }
+                }
+
+                // 2. ROLLBACK STOCK
                 $operator = ($trx['type'] === 'IN') ? '-' : '+';
                 $pdo->prepare("UPDATE products SET stock = stock $operator ? WHERE id = ?")->execute([$trx['quantity'], $trx['product_id']]);
+                
+                // 3. ROLLBACK SN STATUS (Jika ada)
+                if ($trx['type'] === 'IN') {
+                    // Jika barang masuk dihapus, hapus SN yang dibuat (jika status masih AVAILABLE)
+                    $pdo->prepare("DELETE FROM product_serials WHERE in_transaction_id = ? AND status = 'AVAILABLE'")->execute([$id]);
+                } elseif ($trx['type'] === 'OUT') {
+                    // Jika barang keluar dihapus, kembalikan status SN menjadi AVAILABLE
+                    $pdo->prepare("UPDATE product_serials SET status = 'AVAILABLE', out_transaction_id = NULL WHERE out_transaction_id = ?")->execute([$id]);
+                }
+
+                // 4. HAPUS TRANSAKSI INVENTORI
                 $pdo->prepare("DELETE FROM inventory_transactions WHERE id = ?")->execute([$id]);
-                logActivity($pdo, 'DELETE_INVENTORY', "Hapus Transaksi Inventori ID: $id (Stok Rollback)");
+                logActivity($pdo, 'DELETE_INVENTORY', "Hapus Transaksi Inventori ID: $id (Stok & Keuangan Rollback)");
             }
         }
         $pdo->commit();
-        $_SESSION['flash'] = ['type' => 'success', 'message' => 'Transaksi berhasil dihapus.'];
+        $_SESSION['flash'] = ['type' => 'success', 'message' => 'Transaksi berhasil dihapus. Stok & Keuangan terkait telah disesuaikan.'];
     } catch (Exception $e) {
         $pdo->rollBack();
         $_SESSION['flash'] = ['type' => 'error', 'message' => 'Gagal menghapus: ' . $e->getMessage()];
@@ -333,10 +375,10 @@ if ($tab === 'inventory') {
                         <td class="p-3 text-center no-print">
                             <div class="flex justify-center gap-2">
                                 <a href="?page=cetak_surat_jalan&id=<?= $row['id'] ?>" target="_blank" class="text-blue-500 hover:text-blue-700 p-1"><i class="fas fa-print"></i></a>
-                                <form method="POST" onsubmit="return confirm('Stok akan di-rollback. Lanjutkan?')">
+                                <form method="POST" onsubmit="return confirm('PERINGATAN: Transaksi Keuangan terkait (Pembelian/Penjualan) akan OTOMATIS DIHAPUS. Stok akan di-rollback. Lanjutkan?')">
                                     <input type="hidden" name="delete_type" value="INVENTORY">
                                     <input type="hidden" name="delete_id" value="<?= $row['id'] ?>">
-                                    <button class="text-red-500 hover:text-red-700 p-1"><i class="fas fa-trash"></i></button>
+                                    <button class="text-red-500 hover:text-red-700 p-1" title="Hapus & Rollback"><i class="fas fa-trash"></i></button>
                                 </form>
                             </div>
                         </td>

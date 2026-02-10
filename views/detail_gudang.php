@@ -168,7 +168,8 @@ if ($tab === 'history') {
 if ($tab === 'finance') {
     $wh_name_clean = trim($warehouse['name']);
     
-    $sql_fin = "SELECT f.*, a.code, a.name as acc_name, u.username
+    // UPDATE: Ambil type akun untuk filtering ASSET
+    $sql_fin = "SELECT f.*, a.code, a.name as acc_name, a.type as acc_type, u.username
                 FROM finance_transactions f
                 JOIN accounts a ON f.account_id = a.id
                 JOIN users u ON f.user_id = u.id
@@ -183,7 +184,14 @@ if ($tab === 'finance') {
 
     $total_rev = 0; $total_exp = 0;
     foreach($finances as $f) {
-        if($f['type'] == 'INCOME') $total_rev += $f['amount']; else $total_exp += $f['amount'];
+        if($f['type'] == 'INCOME') {
+            $total_rev += $f['amount']; 
+        } else {
+            // FIX: Jangan hitung pembelian aset (stok) sebagai pengeluaran profit operasional
+            if ($f['acc_type'] !== 'ASSET') {
+                $total_exp += $f['amount'];
+            }
+        }
     }
 }
 
@@ -494,11 +502,11 @@ if ($tab === 'activity') {
                 <p class="text-xl font-bold text-green-800"><?= formatRupiah($total_rev) ?></p>
             </div>
             <div class="bg-red-50 p-4 rounded border border-red-200 text-center">
-                <p class="text-xs text-red-700 font-bold uppercase">Total Pengeluaran</p>
+                <p class="text-xs text-red-700 font-bold uppercase">Total Pengeluaran (Ops)</p>
                 <p class="text-xl font-bold text-red-800"><?= formatRupiah($total_exp) ?></p>
             </div>
             <div class="bg-blue-50 p-4 rounded border border-blue-200 text-center">
-                <p class="text-xs text-blue-700 font-bold uppercase">Saldo Wilayah</p>
+                <p class="text-xs text-blue-700 font-bold uppercase">Saldo Wilayah (Net)</p>
                 <p class="text-xl font-bold text-blue-800"><?= formatRupiah($total_rev - $total_exp) ?></p>
             </div>
         </div>
@@ -524,6 +532,9 @@ if ($tab === 'activity') {
                         <td class="p-3 text-gray-600"><?= h($f['description']) ?></td>
                         <td class="p-3 text-right font-bold <?= $f['type']=='INCOME'?'text-green-600':'text-red-600' ?>">
                             <?= $f['type']=='INCOME' ? '+' : '-' ?> <?= formatRupiah($f['amount']) ?>
+                            <?php if($f['acc_type'] === 'ASSET' && $f['type'] === 'EXPENSE'): ?>
+                                <span class="text-[9px] block text-gray-400 italic">(Aset - Excluded from Profit)</span>
+                            <?php endif; ?>
                         </td>
                         <td class="p-3 text-center text-xs text-gray-500"><?= h($f['username']) ?></td>
                     </tr>

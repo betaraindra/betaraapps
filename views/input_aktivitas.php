@@ -118,6 +118,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
 // Load produk sederhana untuk autocomplete awal
 $products_list = $pdo->query("SELECT sku, name FROM products ORDER BY name ASC")->fetchAll();
+
+// --- FETCH HISTORY AKTIVITAS TERAKHIR ---
+$history = $pdo->query("
+    SELECT i.id, i.date, i.reference, i.quantity, i.notes, 
+           p.name as prod_name, p.sku, 
+           w.name as wh_name, 
+           u.username
+    FROM inventory_transactions i
+    JOIN products p ON i.product_id = p.id
+    JOIN warehouses w ON i.warehouse_id = w.id
+    LEFT JOIN users u ON i.user_id = u.id
+    WHERE i.type = 'OUT' AND (i.notes LIKE 'Aktivitas:%' OR i.notes LIKE '%[PEMAKAIAN]%')
+    ORDER BY i.created_at DESC, i.date DESC
+    LIMIT 20
+")->fetchAll();
 ?>
 
 <div class="max-w-5xl mx-auto space-y-6">
@@ -256,6 +271,52 @@ $products_list = $pdo->query("SELECT sku, name FROM products ORDER BY name ASC")
             <i class="fas fa-save mr-2"></i> Simpan Aktivitas & Update Stok
         </button>
     </form>
+
+    <!-- RIWAYAT INPUT TERAKHIR (NEW) -->
+    <div class="bg-white p-6 rounded-lg shadow border-t-4 border-gray-500">
+        <h3 class="font-bold text-gray-700 border-b pb-2 mb-4 flex items-center gap-2">
+            <i class="fas fa-history text-gray-500"></i> Histori Input Aktivitas (20 Terakhir)
+        </h3>
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm text-left border-collapse">
+                <thead class="bg-gray-100 text-gray-700">
+                    <tr>
+                        <th class="p-3 border-b">Tanggal</th>
+                        <th class="p-3 border-b">Ref</th>
+                        <th class="p-3 border-b">Lokasi</th>
+                        <th class="p-3 border-b">Barang</th>
+                        <th class="p-3 border-b text-center">Qty</th>
+                        <th class="p-3 border-b">Detail / SN</th>
+                        <th class="p-3 border-b">User</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y">
+                    <?php foreach($history as $row): 
+                        // Clean note for display
+                        $clean_note = trim(str_replace(['Aktivitas:', '[PEMAKAIAN]'], '', $row['notes']));
+                    ?>
+                    <tr class="hover:bg-gray-50">
+                        <td class="p-3 whitespace-nowrap text-xs"><?= date('d/m/Y', strtotime($row['date'])) ?></td>
+                        <td class="p-3 font-mono text-xs text-blue-600 font-bold"><?= htmlspecialchars($row['reference']) ?></td>
+                        <td class="p-3 text-xs"><?= htmlspecialchars($row['wh_name']) ?></td>
+                        <td class="p-3">
+                            <div class="font-bold text-gray-800 text-xs"><?= htmlspecialchars($row['prod_name']) ?></div>
+                            <div class="text-[10px] text-gray-500"><?= htmlspecialchars($row['sku']) ?></div>
+                        </td>
+                        <td class="p-3 text-center font-bold text-gray-700"><?= $row['quantity'] ?></td>
+                        <td class="p-3 text-xs text-gray-600 max-w-sm italic break-words">
+                            <?= htmlspecialchars($clean_note) ?>
+                        </td>
+                        <td class="p-3 text-xs text-gray-500"><?= htmlspecialchars($row['username']) ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <?php if(empty($history)): ?>
+                        <tr><td colspan="7" class="p-6 text-center text-gray-400 italic">Belum ada riwayat input.</td></tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
 </div>
 
 <!-- JAVASCRIPT LOGIC -->

@@ -69,7 +69,7 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
             $stmt_asset->execute([$wh_id, $wh_id]);
             $asset_value = $stmt_asset->fetchColumn() ?: 0;
 
-            // B. HITUNG TOTAL QUANTITY (STOK FISIK) - NEW REQUEST
+            // B. HITUNG TOTAL QUANTITY (STOK FISIK)
             $sql_qty = "
                 SELECT SUM(qty) as total_qty FROM (
                     -- 1. Qty Barang SN (Available)
@@ -91,13 +91,16 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
             $total_stock_qty = $stmt_qty->fetchColumn() ?: 0;
 
             // C. HITUNG KEUANGAN (BERDASARKAN TAG [Wilayah: Nama])
+            // UPDATE: Exclude Expense tipe 'ASSET' (Pembelian Stok) agar tidak mengurangi Net Profit Operasional
+            // Profit = Income - Operational Expense (Stock purchase is Asset Transfer)
             $sql_fin = "
                 SELECT 
-                    SUM(CASE WHEN type='INCOME' THEN amount ELSE 0 END) as income,
-                    SUM(CASE WHEN type='EXPENSE' THEN amount ELSE 0 END) as expense
-                FROM finance_transactions 
-                WHERE date BETWEEN ? AND ? 
-                AND description LIKE ?
+                    SUM(CASE WHEN f.type='INCOME' THEN f.amount ELSE 0 END) as income,
+                    SUM(CASE WHEN f.type='EXPENSE' AND a.type != 'ASSET' THEN f.amount ELSE 0 END) as expense
+                FROM finance_transactions f
+                JOIN accounts a ON f.account_id = a.id
+                WHERE f.date BETWEEN ? AND ? 
+                AND f.description LIKE ?
             ";
             $stmt_fin = $pdo->prepare($sql_fin);
             $stmt_fin->execute([$start_date, $end_date, "%[Wilayah: $wh_name]%"]);
@@ -177,11 +180,11 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
                     <p class="font-bold text-green-600 text-sm truncate"><?= formatRupiah($fin_data['income']??0) ?></p>
                 </div>
                 <div class="text-center border-r border-gray-200 last:border-0 md:border-r">
-                    <p class="text-[10px] text-gray-500 uppercase font-bold">Pengeluaran</p>
+                    <p class="text-[10px] text-gray-500 uppercase font-bold">Pengeluaran (Ops)</p>
                     <p class="font-bold text-red-600 text-sm truncate"><?= formatRupiah($fin_data['expense']??0) ?></p>
                 </div>
                 <div class="text-center">
-                    <p class="text-[10px] text-gray-500 uppercase font-bold">Net Profit</p>
+                    <p class="text-[10px] text-gray-500 uppercase font-bold">Net Profit (Ops)</p>
                     <p class="font-bold <?= $profit>=0 ? 'text-blue-600' : 'text-red-600' ?> text-sm truncate"><?= formatRupiah($profit) ?></p>
                 </div>
             </div>

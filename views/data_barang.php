@@ -218,6 +218,42 @@ $sort_by = $_GET['sort'] ?? 'newest';
 
 $existing_cats = $pdo->query("SELECT DISTINCT category FROM products ORDER BY category")->fetchAll(PDO::FETCH_COLUMN);
 
+// --- EDIT ITEM FETCH + SELF-HEALING STOCK ---
+$edit_item = null;
+if (isset($_GET['edit_id'])) {
+    $e_id = (int)$_GET['edit_id'];
+    
+    // 1. Cek / Perbaiki Stok Fisik sebelum ditampilkan
+    $chk = $pdo->prepare("SELECT has_serial_number, stock FROM products WHERE id=?");
+    $chk->execute([$e_id]);
+    $p_chk = $chk->fetch();
+
+    if ($p_chk) {
+        $real_stock = 0;
+        if ($p_chk['has_serial_number'] == 1) {
+            // Hitung REAL AVAILABLE SN
+            $real_stock = $pdo->query("SELECT COUNT(*) FROM product_serials WHERE product_id=$e_id AND status='AVAILABLE'")->fetchColumn();
+        } else {
+            // Hitung dari Transaksi (Non SN)
+            $real_stock = $pdo->query("
+                SELECT (COALESCE(SUM(CASE WHEN type='IN' THEN quantity ELSE 0 END), 0) -
+                        COALESCE(SUM(CASE WHEN type='OUT' THEN quantity ELSE 0 END), 0))
+                FROM inventory_transactions WHERE product_id=$e_id
+            ")->fetchColumn();
+        }
+
+        // Update jika beda (Self Healing)
+        if ((int)$real_stock != (int)$p_chk['stock']) {
+            $pdo->prepare("UPDATE products SET stock=? WHERE id=?")->execute([$real_stock, $e_id]);
+        }
+    }
+
+    // 2. Fetch Item Setelah Healing
+    $stmt = $pdo->prepare("SELECT * FROM products WHERE id=?");
+    $stmt->execute([$e_id]);
+    $edit_item = $stmt->fetch();
+}
+
 // --- PRE-FETCH STOK PER GUDANG (LOGIKA BARU: HYBRID SN & TRX) ---
 $stock_map = [];
 
@@ -275,13 +311,6 @@ $products = $stmt->fetchAll();
 
 $export_data = [];
 $total_asset_group = 0;
-
-$edit_item = null;
-if (isset($_GET['edit_id'])) {
-    $stmt = $pdo->prepare("SELECT * FROM products WHERE id=?");
-    $stmt->execute([$_GET['edit_id']]);
-    $edit_item = $stmt->fetch();
-}
 ?>
 
 <!-- Import Libraries -->

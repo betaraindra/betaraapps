@@ -39,22 +39,34 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
             $wh_id = $wh['id'];
             $wh_name = $wh['name'];
 
-            // A. HITUNG TOTAL NILAI ASET (STOK FISIK SAAT INI)
+            // A. HITUNG TOTAL NILAI ASET (STOK FISIK SAAT INI - REAL TIME)
+            // Logika Hybrid: 
+            // 1. Barang SN: Hitung baris di product_serials (status AVAILABLE)
+            // 2. Barang Non-SN: Hitung dari Inventory Transactions (IN - OUT)
             $sql_asset = "
-                SELECT SUM( (COALESCE(sub.in_qty,0) - COALESCE(sub.out_qty,0)) * p.buy_price ) as asset_value
-                FROM products p
-                LEFT JOIN (
-                    SELECT product_id, 
-                           SUM(CASE WHEN type='IN' THEN quantity ELSE 0 END) as in_qty,
-                           SUM(CASE WHEN type='OUT' THEN quantity ELSE 0 END) as out_qty
-                    FROM inventory_transactions
-                    WHERE warehouse_id = ?
-                    GROUP BY product_id
-                ) sub ON p.id = sub.product_id
-                WHERE (COALESCE(sub.in_qty,0) - COALESCE(sub.out_qty,0)) > 0
+                SELECT SUM(sub_total) as asset_value FROM (
+                    -- 1. Nilai Aset dari Barang Ber-SN (AVAILABLE Only)
+                    SELECT SUM(p.buy_price) as sub_total
+                    FROM product_serials ps
+                    JOIN products p ON ps.product_id = p.id
+                    WHERE ps.warehouse_id = ? AND ps.status = 'AVAILABLE'
+
+                    UNION ALL
+
+                    -- 2. Nilai Aset dari Barang NON-SN (Berdasarkan Transaksi)
+                    SELECT SUM(trx_stock.qty * p.buy_price) as sub_total
+                    FROM products p
+                    JOIN (
+                        SELECT product_id, SUM(IF(type='IN', quantity, -quantity)) as qty
+                        FROM inventory_transactions
+                        WHERE warehouse_id = ?
+                        GROUP BY product_id
+                    ) trx_stock ON p.id = trx_stock.product_id
+                    WHERE p.has_serial_number = 0 AND trx_stock.qty > 0
+                ) as grand_total
             ";
             $stmt_asset = $pdo->prepare($sql_asset);
-            $stmt_asset->execute([$wh_id]);
+            $stmt_asset->execute([$wh_id, $wh_id]);
             $asset_value = $stmt_asset->fetchColumn() ?: 0;
 
             // B. HITUNG KEUANGAN (BERDASARKAN TAG [Wilayah: Nama])
@@ -84,30 +96,47 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
             $stmt_act->execute([$wh_id, $start_date, $end_date]);
             $activity_count = $stmt_act->fetchColumn() ?: 0;
 
-            // D. TOP 10 PENGGUNAAN MATERIAL PER WILAYAH
-            // UPDATE: Menghitung Ready Stock (Global) dan Usage (Period)
+            // D. TOP 10 MATERIAL PER WILAYAH
+            // Ready Stock diambil Real-time (SN Available atau Trx Sum)
             $sql_top = "
                 SELECT 
-                    p.name, p.unit,
+                    p.name, p.unit, p.has_serial_number,
                     -- Metrics Periode Ini (Filtered Date)
                     COALESCE(SUM(CASE WHEN i.date BETWEEN ? AND ? AND i.type='IN' THEN i.quantity ELSE 0 END), 0) as qty_in,
                     COALESCE(SUM(CASE WHEN i.date BETWEEN ? AND ? AND i.type='OUT' THEN i.quantity ELSE 0 END), 0) as qty_out,
                     COALESCE(SUM(CASE WHEN i.date BETWEEN ? AND ? AND i.type='OUT' AND (i.notes LIKE 'Aktivitas:%' OR i.notes LIKE '%[PEMAKAIAN]%') THEN i.quantity ELSE 0 END), 0) as qty_used,
-                    -- Metrics Global (Total Saldo Akhir / Ready Stock)
-                    (COALESCE(SUM(CASE WHEN i.type='IN' THEN i.quantity ELSE 0 END), 0) - 
-                     COALESCE(SUM(CASE WHEN i.type='OUT' THEN i.quantity ELSE 0 END), 0)) as ready_stock
+                    
+                    -- Metrics Global (Real Stock Snapshot)
+                    (
+                        CASE 
+                            WHEN p.has_serial_number = 1 THEN 
+                                (SELECT COUNT(*) FROM product_serials ps WHERE ps.product_id = p.id AND ps.warehouse_id = ? AND ps.status = 'AVAILABLE')
+                            ELSE 
+                                (SELECT COALESCE(SUM(IF(t.type='IN', t.quantity, -t.quantity)), 0) FROM inventory_transactions t WHERE t.product_id = p.id AND t.warehouse_id = ?)
+                        END
+                    ) as ready_stock
+
                 FROM inventory_transactions i
                 JOIN products p ON i.product_id = p.id
                 WHERE i.warehouse_id = ?
-                GROUP BY p.id, p.name, p.unit
-                -- Tampilkan jika ada aktivitas di periode ini ATAU jika stok ready > 0
-                HAVING qty_used > 0 OR qty_in > 0 OR qty_out > 0
-                ORDER BY qty_used DESC, ready_stock DESC
+                GROUP BY p.id, p.name, p.unit, p.has_serial_number
+                -- Tampilkan jika ada stok ready ATAU ada aktivitas
+                HAVING ready_stock > 0 OR qty_used > 0 OR qty_in > 0 OR qty_out > 0
+                ORDER BY ready_stock DESC, qty_used DESC
                 LIMIT 10
             ";
             $stmt_top = $pdo->prepare($sql_top);
-            // Params: start, end (IN), start, end (OUT), start, end (USED), wh_id
-            $stmt_top->execute([$start_date, $end_date, $start_date, $end_date, $start_date, $end_date, $wh_id]);
+            // Params Urutan: 
+            // 1,2 (IN Period), 3,4 (OUT Period), 5,6 (USED Period), 
+            // 7 (Subquery SN WH), 8 (Subquery Trx WH), 
+            // 9 (Main Query WH)
+            $stmt_top->execute([
+                $start_date, $end_date, 
+                $start_date, $end_date, 
+                $start_date, $end_date, 
+                $wh_id, $wh_id, 
+                $wh_id
+            ]);
             $top_items = $stmt_top->fetchAll();
         ?>
         <div class="bg-white rounded-lg shadow-lg overflow-hidden border border-gray-100 flex flex-col hover:shadow-xl transition-shadow duration-300">

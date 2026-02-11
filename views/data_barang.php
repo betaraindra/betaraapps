@@ -315,7 +315,7 @@ $total_asset_group = 0;
 <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 
 <style>
-    /* CSS UNTUK PRINT LABEL (FIXED 100x150mm & BLANK FIX) */
+    /* CSS UNTUK PRINT LABEL PRESISI (100x150mm) */
     @media print {
         @page { 
             /* Request 100mm x 150mm paper size */
@@ -336,8 +336,8 @@ $total_asset_group = 0;
             display: none !important;
         }
 
-        /* SHOW only the label container which we will move to body via JS */
-        #label_print_area {
+        /* Hanya tampilkan area print yang dipindahkan ke body */
+        #print_active_area {
             display: flex !important;
             position: fixed !important;
             left: 0 !important;
@@ -353,69 +353,82 @@ $total_asset_group = 0;
             padding: 2mm; 
         }
         
-        /* Ensure children are visible */
-        #label_print_area * {
+        #print_active_area * {
             display: block; 
         }
 
-        /* Styles for 100x150mm large layout - RAPATKAN MARGIN */
-        .lbl-sku {
+        /* Styles for 100x150mm Layout */
+        .lbl-sku-print {
             font-family: 'Courier New', Courier, monospace; 
-            font-size: 24pt; 
+            font-size: 28pt; 
             font-weight: 900; 
-            margin-bottom: 2mm; /* Rapatkan margin bawah */
+            margin-bottom: 5mm; 
             color: black !important;
-            letter-spacing: 2px;
+            letter-spacing: 3px;
             text-align: center;
         }
 
-        /* Using IMG for barcode is safer for printing than Canvas */
-        img#lbl_barcode_img {
-            width: 80%; 
+        img.lbl-barcode-img-print {
+            width: 85%; 
             height: auto;
-            max-height: 40mm;
+            max-height: 50mm;
             display: block;
-            margin: 0 auto 2mm auto; /* Rapatkan margin */
+            margin: 0 auto 5mm auto; 
             image-rendering: pixelated; 
         }
 
-        .lbl-name {
+        .lbl-name-print {
             font-family: Arial, Helvetica, sans-serif; 
-            font-size: 16pt; /* Perbesar sedikit */
+            font-size: 18pt; 
             font-weight: bold; 
             line-height: 1.2;
             margin-top: 0;
-            max-height: 3.6em; /* Allow 3 lines */
+            max-height: 4em; 
             overflow: hidden;
             color: black !important;
             word-wrap: break-word;
             width: 95%;
             text-align: center;
         }
-        
-        .label-box {
-            width: 100%;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-        }
     }
-    
-    /* Hide on screen */
-    #label_print_area { display: none; }
 </style>
 
-<!-- Hidden Print Area (Container Cetak) -->
-<div id="label_print_area">
-    <div class="label-box">
-        <!-- SKU Teks -->
-        <div class="lbl-sku" id="lbl_sku_txt">SKU</div>
-        <!-- Barcode Image -->
-        <img id="lbl_barcode_img" alt="Barcode">
-        <!-- Nama Barang -->
-        <div class="lbl-name" id="lbl_name_txt">NAMA BARANG</div>
+<!-- MODAL PREVIEW LABEL (Untuk Save & Print) -->
+<div id="labelPreviewModal" class="hidden fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-sm overflow-hidden flex flex-col">
+        <!-- Header -->
+        <div class="bg-gray-800 text-white p-3 flex justify-between items-center">
+            <h3 class="font-bold flex items-center gap-2"><i class="fas fa-barcode"></i> Preview Label</h3>
+            <button onclick="closeLabelModal()" class="text-gray-300 hover:text-white"><i class="fas fa-times text-xl"></i></button>
+        </div>
+        
+        <!-- Content Preview (Ukuran relatif utk layar, tapi proporsional) -->
+        <div class="p-6 bg-gray-200 flex justify-center">
+            <!-- Container Simulasi Kertas 100x150mm (Aspect Ratio 2:3) -->
+            <div id="label_preview_container" class="bg-white shadow-lg flex flex-col items-center justify-center p-4 text-center border border-gray-300" style="width: 240px; height: 360px;">
+                <div class="font-mono font-bold text-2xl mb-4" id="prev_sku">SKU</div>
+                <img id="prev_barcode_img" class="w-10/12 mb-4" alt="Barcode">
+                <div class="font-bold text-lg leading-tight line-clamp-3" id="prev_name">Nama Barang</div>
+            </div>
+        </div>
+
+        <!-- Footer Actions -->
+        <div class="p-4 bg-white border-t flex gap-2">
+            <button onclick="downloadLabelImage()" class="flex-1 bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 shadow flex items-center justify-center gap-2">
+                <i class="fas fa-download"></i> Save Image
+            </button>
+            <button onclick="executePrint()" class="flex-1 bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 shadow flex items-center justify-center gap-2">
+                <i class="fas fa-print"></i> Cetak
+            </button>
+        </div>
     </div>
+</div>
+
+<!-- HIDDEN PRINT TEMPLATE (Akan diisi & dipindah ke body saat print) -->
+<div id="print_template" class="hidden">
+    <div class="lbl-sku-print" id="print_sku"></div>
+    <img id="print_barcode_img" class="lbl-barcode-img-print">
+    <div class="lbl-name-print" id="print_name"></div>
 </div>
 
 <!-- HEADER & FILTER -->
@@ -518,7 +531,8 @@ $total_asset_group = 0;
                             <td class="p-2 border font-mono text-blue-600 whitespace-nowrap align-middle">
                                 <?= htmlspecialchars($p['sku']) ?>
                                 <div class="mt-1">
-                                    <button onclick="printLabelDirect('<?= h($p['sku']) ?>', '<?= h($p['name']) ?>')" class="text-[9px] text-gray-500 hover:text-gray-800 border px-1 rounded bg-gray-50 flex items-center gap-1 w-full justify-center"><i class="fas fa-barcode"></i> Label</button>
+                                    <!-- TOMBOL LABEL DIPERBAIKI -->
+                                    <button onclick="openLabelPreview('<?= h($p['sku']) ?>', '<?= h($p['name']) ?>')" class="text-[9px] text-gray-500 hover:text-gray-800 border px-1 rounded bg-gray-50 flex items-center gap-1 w-full justify-center"><i class="fas fa-barcode"></i> Label</button>
                                 </div>
                             </td>
                             <td class="p-1 border text-center align-middle">
@@ -582,8 +596,8 @@ $total_asset_group = 0;
     </div>
 </div>
 
-<!-- MODALS IMPORT & SN -->
-<!-- ... (Kode modal import dan SN management sama seperti sebelumnya, tidak diubah) ... -->
+<!-- MODALS IMPORT & SN (Existing) -->
+<!-- ... (Kode modal import dan SN management sama seperti sebelumnya) ... -->
 <div id="importModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
     <!-- ... (Content Modal Import) ... -->
     <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
@@ -711,46 +725,139 @@ async function loadSNs() {
     }
 }
 
-// --- FUNGSI PRINT LABEL BARU (FIX BLANK PRINT) ---
-function printLabelDirect(sku, name) {
-    // 1. Set Teks
-    document.getElementById('lbl_name_txt').innerText = name.substring(0, 50); 
-    document.getElementById('lbl_sku_txt').innerText = sku;
+// --- NEW LABEL LOGIC: PREVIEW, SAVE & PRINT ---
+
+let currentSku = '';
+let currentName = '';
+
+function openLabelPreview(sku, name) {
+    currentSku = sku;
+    currentName = name;
     
-    // 2. Generate Barcode ke Canvas -> Convert ke Image
+    // Set Text UI
+    document.getElementById('prev_sku').innerText = sku;
+    document.getElementById('prev_name').innerText = name;
+    
+    // Render Barcode ke Image
     try {
         let canvas = document.createElement('canvas');
         bwipjs.toCanvas(canvas, {
             bcid:        'code128',       
             text:        sku,             
-            scale:       4, // Skala besar untuk resolusi tinggi
+            scale:       4, // High resolution
             height:      30,              
             includetext: false,           
             textxalign:  'center',
         });
         
-        // Set Source Image (Penting!)
-        document.getElementById('lbl_barcode_img').src = canvas.toDataURL('image/png');
+        // Set Image Source
+        const dataUrl = canvas.toDataURL('image/png');
+        document.getElementById('prev_barcode_img').src = dataUrl;
         
-        // 3. Move Print Area to Body (Workaround DOM nesting issues)
-        // Kita pindahkan sementara ke body agar menjadi direct child untuk styling display:none yang agresif
-        const printArea = document.getElementById('label_print_area');
-        const parent = printArea.parentNode;
-        document.body.appendChild(printArea);
+        // Simpan juga ke template print (hidden)
+        document.getElementById('print_barcode_img').src = dataUrl;
+        document.getElementById('print_sku').innerText = sku;
+        document.getElementById('print_name').innerText = name.substring(0, 50);
         
-        // 4. Print dengan Delay agar image ter-render dan DOM terupdate
-        const originalTitle = document.title;
-        document.title = "_"; 
-        
-        setTimeout(() => {
-            window.print();
-            document.title = originalTitle;
-            // Kembalikan ke tempat asal (optional, but good practice)
-            parent.appendChild(printArea);
-        }, 800); // Sedikit lebih lama untuk thermal
+        // Show Modal
+        document.getElementById('labelPreviewModal').classList.remove('hidden');
         
     } catch (e) {
         alert("Gagal generate barcode: " + e);
     }
+}
+
+function closeLabelModal() {
+    document.getElementById('labelPreviewModal').classList.add('hidden');
+}
+
+function downloadLabelImage() {
+    // Gunakan html2canvas untuk menangkap container preview
+    // Note: Jika html2canvas belum diload, kita fallback ke barcode saja atau alert
+    // Tapi karena kita pakai bwip-js, kita bisa download barcode img-nya saja
+    // Atau lebih baik, download elemen preview sebagai gambar lengkap
+    
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Ukuran Canvas (High Res untuk 100x150mm)
+    // 1mm ~ 3.78px. 100mm = 378px, 150mm = 567px. Scale x2 = 756x1134
+    canvas.width = 756; 
+    canvas.height = 1134;
+    
+    // Fill White Background
+    ctx.fillStyle = "white";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw Content (Simulasi Layout)
+    ctx.fillStyle = "black";
+    ctx.textAlign = "center";
+    
+    // SKU
+    ctx.font = "bold 60px 'Courier New'";
+    ctx.fillText(currentSku, canvas.width/2, 200);
+    
+    // Barcode Image
+    const img = document.getElementById('prev_barcode_img');
+    // Draw image centered
+    const imgWidth = canvas.width * 0.8;
+    const imgHeight = imgWidth * (img.naturalHeight / img.naturalWidth);
+    ctx.drawImage(img, (canvas.width - imgWidth)/2, 250, imgWidth, imgHeight);
+    
+    // Name
+    ctx.font = "bold 40px Arial";
+    // Simple text wrapping logic if needed, or just cut off
+    // For simplicity, just draw text
+    let nameY = 250 + imgHeight + 80;
+    wrapText(ctx, currentName, canvas.width/2, nameY, canvas.width * 0.9, 50);
+    
+    // Trigger Download
+    const link = document.createElement('a');
+    link.download = 'label_' + currentSku + '.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+}
+
+function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+    var words = text.split(' ');
+    var line = '';
+
+    for(var n = 0; n < words.length; n++) {
+      var testLine = line + words[n] + ' ';
+      var metrics = ctx.measureText(testLine);
+      var testWidth = metrics.width;
+      if (testWidth > maxWidth && n > 0) {
+        ctx.fillText(line, x, y);
+        line = words[n] + ' ';
+        y += lineHeight;
+      }
+      else {
+        line = testLine;
+      }
+    }
+    ctx.fillText(line, x, y);
+}
+
+function executePrint() {
+    // 1. Ambil template
+    const template = document.getElementById('print_template');
+    
+    // 2. Buat container print yang visible (teknik move to body)
+    const printContainer = document.createElement('div');
+    printContainer.id = 'print_active_area';
+    printContainer.innerHTML = template.innerHTML;
+    
+    document.body.appendChild(printContainer);
+    
+    // 3. Print
+    const originalTitle = document.title;
+    document.title = "_"; // Hilangkan judul tab saat print
+    
+    setTimeout(() => {
+        window.print();
+        document.title = originalTitle;
+        // Cleanup
+        document.body.removeChild(printContainer);
+    }, 500);
 }
 </script>

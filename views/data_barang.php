@@ -317,24 +317,80 @@ $total_asset_group = 0;
 <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 
 <style>
+    /* CSS UNTUK PRINT LABEL PRESISI (Misal: 50mm x 30mm) */
     @media print {
-        aside, header, footer, .no-print, .main-layout { display: none !important; }
-        .page-content-wrapper { display: none !important; }
-        #label_print_area { display: flex !important; visibility: visible !important; position: fixed; left: 0; top: 0; width: 100%; height: 100%; background: white; align-items: center; justify-content: center; z-index: 9999; }
-        #label_print_area * { visibility: visible !important; }
-        @page { size: 50mm 30mm; margin: 0; }
-        .label-box { width: 48mm; height: 28mm; border: 1px solid #000; padding: 2px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; font-family: sans-serif; overflow: hidden; }
-        canvas { max-width: 95% !important; max-height: 15mm !important; }
+        @page { 
+            size: 50mm 30mm; /* Atur ukuran kertas ke ukuran label standar */
+            margin: 0; /* Margin 0 untuk menghilangkan Header/Footer browser */
+        }
+        
+        body { 
+            margin: 0 !important; 
+            padding: 0 !important; 
+            background-color: white !important; 
+        }
+
+        /* Sembunyikan semua elemen lain */
+        body * { 
+            visibility: hidden; 
+            height: 0; 
+            overflow: hidden; 
+        }
+
+        /* Tampilkan hanya area print */
+        #label_print_area, #label_print_area * { 
+            visibility: visible; 
+            height: auto; 
+            overflow: visible;
+        }
+
+        #label_print_area {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 50mm; /* Lebar Label */
+            height: 30mm; /* Tinggi Label */
+            display: flex !important;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: white;
+            z-index: 9999;
+        }
+
+        .label-box {
+            width: 100%;
+            height: 100%;
+            padding: 2px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            overflow: hidden;
+        }
+
+        /* Styling Canvas Barcode */
+        canvas { 
+            max-width: 95% !important; 
+            max-height: 18mm !important; /* Maksimal tinggi barcode agar muat teks */
+        }
+        
+        /* Styling Teks SKU & Nama */
+        .lbl-sku { font-family: monospace; font-size: 8pt; font-weight: bold; margin-bottom: 1px; }
+        .lbl-name { font-family: Arial, sans-serif; font-size: 7pt; font-weight: bold; line-height: 1.1; margin-top: 1px; max-height: 2.2em; overflow: hidden; }
     }
+    
+    /* Sembunyikan area print di layar normal */
     #label_print_area { display: none; }
 </style>
 
 <!-- Hidden Print Area (Legacy/Direct Print) -->
 <div id="label_print_area">
     <div class="label-box">
-        <div class="font-bold text-[10px] font-mono mb-1" id="lbl_sku">SKU</div>
+        <div class="lbl-sku" id="lbl_sku">SKU</div>
         <canvas id="lbl_barcode_canvas"></canvas>
-        <div class="font-bold text-[9px] leading-tight mt-1 text-center w-full px-1 break-words" id="lbl_name">NAMA BARANG</div>
+        <div class="lbl-name" id="lbl_name">NAMA BARANG</div>
     </div>
 </div>
 

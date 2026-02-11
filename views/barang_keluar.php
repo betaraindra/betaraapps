@@ -123,6 +123,10 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
         <div class="bg-gray-800 p-3 rounded-lg mb-6 flex flex-col md:flex-row gap-3 items-center justify-between text-white">
             <div class="text-sm font-bold flex items-center gap-2"><i class="fas fa-qrcode"></i> Scan Helper:</div>
             <div class="flex gap-2 w-full md:w-auto">
+                <!-- BUTTON USB BARU -->
+                <button type="button" onclick="activateUSB()" class="flex-1 bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded text-xs font-bold transition">
+                    <i class="fas fa-keyboard"></i> USB
+                </button>
                 <button type="button" onclick="document.getElementById('scan_image_file').click()" class="flex-1 bg-purple-600 hover:bg-purple-700 px-3 py-2 rounded text-xs font-bold">
                     <i class="fas fa-camera"></i> Foto
                 </button>
@@ -221,6 +225,13 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
                 
                 <div class="mb-3">
                     <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang (Ketik SKU / Scan SN)</label>
+                    <!-- INPUT SCAN BARU -->
+                    <div class="flex gap-1 mb-2">
+                        <input type="text" id="scan_sku_input" class="w-full border p-2 rounded font-mono font-bold text-blue-700 uppercase focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Klik tombol USB lalu Scan disini..." onkeypress="handleUsbScan(event)">
+                        <button type="button" onclick="activateUSB()" class="bg-blue-100 hover:bg-blue-200 text-blue-700 border border-blue-300 rounded px-3" title="Fokus ke Input Scan"><i class="fas fa-keyboard"></i></button>
+                    </div>
+                    <!-- END INPUT SCAN BARU -->
+                    
                     <select id="product_select" class="w-full p-2 rounded">
                         <option value="">-- Cari Barang --</option>
                         <?php foreach($all_products as $p): ?>
@@ -298,6 +309,26 @@ $(document).ready(function() {
     toggleDestWarehouse();
     genRef();
 });
+
+// LOGIKA USB SCANNER BARU
+function activateUSB() {
+    const el = document.getElementById('scan_sku_input');
+    el.focus();
+    el.value = '';
+    el.classList.add('ring-4', 'ring-blue-400');
+    setTimeout(() => el.classList.remove('ring-4', 'ring-blue-400'), 1000);
+}
+
+function handleUsbScan(e) {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        const txt = e.target.value.trim();
+        if(txt) {
+            processScan(txt); // Reuse existing logic
+            e.target.value = '';
+        }
+    }
+}
 
 // EVENT LISTENER: GUDANG BERUBAH -> RESET PILIHAN PRODUK & SN
 $('#warehouse_id').on('change', function() {

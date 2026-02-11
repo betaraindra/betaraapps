@@ -314,85 +314,6 @@ $total_asset_group = 0;
 <script src="https://cdnjs.cloudflare.com/ajax/libs/bwip-js/3.4.4/bwip-js-min.js"></script>
 <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 
-<style>
-    /* CSS UNTUK PRINT LABEL PRESISI (100x150mm) */
-    @media print {
-        @page { 
-            /* Request 100mm x 150mm paper size */
-            size: 100mm 150mm; 
-            margin: 0; 
-        }
-        
-        html, body { 
-            background-color: white !important; 
-            margin: 0 !important;
-            padding: 0 !important;
-            height: 100%;
-            overflow: hidden !important;
-        }
-
-        /* HIDE EVERYTHING by default */
-        body > * {
-            display: none !important;
-        }
-
-        /* Hanya tampilkan area print yang dipindahkan ke body */
-        #print_active_area {
-            display: flex !important;
-            position: fixed !important;
-            left: 0 !important;
-            top: 0 !important;
-            width: 100mm !important;
-            height: 150mm !important;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            background: white;
-            z-index: 99999;
-            box-sizing: border-box;
-            padding: 2mm; 
-        }
-        
-        #print_active_area * {
-            display: block; 
-        }
-
-        /* Styles for 100x150mm Layout */
-        .lbl-sku-print {
-            font-family: 'Courier New', Courier, monospace; 
-            font-size: 28pt; 
-            font-weight: 900; 
-            margin-bottom: 5mm; 
-            color: black !important;
-            letter-spacing: 3px;
-            text-align: center;
-        }
-
-        img.lbl-barcode-img-print {
-            width: 85%; 
-            height: auto;
-            max-height: 50mm;
-            display: block;
-            margin: 0 auto 5mm auto; 
-            image-rendering: pixelated; 
-        }
-
-        .lbl-name-print {
-            font-family: Arial, Helvetica, sans-serif; 
-            font-size: 18pt; 
-            font-weight: bold; 
-            line-height: 1.2;
-            margin-top: 0;
-            max-height: 4em; 
-            overflow: hidden;
-            color: black !important;
-            word-wrap: break-word;
-            width: 95%;
-            text-align: center;
-        }
-    }
-</style>
-
 <!-- MODAL PREVIEW LABEL (Untuk Save & Print) -->
 <div id="labelPreviewModal" class="hidden fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center p-4">
     <div class="bg-white rounded-lg shadow-xl w-full max-w-sm overflow-hidden flex flex-col">
@@ -417,18 +338,11 @@ $total_asset_group = 0;
             <button onclick="downloadLabelImage()" class="flex-1 bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 shadow flex items-center justify-center gap-2">
                 <i class="fas fa-download"></i> Save Image
             </button>
-            <button onclick="executePrint()" class="flex-1 bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 shadow flex items-center justify-center gap-2">
+            <button onclick="executePrintWindow()" class="flex-1 bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 shadow flex items-center justify-center gap-2">
                 <i class="fas fa-print"></i> Cetak
             </button>
         </div>
     </div>
-</div>
-
-<!-- HIDDEN PRINT TEMPLATE (Akan diisi & dipindah ke body saat print) -->
-<div id="print_template" class="hidden">
-    <div class="lbl-sku-print" id="print_sku"></div>
-    <img id="print_barcode_img" class="lbl-barcode-img-print">
-    <div class="lbl-name-print" id="print_name"></div>
 </div>
 
 <!-- HEADER & FILTER -->
@@ -725,10 +639,11 @@ async function loadSNs() {
     }
 }
 
-// --- NEW LABEL LOGIC: PREVIEW, SAVE & PRINT ---
+// --- NEW LABEL LOGIC: PREVIEW, SAVE & PRINT (POPUP WINDOW) ---
 
 let currentSku = '';
 let currentName = '';
+let currentBarcodeDataUrl = '';
 
 function openLabelPreview(sku, name) {
     currentSku = sku;
@@ -751,13 +666,8 @@ function openLabelPreview(sku, name) {
         });
         
         // Set Image Source
-        const dataUrl = canvas.toDataURL('image/png');
-        document.getElementById('prev_barcode_img').src = dataUrl;
-        
-        // Simpan juga ke template print (hidden)
-        document.getElementById('print_barcode_img').src = dataUrl;
-        document.getElementById('print_sku').innerText = sku;
-        document.getElementById('print_name').innerText = name.substring(0, 50);
+        currentBarcodeDataUrl = canvas.toDataURL('image/png');
+        document.getElementById('prev_barcode_img').src = currentBarcodeDataUrl;
         
         // Show Modal
         document.getElementById('labelPreviewModal').classList.remove('hidden');
@@ -772,16 +682,11 @@ function closeLabelModal() {
 }
 
 function downloadLabelImage() {
-    // Gunakan html2canvas untuk menangkap container preview
-    // Note: Jika html2canvas belum diload, kita fallback ke barcode saja atau alert
-    // Tapi karena kita pakai bwip-js, kita bisa download barcode img-nya saja
-    // Atau lebih baik, download elemen preview sebagai gambar lengkap
-    
+    // Generate Canvas High Res untuk Download
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     
     // Ukuran Canvas (High Res untuk 100x150mm)
-    // 1mm ~ 3.78px. 100mm = 378px, 150mm = 567px. Scale x2 = 756x1134
     canvas.width = 756; 
     canvas.height = 1134;
     
@@ -789,7 +694,7 @@ function downloadLabelImage() {
     ctx.fillStyle = "white";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     
-    // Draw Content (Simulasi Layout)
+    // Draw Content
     ctx.fillStyle = "black";
     ctx.textAlign = "center";
     
@@ -799,17 +704,32 @@ function downloadLabelImage() {
     
     // Barcode Image
     const img = document.getElementById('prev_barcode_img');
-    // Draw image centered
     const imgWidth = canvas.width * 0.8;
     const imgHeight = imgWidth * (img.naturalHeight / img.naturalWidth);
     ctx.drawImage(img, (canvas.width - imgWidth)/2, 250, imgWidth, imgHeight);
     
     // Name
     ctx.font = "bold 40px Arial";
-    // Simple text wrapping logic if needed, or just cut off
-    // For simplicity, just draw text
     let nameY = 250 + imgHeight + 80;
-    wrapText(ctx, currentName, canvas.width/2, nameY, canvas.width * 0.9, 50);
+    
+    // Simple text wrap
+    var words = currentName.split(' ');
+    var line = '';
+    var lineHeight = 50;
+    var maxWidth = canvas.width * 0.9;
+    
+    for(var n = 0; n < words.length; n++) {
+      var testLine = line + words[n] + ' ';
+      var metrics = ctx.measureText(testLine);
+      if (metrics.width > maxWidth && n > 0) {
+        ctx.fillText(line, canvas.width/2, nameY);
+        line = words[n] + ' ';
+        nameY += lineHeight;
+      } else {
+        line = testLine;
+      }
+    }
+    ctx.fillText(line, canvas.width/2, nameY);
     
     // Trigger Download
     const link = document.createElement('a');
@@ -818,46 +738,74 @@ function downloadLabelImage() {
     link.click();
 }
 
-function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
-    var words = text.split(' ');
-    var line = '';
-
-    for(var n = 0; n < words.length; n++) {
-      var testLine = line + words[n] + ' ';
-      var metrics = ctx.measureText(testLine);
-      var testWidth = metrics.width;
-      if (testWidth > maxWidth && n > 0) {
-        ctx.fillText(line, x, y);
-        line = words[n] + ' ';
-        y += lineHeight;
-      }
-      else {
-        line = testLine;
-      }
-    }
-    ctx.fillText(line, x, y);
-}
-
-function executePrint() {
-    // 1. Ambil template
-    const template = document.getElementById('print_template');
+function executePrintWindow() {
+    // Gunakan Data URL yang sudah di-render
+    if(!currentBarcodeDataUrl) return;
     
-    // 2. Buat container print yang visible (teknik move to body)
-    const printContainer = document.createElement('div');
-    printContainer.id = 'print_active_area';
-    printContainer.innerHTML = template.innerHTML;
+    // Buka Jendela Baru (Isolasi CSS)
+    const win = window.open('', '_blank', 'width=500,height=600');
     
-    document.body.appendChild(printContainer);
-    
-    // 3. Print
-    const originalTitle = document.title;
-    document.title = "_"; // Hilangkan judul tab saat print
-    
-    setTimeout(() => {
-        window.print();
-        document.title = originalTitle;
-        // Cleanup
-        document.body.removeChild(printContainer);
-    }, 500);
+    win.document.write(`
+        <html>
+        <head>
+            <title>Print Label ${currentSku}</title>
+            <style>
+                @page { 
+                    size: 100mm 150mm; 
+                    margin: 0; 
+                }
+                body { 
+                    margin: 0; 
+                    padding: 0;
+                    width: 100mm;
+                    height: 150mm;
+                    display: flex; 
+                    flex-direction: column; 
+                    align-items: center; 
+                    justify-content: center; 
+                    font-family: Arial, sans-serif;
+                    background: white;
+                }
+                .sku { 
+                    font-size: 24pt; 
+                    font-weight: 900; 
+                    font-family: 'Courier New', monospace; 
+                    margin-bottom: 5mm; 
+                    text-align: center;
+                }
+                img { 
+                    width: 80%; 
+                    height: auto; 
+                    max-height: 50mm; 
+                    image-rendering: pixelated; 
+                    margin-bottom: 5mm;
+                }
+                .name { 
+                    font-size: 16pt; 
+                    font-weight: bold; 
+                    text-align: center; 
+                    line-height: 1.2; 
+                    width: 90%;
+                    word-wrap: break-word;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="sku">${currentSku}</div>
+            <img src="${currentBarcodeDataUrl}" alt="Barcode"/>
+            <div class="name">${currentName}</div>
+            <script>
+                // Auto Print saat gambar loaded
+                window.onload = function() {
+                    setTimeout(function() {
+                        window.print();
+                        // window.close(); // Opsional: tutup otomatis
+                    }, 500);
+                };
+            <\/script>
+        </body>
+        </html>
+    `);
+    win.document.close();
 }
 </script>

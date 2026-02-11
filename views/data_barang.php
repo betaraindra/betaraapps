@@ -317,11 +317,11 @@ $total_asset_group = 0;
 <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 
 <style>
-    /* CSS UNTUK PRINT LABEL PRESISI (Misal: 50mm x 30mm) */
+    /* CSS UNTUK PRINT LABEL YANG RAPAT */
     @media print {
         @page { 
-            size: 50mm 30mm; /* Atur ukuran kertas ke ukuran label standar */
-            margin: 0mm; /* Margin 0 untuk menghilangkan Header/Footer browser */
+            size: auto; 
+            margin: 0mm; 
         }
         
         html, body { 
@@ -332,12 +332,10 @@ $total_asset_group = 0;
             background-color: white !important; 
         }
 
-        /* Sembunyikan semua elemen lain */
         body > *:not(#label_print_area) { 
             display: none !important; 
         }
 
-        /* Tampilkan hanya area print */
         #label_print_area { 
             display: flex !important;
             position: fixed;
@@ -345,56 +343,66 @@ $total_asset_group = 0;
             top: 0;
             width: 100%;
             height: 100%;
-            align-items: center;
-            justify-content: center;
+            align-items: center; /* Vertically Center */
+            justify-content: center; /* Horizontally Center */
             background: white;
             z-index: 9999;
-            page-break-after: always;
         }
 
         .label-box {
-            width: 95%; /* Margin aman */
-            height: 95%;
+            /* Pastikan konten ditengah dan memenuhi area printable tanpa overflow */
+            width: 100%; 
+            height: 100%;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
             text-align: center;
             overflow: hidden;
+            padding: 1mm; /* Padding minimal agar tidak terpotong */
         }
 
-        /* Styling Canvas Barcode */
+        /* Styling Canvas Barcode - Rapatkan margin */
         canvas { 
-            max-width: 98% !important; 
-            max-height: 18mm !important; /* Maksimal tinggi barcode agar muat teks */
+            max-width: 95% !important; 
+            height: auto !important; 
+            max-height: 15mm !important; /* Batasi tinggi barcode agar muat teks */
             object-fit: contain;
+            margin: 1px 0 !important; /* Jarak sangat minimal */
+            display: block;
         }
         
-        /* Styling Teks SKU & Nama */
+        /* Styling Teks SKU - Besar dan Rapat */
         .lbl-sku { 
-            font-family: monospace; 
-            font-size: 10pt; 
-            font-weight: bold; 
-            margin-bottom: 2px; 
+            font-family: 'Courier New', Courier, monospace; 
+            font-size: 14pt; 
+            font-weight: 900; 
+            line-height: 1; 
+            margin: 0; 
+            padding: 0;
             color: black !important;
+            letter-spacing: 1px;
         }
+        
+        /* Styling Nama Barang - Kecil dan Rapat */
         .lbl-name { 
-            font-family: Arial, sans-serif; 
-            font-size: 8pt; 
+            font-family: Arial, Helvetica, sans-serif; 
+            font-size: 9pt; 
             font-weight: bold; 
-            line-height: 1.1; 
-            margin-top: 2px; 
-            max-height: 2.2em; 
+            line-height: 1; 
+            margin: 0;
+            padding: 0; 
+            max-height: 2.2em; /* Max 2 baris */
             overflow: hidden; 
             color: black !important;
+            word-break: break-word;
         }
     }
     
-    /* Sembunyikan area print di layar normal */
     #label_print_area { display: none; }
 </style>
 
-<!-- Hidden Print Area (Legacy/Direct Print) -->
+<!-- Hidden Print Area (Container Cetak) -->
 <div id="label_print_area">
     <div class="label-box">
         <div class="lbl-sku" id="lbl_sku">SKU</div>
@@ -824,7 +832,7 @@ function downloadBarcodeImg() {
 }
 
 function printBarcodeLabel() {
-    // Gunakan fungsi print direct yang sudah ada di hidden area, lebih presisi untuk printer thermal
+    // Gunakan fungsi print direct yang sudah ada di hidden area
     printLabelDirect(currentPrintSku, currentPrintName);
 }
 
@@ -839,25 +847,25 @@ function printLabelDirect(sku, name) {
         bwipjs.toCanvas('lbl_barcode_canvas', {
             bcid:        'code128',       
             text:        sku,             
-            scale:       2,               
-            height:      10,              
+            scale:       4, // Skala diperbesar untuk ketajaman              
+            height:      25,              
             includetext: false,           
             textxalign:  'center',
         });
         
         // 3. Temporarily remove document title to prevent browser from printing it in header
         const originalTitle = document.title;
-        document.title = "";
+        document.title = " "; // Space is cleaner than empty string sometimes
         
-        // 4. Print
+        // 4. Print with timeout to ensure rendering
         setTimeout(() => {
             window.print();
-            // Restore title after print dialog closes (or immediately)
+            // Restore title
             document.title = originalTitle;
-        }, 300);
+        }, 500);
         
     } catch (e) {
-        // Fallback if code128 fails
+        // Fallback
         bwipjs.toCanvas('lbl_barcode_canvas', {
             bcid:        'datamatrix',
             text:        sku,
@@ -866,11 +874,11 @@ function printLabelDirect(sku, name) {
             includetext: false,
         });
         const originalTitle = document.title;
-        document.title = "";
+        document.title = " ";
         setTimeout(() => {
             window.print();
             document.title = originalTitle;
-        }, 300);
+        }, 500);
     }
 }
 </script>

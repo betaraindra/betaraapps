@@ -324,80 +324,81 @@ $total_asset_group = 0;
         }
         
         html, body { 
-            margin: 0 !important; 
-            padding: 0 !important; 
-            width: 100% !important;
-            height: 100% !important;
             background-color: white !important; 
+            margin: 0 !important;
+            padding: 0 !important;
+            height: 100%;
+            overflow: hidden !important;
         }
 
-        /* Hide everything by default */
-        body * {
-            visibility: hidden;
+        /* HIDE EVERYTHING by default */
+        body > * {
+            display: none !important;
         }
 
-        /* Show only the print area and its children */
-        #label_print_area, #label_print_area * {
-            visibility: visible;
-        }
-
+        /* SHOW only the label container which we will move to body via JS */
         #label_print_area {
-            position: fixed;
-            left: 0;
-            top: 0;
-            width: 100mm;
-            height: 150mm;
             display: flex !important;
+            position: fixed !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 100mm !important;
+            height: 150mm !important;
             flex-direction: column;
             align-items: center;
             justify-content: center;
             background: white;
-            z-index: 9999;
+            z-index: 99999;
             box-sizing: border-box;
-            padding: 5mm; /* Safety margin for content */
+            padding: 2mm; 
+        }
+        
+        /* Ensure children are visible */
+        #label_print_area * {
+            display: block; 
         }
 
-        .label-box {
-            width: 100%;
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-        }
-
-        /* Styles for 100x150mm large layout */
+        /* Styles for 100x150mm large layout - RAPATKAN MARGIN */
         .lbl-sku {
             font-family: 'Courier New', Courier, monospace; 
-            font-size: 24pt; /* Besar karena kertas besar */
+            font-size: 24pt; 
             font-weight: 900; 
-            margin-bottom: 5mm;
+            margin-bottom: 2mm; /* Rapatkan margin bawah */
             color: black !important;
             letter-spacing: 2px;
+            text-align: center;
         }
 
         /* Using IMG for barcode is safer for printing than Canvas */
         img#lbl_barcode_img {
-            width: 80%; /* Lebar barcode 80% dari kertas */
+            width: 80%; 
             height: auto;
             max-height: 40mm;
             display: block;
-            margin: 0 auto 5mm auto;
-            image-rendering: pixelated; /* Sharp edges */
+            margin: 0 auto 2mm auto; /* Rapatkan margin */
+            image-rendering: pixelated; 
         }
 
         .lbl-name {
             font-family: Arial, Helvetica, sans-serif; 
-            font-size: 14pt; 
+            font-size: 16pt; /* Perbesar sedikit */
             font-weight: bold; 
-            line-height: 1.3;
+            line-height: 1.2;
             margin-top: 0;
-            max-height: 3em; 
+            max-height: 3.6em; /* Allow 3 lines */
             overflow: hidden;
             color: black !important;
             word-wrap: break-word;
             width: 95%;
+            text-align: center;
+        }
+        
+        .label-box {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
         }
     }
     
@@ -408,9 +409,11 @@ $total_asset_group = 0;
 <!-- Hidden Print Area (Container Cetak) -->
 <div id="label_print_area">
     <div class="label-box">
+        <!-- SKU Teks -->
         <div class="lbl-sku" id="lbl_sku_txt">SKU</div>
-        <!-- Gunakan Image element untuk barcode agar tidak blank saat print -->
+        <!-- Barcode Image -->
         <img id="lbl_barcode_img" alt="Barcode">
+        <!-- Nama Barang -->
         <div class="lbl-name" id="lbl_name_txt">NAMA BARANG</div>
     </div>
 </div>
@@ -708,14 +711,13 @@ async function loadSNs() {
     }
 }
 
-// --- FUNGSI PRINT LABEL BARU ---
+// --- FUNGSI PRINT LABEL BARU (FIX BLANK PRINT) ---
 function printLabelDirect(sku, name) {
     // 1. Set Teks
     document.getElementById('lbl_name_txt').innerText = name.substring(0, 50); 
     document.getElementById('lbl_sku_txt').innerText = sku;
     
     // 2. Generate Barcode ke Canvas -> Convert ke Image
-    // Ini krusial agar tidak blank saat print
     try {
         let canvas = document.createElement('canvas');
         bwipjs.toCanvas(canvas, {
@@ -727,17 +729,25 @@ function printLabelDirect(sku, name) {
             textxalign:  'center',
         });
         
-        // Set Source Image
+        // Set Source Image (Penting!)
         document.getElementById('lbl_barcode_img').src = canvas.toDataURL('image/png');
         
-        // 3. Print dengan Delay agar image ter-render
+        // 3. Move Print Area to Body (Workaround DOM nesting issues)
+        // Kita pindahkan sementara ke body agar menjadi direct child untuk styling display:none yang agresif
+        const printArea = document.getElementById('label_print_area');
+        const parent = printArea.parentNode;
+        document.body.appendChild(printArea);
+        
+        // 4. Print dengan Delay agar image ter-render dan DOM terupdate
         const originalTitle = document.title;
-        document.title = "_"; // Hilangkan judul tab saat print
+        document.title = "_"; 
         
         setTimeout(() => {
             window.print();
             document.title = originalTitle;
-        }, 500);
+            // Kembalikan ke tempat asal (optional, but good practice)
+            parent.appendChild(printArea);
+        }, 800); // Sedikit lebih lama untuk thermal
         
     } catch (e) {
         alert("Gagal generate barcode: " + e);

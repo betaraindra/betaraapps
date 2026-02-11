@@ -321,47 +321,40 @@ $total_asset_group = 0;
     @media print {
         @page { 
             size: 50mm 30mm; /* Atur ukuran kertas ke ukuran label standar */
-            margin: 0; /* Margin 0 untuk menghilangkan Header/Footer browser */
+            margin: 0mm; /* Margin 0 untuk menghilangkan Header/Footer browser */
         }
         
-        body { 
+        html, body { 
             margin: 0 !important; 
             padding: 0 !important; 
+            width: 100% !important;
+            height: 100% !important;
             background-color: white !important; 
         }
 
         /* Sembunyikan semua elemen lain */
-        body * { 
-            visibility: hidden; 
-            height: 0; 
-            overflow: hidden; 
+        body > *:not(#label_print_area) { 
+            display: none !important; 
         }
 
         /* Tampilkan hanya area print */
-        #label_print_area, #label_print_area * { 
-            visibility: visible; 
-            height: auto; 
-            overflow: visible;
-        }
-
-        #label_print_area {
+        #label_print_area { 
+            display: flex !important;
             position: fixed;
             left: 0;
             top: 0;
-            width: 50mm; /* Lebar Label */
-            height: 30mm; /* Tinggi Label */
-            display: flex !important;
-            flex-direction: column;
+            width: 100%;
+            height: 100%;
             align-items: center;
             justify-content: center;
             background: white;
             z-index: 9999;
+            page-break-after: always;
         }
 
         .label-box {
-            width: 100%;
-            height: 100%;
-            padding: 2px;
+            width: 95%; /* Margin aman */
+            height: 95%;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -372,13 +365,29 @@ $total_asset_group = 0;
 
         /* Styling Canvas Barcode */
         canvas { 
-            max-width: 95% !important; 
+            max-width: 98% !important; 
             max-height: 18mm !important; /* Maksimal tinggi barcode agar muat teks */
+            object-fit: contain;
         }
         
         /* Styling Teks SKU & Nama */
-        .lbl-sku { font-family: monospace; font-size: 8pt; font-weight: bold; margin-bottom: 1px; }
-        .lbl-name { font-family: Arial, sans-serif; font-size: 7pt; font-weight: bold; line-height: 1.1; margin-top: 1px; max-height: 2.2em; overflow: hidden; }
+        .lbl-sku { 
+            font-family: monospace; 
+            font-size: 10pt; 
+            font-weight: bold; 
+            margin-bottom: 2px; 
+            color: black !important;
+        }
+        .lbl-name { 
+            font-family: Arial, sans-serif; 
+            font-size: 8pt; 
+            font-weight: bold; 
+            line-height: 1.1; 
+            margin-top: 2px; 
+            max-height: 2.2em; 
+            overflow: hidden; 
+            color: black !important;
+        }
     }
     
     /* Sembunyikan area print di layar normal */
@@ -821,9 +830,11 @@ function printBarcodeLabel() {
 
 // Existing Print Function (Used by table direct button and modal)
 function printLabelDirect(sku, name) {
+    // 1. Set Content
     document.getElementById('lbl_name').innerText = name.substring(0, 40); 
     document.getElementById('lbl_sku').innerText = sku;
     
+    // 2. Generate Barcode on Hidden Canvas
     try {
         bwipjs.toCanvas('lbl_barcode_canvas', {
             bcid:        'code128',       
@@ -834,9 +845,19 @@ function printLabelDirect(sku, name) {
             textxalign:  'center',
         });
         
-        setTimeout(() => window.print(), 300);
+        // 3. Temporarily remove document title to prevent browser from printing it in header
+        const originalTitle = document.title;
+        document.title = "";
+        
+        // 4. Print
+        setTimeout(() => {
+            window.print();
+            // Restore title after print dialog closes (or immediately)
+            document.title = originalTitle;
+        }, 300);
+        
     } catch (e) {
-        // Fallback
+        // Fallback if code128 fails
         bwipjs.toCanvas('lbl_barcode_canvas', {
             bcid:        'datamatrix',
             text:        sku,
@@ -844,7 +865,12 @@ function printLabelDirect(sku, name) {
             height:      10,
             includetext: false,
         });
-        setTimeout(() => window.print(), 300);
+        const originalTitle = document.title;
+        document.title = "";
+        setTimeout(() => {
+            window.print();
+            document.title = originalTitle;
+        }, 300);
     }
 }
 </script>

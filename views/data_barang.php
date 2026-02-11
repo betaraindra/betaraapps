@@ -319,7 +319,7 @@ $total_asset_group = 0;
     <div class="bg-white rounded-lg shadow-xl w-full max-w-sm overflow-hidden flex flex-col">
         <!-- Header -->
         <div class="bg-gray-800 text-white p-3 flex justify-between items-center">
-            <h3 class="font-bold flex items-center gap-2"><i class="fas fa-barcode"></i> Preview Label</h3>
+            <h3 class="font-bold flex items-center gap-2"><i class="fas fa-qrcode"></i> Preview Label QR</h3>
             <button onclick="closeLabelModal()" class="text-gray-300 hover:text-white"><i class="fas fa-times text-xl"></i></button>
         </div>
         
@@ -328,7 +328,8 @@ $total_asset_group = 0;
             <!-- Container Simulasi Kertas 100x150mm (Aspect Ratio 2:3) -->
             <div id="label_preview_container" class="bg-white shadow-lg flex flex-col items-center justify-center p-4 text-center border border-gray-300" style="width: 240px; height: 360px;">
                 <div class="font-mono font-bold text-2xl mb-4 text-black" id="prev_sku">SKU</div>
-                <img id="prev_barcode_img" class="w-10/12 mb-4 grayscale" alt="Barcode">
+                <!-- PREVIEW GAMBAR QR CODE -->
+                <img id="prev_barcode_img" class="w-8/12 mb-4 grayscale" alt="Barcode">
                 <div class="font-bold text-lg leading-tight line-clamp-3 text-black" id="prev_name">Nama Barang</div>
             </div>
         </div>
@@ -454,7 +455,7 @@ $total_asset_group = 0;
                                 <?= htmlspecialchars($p['sku']) ?>
                                 <div class="mt-1">
                                     <!-- TOMBOL LABEL DIPERBAIKI -->
-                                    <button onclick="openLabelPreview('<?= h($p['sku']) ?>', '<?= h($p['name']) ?>')" class="text-[9px] text-gray-500 hover:text-gray-800 border px-1 rounded bg-gray-50 flex items-center gap-1 w-full justify-center"><i class="fas fa-barcode"></i> Label</button>
+                                    <button onclick="openLabelPreview('<?= h($p['sku']) ?>', '<?= h($p['name']) ?>')" class="text-[9px] text-gray-500 hover:text-gray-800 border px-1 rounded bg-gray-50 flex items-center gap-1 w-full justify-center"><i class="fas fa-qrcode"></i> Label</button>
                                 </div>
                             </td>
                             <td class="p-1 border text-center align-middle">
@@ -665,10 +666,10 @@ function openLabelPreview(sku, name) {
     try {
         let canvas = document.createElement('canvas');
         bwipjs.toCanvas(canvas, {
-            bcid:        'code128',       
+            bcid:        'qrcode',       // GANTI KE QR CODE
             text:        sku,             
             scale:       4, // High resolution
-            height:      30,              
+            // Removed fixed height, QR determines its own size based on scale
             includetext: false,           
             textxalign:  'center',
         });
@@ -798,9 +799,9 @@ function executePrintWindow() {
                     }
                     
                     img { 
-                        width: 85%; 
+                        width: 70%; /* QR Code Width */
                         height: auto; 
-                        max-height: 50mm; 
+                        max-height: 80mm; /* Allow more height for square QR */
                         image-rendering: pixelated; 
                         margin-bottom: 5mm;
                         display: block;

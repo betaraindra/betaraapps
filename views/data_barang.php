@@ -249,10 +249,9 @@ if (isset($_GET['edit_id'])) {
     $edit_item = $stmt->fetch();
 }
 
-// --- PRE-FETCH STOK PER GUDANG (LOGIKA BARU: TOTAL ASET = READY + USED/SOLD) ---
+// --- PRE-FETCH STOCK MAP ---
+// ... (Logic sama seperti sebelumnya) ...
 $stock_map = [];
-
-// 1. Ambil Stok Barang Ber-SN (Breakdown: READY vs USED/SOLD)
 $sql_sn_stock = "SELECT product_id, warehouse_id, 
                  SUM(CASE WHEN status = 'AVAILABLE' THEN 1 ELSE 0 END) as ready,
                  SUM(CASE WHEN status = 'SOLD' THEN 1 ELSE 0 END) as used
@@ -268,7 +267,6 @@ while($r = $stmt_sn_stock->fetch()) {
     ];
 }
 
-// 2. Fallback untuk Barang NON-SN
 $trx_map = [];
 $sql_trx_stock = "SELECT product_id, warehouse_id,
                   (COALESCE(SUM(CASE WHEN type='IN' THEN quantity ELSE 0 END), 0) -
@@ -317,11 +315,12 @@ $total_asset_group = 0;
 <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 
 <style>
-    /* CSS UNTUK PRINT LABEL YANG RAPAT */
+    /* CSS UNTUK PRINT LABEL (FIXED 100x150mm & BLANK FIX) */
     @media print {
         @page { 
-            size: auto; 
-            margin: 0mm; 
+            /* Request 100mm x 150mm paper size */
+            size: 100mm 150mm; 
+            margin: 0; 
         }
         
         html, body { 
@@ -332,104 +331,87 @@ $total_asset_group = 0;
             background-color: white !important; 
         }
 
-        body > *:not(#label_print_area) { 
-            display: none !important; 
+        /* Hide everything by default */
+        body * {
+            visibility: hidden;
         }
 
-        #label_print_area { 
-            display: flex !important;
+        /* Show only the print area and its children */
+        #label_print_area, #label_print_area * {
+            visibility: visible;
+        }
+
+        #label_print_area {
             position: fixed;
             left: 0;
             top: 0;
-            width: 100%;
-            height: 100%;
-            align-items: center; /* Vertically Center */
-            justify-content: center; /* Horizontally Center */
+            width: 100mm;
+            height: 150mm;
+            display: flex !important;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
             background: white;
             z-index: 9999;
+            box-sizing: border-box;
+            padding: 5mm; /* Safety margin for content */
         }
 
         .label-box {
-            /* Pastikan konten ditengah dan memenuhi area printable tanpa overflow */
-            width: 100%; 
+            width: 100%;
             height: 100%;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
             text-align: center;
-            overflow: hidden;
-            padding: 1mm; /* Padding minimal agar tidak terpotong */
         }
 
-        /* Styling Canvas Barcode - Rapatkan margin */
-        canvas { 
-            max-width: 95% !important; 
-            height: auto !important; 
-            max-height: 15mm !important; /* Batasi tinggi barcode agar muat teks */
-            object-fit: contain;
-            margin: 1px 0 !important; /* Jarak sangat minimal */
-            display: block;
-        }
-        
-        /* Styling Teks SKU - Besar dan Rapat */
-        .lbl-sku { 
+        /* Styles for 100x150mm large layout */
+        .lbl-sku {
             font-family: 'Courier New', Courier, monospace; 
-            font-size: 14pt; 
+            font-size: 24pt; /* Besar karena kertas besar */
             font-weight: 900; 
-            line-height: 1; 
-            margin: 0; 
-            padding: 0;
+            margin-bottom: 5mm;
             color: black !important;
-            letter-spacing: 1px;
+            letter-spacing: 2px;
         }
-        
-        /* Styling Nama Barang - Kecil dan Rapat */
-        .lbl-name { 
+
+        /* Using IMG for barcode is safer for printing than Canvas */
+        img#lbl_barcode_img {
+            width: 80%; /* Lebar barcode 80% dari kertas */
+            height: auto;
+            max-height: 40mm;
+            display: block;
+            margin: 0 auto 5mm auto;
+            image-rendering: pixelated; /* Sharp edges */
+        }
+
+        .lbl-name {
             font-family: Arial, Helvetica, sans-serif; 
-            font-size: 9pt; 
+            font-size: 14pt; 
             font-weight: bold; 
-            line-height: 1; 
-            margin: 0;
-            padding: 0; 
-            max-height: 2.2em; /* Max 2 baris */
-            overflow: hidden; 
+            line-height: 1.3;
+            margin-top: 0;
+            max-height: 3em; 
+            overflow: hidden;
             color: black !important;
-            word-break: break-word;
+            word-wrap: break-word;
+            width: 95%;
         }
     }
     
+    /* Hide on screen */
     #label_print_area { display: none; }
 </style>
 
 <!-- Hidden Print Area (Container Cetak) -->
 <div id="label_print_area">
     <div class="label-box">
-        <div class="lbl-sku" id="lbl_sku">SKU</div>
-        <canvas id="lbl_barcode_canvas"></canvas>
-        <div class="lbl-name" id="lbl_name">NAMA BARANG</div>
-    </div>
-</div>
-
-<!-- BARCODE PREVIEW MODAL (New) -->
-<div id="barcodeModal" class="hidden fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center p-4">
-    <div class="bg-white rounded-lg shadow-xl max-w-sm w-full p-6 text-center relative animate-fade-in-up">
-        <button onclick="document.getElementById('barcodeModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
-        <h3 class="text-lg font-bold text-gray-800 mb-4 border-b pb-2">Label Barcode</h3>
-        
-        <div class="flex justify-center mb-6 bg-gray-50 border p-4 rounded">
-            <!-- Canvas ini akan digambar manual (Text + Barcode + Text) -->
-            <canvas id="preview_canvas" class="shadow-md bg-white"></canvas>
-        </div>
-        
-        <div class="grid grid-cols-2 gap-3">
-            <button onclick="downloadBarcodeImg()" class="bg-purple-600 text-white py-2 rounded hover:bg-purple-700 font-bold flex items-center justify-center gap-2 shadow transition">
-                <i class="fas fa-download"></i> Save Image
-            </button>
-            <button onclick="printBarcodeLabel()" class="bg-blue-600 text-white py-2 rounded hover:bg-blue-700 font-bold flex items-center justify-center gap-2 shadow transition">
-                <i class="fas fa-print"></i> Print Label
-            </button>
-        </div>
+        <div class="lbl-sku" id="lbl_sku_txt">SKU</div>
+        <!-- Gunakan Image element untuk barcode agar tidak blank saat print -->
+        <img id="lbl_barcode_img" alt="Barcode">
+        <div class="lbl-name" id="lbl_name_txt">NAMA BARANG</div>
     </div>
 </div>
 
@@ -477,7 +459,7 @@ $total_asset_group = 0;
 
 <!-- SPLIT LAYOUT -->
 <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 page-content-wrapper">
-    <!-- LEFT: FORM (1 COL) -->
+    <!-- LEFT: FORM -->
     <div class="lg:col-span-1 no-print order-1 lg:order-1">
         <?php include 'views/data_barang_form.php'; ?>
         <div class="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-xs text-blue-800">
@@ -485,12 +467,11 @@ $total_asset_group = 0;
         </div>
     </div>
 
-    <!-- RIGHT: TABLE (3 COLS) -->
+    <!-- RIGHT: TABLE -->
     <div class="lg:col-span-3 order-2 lg:order-2">
         <div class="bg-white rounded-lg shadow overflow-hidden">
             <div class="overflow-x-auto">
                 <table class="w-full text-xs text-left border-collapse border border-gray-300">
-                    <!-- HEADER -->
                     <thead class="bg-gray-100 text-gray-800 font-bold uppercase text-center border-b-2 border-gray-300">
                         <tr>
                             <th rowspan="2" class="p-2 border border-gray-300 w-10 align-middle">Gbr</th>
@@ -500,20 +481,13 @@ $total_asset_group = 0;
                             <th rowspan="2" class="p-2 border border-gray-300 text-right align-middle w-20">Beli (HPP)</th>
                             <th rowspan="2" class="p-2 border border-gray-300 text-right align-middle w-20">Jual</th>
                             <th rowspan="2" class="p-2 border border-gray-300 align-middle w-10">Sat</th>
-                            
-                            <th colspan="<?= count($warehouses) ?>" class="p-2 border border-gray-300 align-middle bg-blue-50 text-blue-900">
-                                Stok Wilayah (Total Aset = Ready + Terpakai)
-                            </th>
-                            
+                            <th colspan="<?= count($warehouses) ?>" class="p-2 border border-gray-300 align-middle bg-blue-50 text-blue-900">Stok Wilayah (Total Aset = Ready + Terpakai)</th>
                             <th rowspan="1" class="p-2 border border-gray-300 align-middle bg-yellow-50 text-yellow-900 w-16">TOTAL</th>
-                            
                             <th rowspan="2" class="p-2 border border-gray-300 text-center align-middle w-20">Aksi</th>
                         </tr>
                         <tr>
                             <?php foreach($warehouses as $wh): ?>
-                                <th class="p-1 border border-gray-300 text-center bg-blue-50 text-[10px] whitespace-nowrap px-2">
-                                    <?= htmlspecialchars($wh['name']) ?>
-                                </th>
+                                <th class="p-1 border border-gray-300 text-center bg-blue-50 text-[10px] whitespace-nowrap px-2"><?= htmlspecialchars($wh['name']) ?></th>
                             <?php endforeach; ?>
                             <th class="p-1 border border-gray-300 text-center bg-yellow-50 text-[10px]">Aset</th>
                         </tr>
@@ -522,7 +496,6 @@ $total_asset_group = 0;
                         <?php foreach($products as $p): 
                             $prod_id = $p['id'];
                             $total_stock_row = 0;
-                            
                             $total_asset_group += ($p['stock'] * $p['buy_price']);
                             
                             $export_row = [
@@ -536,56 +509,35 @@ $total_asset_group = 0;
                             ];
                         ?>
                         <tr class="hover:bg-gray-50 group">
-                            <!-- GAMBAR -->
                             <td class="p-1 border text-center align-middle">
                                 <?php if(!empty($p['image_url'])): ?><img src="<?= $p['image_url'] ?>" class="w-8 h-8 object-cover rounded border bg-white mx-auto cursor-pointer" onclick="window.open(this.src)"><?php endif; ?>
                             </td>
-                            <!-- SKU -->
                             <td class="p-2 border font-mono text-blue-600 whitespace-nowrap align-middle">
                                 <?= htmlspecialchars($p['sku']) ?>
                                 <div class="mt-1">
-                                    <button onclick="openBarcodePreview('<?= h($p['sku']) ?>', '<?= h($p['name']) ?>')" class="text-[9px] text-gray-500 hover:text-gray-800 border px-1 rounded bg-gray-50 flex items-center gap-1 w-full justify-center"><i class="fas fa-barcode"></i> Label</button>
+                                    <button onclick="printLabelDirect('<?= h($p['sku']) ?>', '<?= h($p['name']) ?>')" class="text-[9px] text-gray-500 hover:text-gray-800 border px-1 rounded bg-gray-50 flex items-center gap-1 w-full justify-center"><i class="fas fa-barcode"></i> Label</button>
                                 </div>
                             </td>
-                            
-                            <!-- SN MANAGEMENT BADGE -->
                             <td class="p-1 border text-center align-middle">
-                                <button onclick="manageSN(<?= $p['id'] ?>, '<?= h($p['name']) ?>')" class="bg-purple-100 hover:bg-purple-200 text-purple-700 px-1 py-1 rounded text-[10px] font-bold w-full" title="Klik untuk Edit SN">
-                                    SN
-                                </button>
+                                <button onclick="manageSN(<?= $p['id'] ?>, '<?= h($p['name']) ?>')" class="bg-purple-100 hover:bg-purple-200 text-purple-700 px-1 py-1 rounded text-[10px] font-bold w-full" title="Klik untuk Edit SN">SN</button>
                             </td>
-
-                            <!-- NAMA -->
                             <td class="p-2 border font-bold text-gray-700 align-middle"><?= htmlspecialchars($p['name']) ?></td>
-                            
-                            <!-- HARGA -->
                             <td class="p-2 border text-right text-red-600 font-medium align-middle"><?= number_format($p['buy_price'],0,',','.') ?></td>
                             <td class="p-2 border text-right text-green-600 font-bold align-middle"><?= number_format($p['sell_price'],0,',','.') ?></td>
                             <td class="p-2 border text-center text-gray-500 align-middle"><?= htmlspecialchars($p['unit']) ?></td>
-
-                            <!-- DYNAMIC STOK GUDANG (LOGIC UTAMA) -->
                             <?php foreach($warehouses as $wh): 
-                                $cell_total = 0;
-                                $cell_ready = 0;
-                                $cell_used = 0;
+                                $cell_total = 0; $cell_ready = 0; $cell_used = 0;
                                 $is_sn_item = ($p['has_serial_number'] == 1);
-
                                 if ($is_sn_item) {
-                                    // Logic Barang SN: Ambil dari Stock Map (Ready + Used)
                                     if (isset($stock_map[$prod_id][$wh['id']])) {
                                         $d = $stock_map[$prod_id][$wh['id']];
-                                        $cell_total = $d['total'];
-                                        $cell_ready = $d['ready'];
-                                        $cell_used = $d['used'];
+                                        $cell_total = $d['total']; $cell_ready = $d['ready']; $cell_used = $d['used'];
                                     }
                                 } else {
-                                    // Logic Non-SN: Ambil dari TRX Map
                                     if (isset($trx_map[$prod_id][$wh['id']])) {
-                                        $cell_total = $trx_map[$prod_id][$wh['id']];
-                                        $cell_ready = $cell_total; 
+                                        $cell_total = $trx_map[$prod_id][$wh['id']]; $cell_ready = $cell_total; 
                                     }
                                 }
-                                
                                 $total_stock_row += $cell_total;
                                 $export_row[$wh['name']] = $cell_total;
                             ?>
@@ -593,7 +545,6 @@ $total_asset_group = 0;
                                     <?php if($cell_total > 0): ?>
                                         <div class="font-bold text-gray-800 text-sm"><?= number_format($cell_total) ?></div>
                                         <?php if($cell_used > 0): ?>
-                                            <!-- Breakdown Detail (Ready | Used) -->
                                             <div class="text-[9px] text-gray-500 mt-1 whitespace-nowrap bg-gray-100 rounded px-1">
                                                 <span class="text-green-600" title="Ready">R:<?= $cell_ready ?></span> | 
                                                 <span class="text-red-600 font-bold" title="Terpakai/Sold">U:<?= $cell_used ?></span>
@@ -605,32 +556,22 @@ $total_asset_group = 0;
                                 </td>
                             <?php endforeach; ?>
                             <?php $export_data[] = $export_row; ?>
-
-                            <!-- TOTAL ROW -->
                             <td class="p-2 border text-center font-bold text-lg <?= $total_stock_row < 10 ? 'text-red-600 bg-red-50' : 'text-blue-800 bg-yellow-50' ?> align-middle">
                                 <?= number_format($total_stock_row) ?>
                             </td>
-
-                            <!-- AKSI -->
                             <td class="p-1 border text-center align-middle">
                                 <div class="flex flex-col gap-1 items-center">
                                     <a href="?page=data_barang&edit_id=<?= $p['id'] ?>" class="bg-yellow-100 text-yellow-700 p-1 rounded hover:bg-yellow-200 w-full text-[10px] font-bold"><i class="fas fa-pencil-alt"></i> Edit</a>
-                                    
                                     <form method="POST" onsubmit="return confirm('Hapus barang?')" class="w-full">
                                         <?= csrf_field() ?>
                                         <input type="hidden" name="delete_id" value="<?= $p['id'] ?>">
                                         <button class="bg-red-100 text-red-700 p-1 rounded hover:bg-red-200 w-full text-[10px] font-bold"><i class="fas fa-trash"></i> Hapus</button>
                                     </form>
-                                    
-                                    <!-- Shortcut SN -->
-                                    <button onclick="manageSN(<?= $p['id'] ?>, '<?= h($p['name']) ?>')" class="bg-purple-100 text-purple-700 p-1 rounded hover:bg-purple-200 w-full text-[10px] font-bold">
-                                        <i class="fas fa-list-ol"></i> Edit SN
-                                    </button>
+                                    <button onclick="manageSN(<?= $p['id'] ?>, '<?= h($p['name']) ?>')" class="bg-purple-100 text-purple-700 p-1 rounded hover:bg-purple-200 w-full text-[10px] font-bold"><i class="fas fa-list-ol"></i> Edit SN</button>
                                 </div>
                             </td>
                         </tr>
                         <?php endforeach; ?>
-                        <?php if(empty($products)): ?><tr><td colspan="<?= 12 + count($warehouses) ?>" class="p-8 text-center text-gray-400">Tidak ada data barang.</td></tr><?php endif; ?>
                     </tbody>
                 </table>
             </div>
@@ -638,8 +579,10 @@ $total_asset_group = 0;
     </div>
 </div>
 
-<!-- IMPORT MODAL & SN MODAL (SAME AS BEFORE) -->
+<!-- MODALS IMPORT & SN -->
+<!-- ... (Kode modal import dan SN management sama seperti sebelumnya, tidak diubah) ... -->
 <div id="importModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <!-- ... (Content Modal Import) ... -->
     <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
         <button onclick="document.getElementById('importModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
         <h3 class="text-xl font-bold mb-4 border-b pb-2 text-green-700 flex items-center gap-2"><i class="fas fa-file-excel"></i> Import Data Barang</h3>
@@ -671,6 +614,7 @@ $total_asset_group = 0;
 </div>
 
 <div id="snModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <!-- ... (Content Modal SN) ... -->
     <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6 relative flex flex-col max-h-[90vh]">
         <button onclick="document.getElementById('snModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
         <h3 class="text-xl font-bold mb-2 text-purple-700 flex items-center gap-2"><i class="fas fa-barcode"></i> Kelola Serial Number</h3>
@@ -764,121 +708,39 @@ async function loadSNs() {
     }
 }
 
-// --- NEW BARCODE MODAL LOGIC ---
-let currentPrintSku = '';
-let currentPrintName = '';
-
-function openBarcodePreview(sku, name) {
-    currentPrintSku = sku;
-    currentPrintName = name;
-    
-    document.getElementById('barcodeModal').classList.remove('hidden');
-    
-    // Generate Canvas Image
-    const canvas = document.getElementById('preview_canvas');
-    const ctx = canvas.getContext('2d');
-    
-    // Set Size (Approx 50mm x 30mm @ High DPI for Screen)
-    // 8 dots/mm = 400px width for 50mm
-    canvas.width = 400; 
-    canvas.height = 240;
-    
-    // Background White
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    
-    // Border visual check
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = '#ccc';
-    ctx.strokeRect(0,0, canvas.width, canvas.height);
-    
-    // Draw SKU (Top)
-    ctx.fillStyle = 'black';
-    ctx.font = 'bold 24px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(sku, canvas.width / 2, 35);
-    
-    // Draw Name (Bottom)
-    ctx.font = 'bold 18px Arial';
-    let dispName = name.length > 25 ? name.substring(0, 25) + '...' : name;
-    ctx.fillText(dispName, canvas.width / 2, canvas.height - 20);
-    
-    // Draw Barcode (Middle) using bwip-js offscreen
-    try {
-        let cvs = document.createElement('canvas');
-        bwipjs.toCanvas(cvs, {
-            bcid:        'code128',
-            text:        sku,
-            scale:       2,
-            height:      10, // Approx height
-            includetext: false,
-        });
-        // Center barcode image
-        const x = (canvas.width - cvs.width) / 2;
-        const y = 50; 
-        ctx.drawImage(cvs, x, y);
-    } catch (e) {
-        ctx.font = '12px Arial';
-        ctx.fillText("Barcode Error", canvas.width/2, canvas.height/2);
-    }
-}
-
-function downloadBarcodeImg() {
-    const canvas = document.getElementById('preview_canvas');
-    const link = document.createElement('a');
-    link.download = `Label-${currentPrintSku}.png`;
-    link.href = canvas.toDataURL("image/png");
-    link.click();
-}
-
-function printBarcodeLabel() {
-    // Gunakan fungsi print direct yang sudah ada di hidden area
-    printLabelDirect(currentPrintSku, currentPrintName);
-}
-
-// Existing Print Function (Used by table direct button and modal)
+// --- FUNGSI PRINT LABEL BARU ---
 function printLabelDirect(sku, name) {
-    // 1. Set Content
-    document.getElementById('lbl_name').innerText = name.substring(0, 40); 
-    document.getElementById('lbl_sku').innerText = sku;
+    // 1. Set Teks
+    document.getElementById('lbl_name_txt').innerText = name.substring(0, 50); 
+    document.getElementById('lbl_sku_txt').innerText = sku;
     
-    // 2. Generate Barcode on Hidden Canvas
+    // 2. Generate Barcode ke Canvas -> Convert ke Image
+    // Ini krusial agar tidak blank saat print
     try {
-        bwipjs.toCanvas('lbl_barcode_canvas', {
+        let canvas = document.createElement('canvas');
+        bwipjs.toCanvas(canvas, {
             bcid:        'code128',       
             text:        sku,             
-            scale:       4, // Skala diperbesar untuk ketajaman              
-            height:      25,              
+            scale:       4, // Skala besar untuk resolusi tinggi
+            height:      30,              
             includetext: false,           
             textxalign:  'center',
         });
         
-        // 3. Temporarily remove document title to prevent browser from printing it in header
-        const originalTitle = document.title;
-        document.title = " "; // Space is cleaner than empty string sometimes
+        // Set Source Image
+        document.getElementById('lbl_barcode_img').src = canvas.toDataURL('image/png');
         
-        // 4. Print with timeout to ensure rendering
+        // 3. Print dengan Delay agar image ter-render
+        const originalTitle = document.title;
+        document.title = "_"; // Hilangkan judul tab saat print
+        
         setTimeout(() => {
             window.print();
-            // Restore title
             document.title = originalTitle;
         }, 500);
         
     } catch (e) {
-        // Fallback
-        bwipjs.toCanvas('lbl_barcode_canvas', {
-            bcid:        'datamatrix',
-            text:        sku,
-            scale:       3,
-            height:      10,
-            includetext: false,
-        });
-        const originalTitle = document.title;
-        document.title = " ";
-        setTimeout(() => {
-            window.print();
-            document.title = originalTitle;
-        }, 500);
+        alert("Gagal generate barcode: " + e);
     }
 }
 </script>

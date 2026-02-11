@@ -319,32 +319,33 @@ $total_asset_group = 0;
     <div class="bg-white rounded-lg shadow-xl w-full max-w-sm overflow-hidden flex flex-col">
         <!-- Header -->
         <div class="bg-gray-800 text-white p-3 flex justify-between items-center">
-            <h3 class="font-bold flex items-center gap-2"><i class="fas fa-qrcode"></i> Preview Label QR</h3>
+            <h3 class="font-bold flex items-center gap-2"><i class="fas fa-barcode"></i> Preview Label SKU</h3>
             <button onclick="closeLabelModal()" class="text-gray-300 hover:text-white"><i class="fas fa-times text-xl"></i></button>
         </div>
         
-        <!-- Content Preview (Ukuran relatif utk layar, tapi proporsional) -->
+        <!-- Content Preview (Ukuran relatif utk layar, tapi proporsional 50x30mm) -->
         <div class="p-6 bg-gray-200 flex justify-center">
-            <!-- Container Simulasi Kertas 100x150mm (Aspect Ratio 2:3) -->
-            <div id="label_preview_container" class="bg-white shadow-lg flex flex-col items-center justify-center p-4 text-center border border-gray-300" style="width: 240px; height: 360px;">
-                <div class="font-mono font-bold text-lg mb-4 text-black" id="prev_sku">SKU</div>
-                <!-- PREVIEW GAMBAR QR CODE -->
-                <img id="prev_barcode_img" class="w-8/12 mb-4 grayscale" alt="Barcode">
-                <div class="font-bold text-sm leading-tight line-clamp-3 text-black" id="prev_name">Nama Barang</div>
+            <!-- Container Simulasi Kertas 50x30mm (Aspect Ratio 5:3) -->
+            <!-- Scale up for visibility: 50mm -> 250px, 30mm -> 150px -->
+            <div id="label_preview_container" class="bg-white shadow-lg flex flex-col items-center justify-center p-2 text-center border border-gray-300" style="width: 250px; height: 150px;">
+                <div class="font-mono font-bold text-lg leading-none mb-1 text-black" id="prev_sku">SKU123</div>
+                <!-- PREVIEW GAMBAR BARCODE -->
+                <img id="prev_barcode_img" class="w-11/12 h-12 object-contain mb-1" alt="Barcode">
+                <div class="font-bold text-xs leading-tight line-clamp-2 text-black w-full" id="prev_name">Nama Barang Disini</div>
             </div>
         </div>
 
         <!-- Footer Actions -->
         <div class="p-4 bg-white border-t flex gap-2 flex-col">
             <div class="text-xs text-red-600 bg-red-50 p-2 rounded text-center mb-2 border border-red-200">
-                <i class="fas fa-exclamation-triangle"></i> <b>PENTING SAAT PRINT:</b><br>
-                Pilih Ukuran Kertas: <b>100x150mm</b> (di Setting Printer)<br>
-                Margins: <b>None / Minimum</b><br>
-                Scale: <b>Fit to Printable Area</b>
+                <i class="fas fa-exclamation-triangle"></i> <b>SETTING PRINTER (50x30mm):</b><br>
+                Paper Size: <b>50mm x 30mm</b><br>
+                Margins: <b>None</b> (0mm)<br>
+                Scale: <b>100%</b> (Do not fit to page)
             </div>
             <div class="flex gap-2">
                 <button onclick="downloadLabelImage()" class="flex-1 bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 shadow flex items-center justify-center gap-2">
-                    <i class="fas fa-download"></i> Save Image
+                    <i class="fas fa-download"></i> Save IMG
                 </button>
                 <button onclick="executePrintWindow()" class="flex-1 bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 shadow flex items-center justify-center gap-2">
                     <i class="fas fa-print"></i> Cetak
@@ -455,7 +456,7 @@ $total_asset_group = 0;
                                 <?= htmlspecialchars($p['sku']) ?>
                                 <div class="mt-1">
                                     <!-- TOMBOL LABEL DIPERBAIKI -->
-                                    <button onclick="openLabelPreview('<?= h($p['sku']) ?>', '<?= h($p['name']) ?>')" class="text-[9px] text-gray-500 hover:text-gray-800 border px-1 rounded bg-gray-50 flex items-center gap-1 w-full justify-center"><i class="fas fa-qrcode"></i> Label</button>
+                                    <button onclick="openLabelPreview('<?= h($p['sku']) ?>', '<?= h($p['name']) ?>')" class="text-[9px] text-gray-500 hover:text-gray-800 border px-1 rounded bg-gray-50 flex items-center gap-1 w-full justify-center"><i class="fas fa-barcode"></i> Label</button>
                                 </div>
                             </td>
                             <td class="p-1 border text-center align-middle">
@@ -662,15 +663,15 @@ function openLabelPreview(sku, name) {
     document.getElementById('prev_sku').innerText = sku;
     document.getElementById('prev_name').innerText = name;
     
-    // Render Barcode ke Image
+    // Render Barcode ke Image (Code 128)
     try {
         let canvas = document.createElement('canvas');
         bwipjs.toCanvas(canvas, {
-            bcid:        'qrcode',       // GANTI KE QR CODE
+            bcid:        'code128',       // STANDARD SKU (BARCODE)
             text:        sku,             
-            scale:       4, // High resolution
-            // Removed fixed height, QR determines its own size based on scale
-            includetext: false,           
+            scale:       2,               
+            height:      10,              // Tinggi Barcode
+            includetext: false,           // Text digambar manual
             textxalign:  'center',
         });
         
@@ -694,49 +695,57 @@ function downloadLabelImage() {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     
-    // Ukuran Canvas High Res untuk 100x150mm (Approx 378x567 px @ 96DPI, but double for quality)
-    canvas.width = 756; 
-    canvas.height = 1134;
+    // Ukuran Canvas High Res untuk 50x30mm (Approx 250x150 px @ screen, x2 for download quality)
+    const w = 500;
+    const h = 300;
+    canvas.width = w; 
+    canvas.height = h;
     
     // Fill White Background
     ctx.fillStyle = "white";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, w, h);
     
     // Draw Content (Black)
     ctx.fillStyle = "black";
     ctx.textAlign = "center";
     
-    // SKU (Lebih Kecil)
-    ctx.font = "bold 40px 'Courier New'"; // Reduced from 60
-    ctx.fillText(currentSku, canvas.width/2, 200);
+    // 1. SKU NUMBER (TOP)
+    ctx.font = "bold 30px 'Courier New'"; 
+    ctx.fillText(currentSku, w/2, 40);
     
-    // Barcode Image
+    // 2. BARCODE IMAGE (MIDDLE)
     const img = document.getElementById('prev_barcode_img');
-    const imgWidth = canvas.width * 0.65; // Reduced from 0.8
-    const imgHeight = imgWidth * (img.naturalHeight / img.naturalWidth);
-    ctx.drawImage(img, (canvas.width - imgWidth)/2, 250, imgWidth, imgHeight);
+    const imgWidth = w * 0.9;
+    const imgHeight = 100; // Fixed height for bar
+    ctx.drawImage(img, (w - imgWidth)/2, 50, imgWidth, imgHeight);
     
-    // Name (Lebih Kecil)
-    ctx.font = "bold 30px Arial"; // Reduced from 40
-    let nameY = 250 + imgHeight + 60;
+    // 3. PRODUCT NAME (BOTTOM)
+    ctx.font = "bold 24px Arial"; 
+    let nameY = 50 + imgHeight + 35;
     
+    // Simple text wrapping if name is long
     var words = currentName.split(' ');
     var line = '';
-    var lineHeight = 40; // Reduced from 50
-    var maxWidth = canvas.width * 0.8; // Reduced width
+    var lineHeight = 28;
+    var maxWidth = w * 0.95;
     
+    // Allow max 2 lines
+    let lineCount = 0;
     for(var n = 0; n < words.length; n++) {
       var testLine = line + words[n] + ' ';
       var metrics = ctx.measureText(testLine);
       if (metrics.width > maxWidth && n > 0) {
-        ctx.fillText(line, canvas.width/2, nameY);
+        if(lineCount < 2) {
+            ctx.fillText(line, w/2, nameY);
+            nameY += lineHeight;
+            lineCount++;
+        }
         line = words[n] + ' ';
-        nameY += lineHeight;
       } else {
         line = testLine;
       }
     }
-    ctx.fillText(line, canvas.width/2, nameY);
+    if(lineCount < 2) ctx.fillText(line, w/2, nameY);
     
     // Trigger Download
     const link = document.createElement('a');
@@ -753,7 +762,7 @@ function executePrintWindow() {
     img.src = currentBarcodeDataUrl;
     
     img.onload = function() {
-        const win = window.open('', '_blank', 'width=500,height=600');
+        const win = window.open('', '_blank', 'width=400,height=300');
         
         win.document.write(`
             <html>
@@ -771,49 +780,51 @@ function executePrintWindow() {
                         filter: grayscale(100%) contrast(200%); 
                     }
 
-                    /* PAGE SETUP - STRICT */
+                    /* PAGE SETUP - STRICT 50x30mm */
                     @page { 
-                        size: 100mm 150mm; 
+                        size: 50mm 30mm; 
                         margin: 0; 
                     }
                     
                     /* CONTAINER */
                     .label-container {
-                        width: 100mm;
-                        height: 150mm;
+                        width: 50mm;
+                        height: 30mm;
                         display: flex; 
                         flex-direction: column; 
                         align-items: center; 
                         justify-content: center; 
                         text-align: center;
-                        border: 1px dotted transparent; /* Debug border if needed */
-                        padding: 5mm;
+                        padding: 1mm;
+                        overflow: hidden;
                     }
 
                     .sku { 
-                        font-size: 16pt; 
+                        font-size: 10pt; 
                         font-weight: bold; 
                         font-family: 'Courier New', monospace; 
-                        margin-bottom: 3mm; 
+                        margin-bottom: 1mm; 
                         color: black;
+                        line-height: 1;
                     }
                     
                     img { 
-                        width: 65%; /* QR Code Width */
-                        height: auto; 
-                        max-height: 80mm; /* Allow more height for square QR */
+                        width: 95%; /* Barcode Width */
+                        height: 12mm; /* Barcode Height fixed */
                         image-rendering: pixelated; 
-                        margin-bottom: 3mm;
+                        margin-bottom: 1mm;
                         display: block;
                     }
                     
                     .name { 
-                        font-size: 12pt; 
+                        font-size: 7pt; 
                         font-weight: bold; 
-                        line-height: 1.3; 
-                        width: 90%;
+                        line-height: 1.1; 
+                        width: 100%;
                         word-wrap: break-word;
                         color: black;
+                        max-height: 8mm;
+                        overflow: hidden;
                     }
                 </style>
             </head>

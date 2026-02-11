@@ -253,8 +253,6 @@ if (isset($_GET['edit_id'])) {
 $stock_map = [];
 
 // 1. Ambil Stok Barang Ber-SN (Breakdown: READY vs USED/SOLD)
-// 'USED' atau 'SOLD' disini artinya barang tersebut ada di gudang ini (last known warehouse)
-// tetapi statusnya sudah dipakai (via Input Aktivitas).
 $sql_sn_stock = "SELECT product_id, warehouse_id, 
                  SUM(CASE WHEN status = 'AVAILABLE' THEN 1 ELSE 0 END) as ready,
                  SUM(CASE WHEN status = 'SOLD' THEN 1 ELSE 0 END) as used
@@ -270,9 +268,7 @@ while($r = $stmt_sn_stock->fetch()) {
     ];
 }
 
-// 2. Fallback untuk Barang NON-SN (Berdasarkan Transaksi)
-// Untuk Non-SN, kita asumsikan yang tampil hanya Sisa Stok (Ready). 
-// Sulit melacak "Used" Non-SN per gudang tanpa query kompleks history OUT activity.
+// 2. Fallback untuk Barang NON-SN
 $trx_map = [];
 $sql_trx_stock = "SELECT product_id, warehouse_id,
                   (COALESCE(SUM(CASE WHEN type='IN' THEN quantity ELSE 0 END), 0) -
@@ -328,16 +324,39 @@ $total_asset_group = 0;
         #label_print_area * { visibility: visible !important; }
         @page { size: 50mm 30mm; margin: 0; }
         .label-box { width: 48mm; height: 28mm; border: 1px solid #000; padding: 2px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; font-family: sans-serif; overflow: hidden; }
-        canvas { max-width: 95% !important; max-height: 20mm !important; }
+        canvas { max-width: 95% !important; max-height: 15mm !important; }
     }
     #label_print_area { display: none; }
 </style>
 
-<!-- Hidden Print Area -->
+<!-- Hidden Print Area (Legacy/Direct Print) -->
 <div id="label_print_area">
     <div class="label-box">
+        <div class="font-bold text-[10px] font-mono mb-1" id="lbl_sku">SKU</div>
         <canvas id="lbl_barcode_canvas"></canvas>
-        <div class="font-bold text-[8px] leading-tight mt-1 truncate w-full px-1" id="lbl_name">NAMA BARANG</div>
+        <div class="font-bold text-[9px] leading-tight mt-1 text-center w-full px-1 break-words" id="lbl_name">NAMA BARANG</div>
+    </div>
+</div>
+
+<!-- BARCODE PREVIEW MODAL (New) -->
+<div id="barcodeModal" class="hidden fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl max-w-sm w-full p-6 text-center relative animate-fade-in-up">
+        <button onclick="document.getElementById('barcodeModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+        <h3 class="text-lg font-bold text-gray-800 mb-4 border-b pb-2">Label Barcode</h3>
+        
+        <div class="flex justify-center mb-6 bg-gray-50 border p-4 rounded">
+            <!-- Canvas ini akan digambar manual (Text + Barcode + Text) -->
+            <canvas id="preview_canvas" class="shadow-md bg-white"></canvas>
+        </div>
+        
+        <div class="grid grid-cols-2 gap-3">
+            <button onclick="downloadBarcodeImg()" class="bg-purple-600 text-white py-2 rounded hover:bg-purple-700 font-bold flex items-center justify-center gap-2 shadow transition">
+                <i class="fas fa-download"></i> Save Image
+            </button>
+            <button onclick="printBarcodeLabel()" class="bg-blue-600 text-white py-2 rounded hover:bg-blue-700 font-bold flex items-center justify-center gap-2 shadow transition">
+                <i class="fas fa-print"></i> Print Label
+            </button>
+        </div>
     </div>
 </div>
 
@@ -452,7 +471,7 @@ $total_asset_group = 0;
                             <td class="p-2 border font-mono text-blue-600 whitespace-nowrap align-middle">
                                 <?= htmlspecialchars($p['sku']) ?>
                                 <div class="mt-1">
-                                    <button onclick="printLabelDirect('<?= h($p['sku']) ?>', '<?= h($p['name']) ?>')" class="text-[9px] text-gray-500 hover:text-gray-800 border px-1 rounded bg-gray-50"><i class="fas fa-barcode"></i> Print</button>
+                                    <button onclick="openBarcodePreview('<?= h($p['sku']) ?>', '<?= h($p['name']) ?>')" class="text-[9px] text-gray-500 hover:text-gray-800 border px-1 rounded bg-gray-50 flex items-center gap-1 w-full justify-center"><i class="fas fa-barcode"></i> Label</button>
                                 </div>
                             </td>
                             
@@ -487,11 +506,10 @@ $total_asset_group = 0;
                                         $cell_used = $d['used'];
                                     }
                                 } else {
-                                    // Logic Non-SN: Ambil dari TRX Map (Only Available logic for Non-SN typically)
+                                    // Logic Non-SN: Ambil dari TRX Map
                                     if (isset($trx_map[$prod_id][$wh['id']])) {
                                         $cell_total = $trx_map[$prod_id][$wh['id']];
                                         $cell_ready = $cell_total; 
-                                        // Non-SN sulit melacak 'used' per gudang kecuali query complex history
                                     }
                                 }
                                 
@@ -547,7 +565,7 @@ $total_asset_group = 0;
     </div>
 </div>
 
-<!-- IMPORT MODAL -->
+<!-- IMPORT MODAL & SN MODAL (SAME AS BEFORE) -->
 <div id="importModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
     <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
         <button onclick="document.getElementById('importModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
@@ -557,8 +575,6 @@ $total_asset_group = 0;
             <ul class="list-disc ml-4">
                 <li>Gunakan <b>Export Excel</b> untuk template.</li>
                 <li>Kolom Wajib: SKU, Nama Barang.</li>
-                <li>Jika SKU sudah ada, data akan diupdate (Stok ditambah).</li>
-                <li>Pastikan file berformat <b>.xlsx</b>.</li>
             </ul>
         </div>
         <form method="POST" enctype="multipart/form-data">
@@ -569,7 +585,7 @@ $total_asset_group = 0;
                 <input type="file" name="excel_file" accept=".xlsx, .xls" class="w-full border p-2 rounded bg-gray-50" required>
             </div>
             <div class="mb-4">
-                <label class="block text-sm font-bold text-gray-700 mb-2">Pilih Gudang (Untuk Stok Awal Import)</label>
+                <label class="block text-sm font-bold text-gray-700 mb-2">Pilih Gudang</label>
                 <select name="warehouse_id" class="w-full border p-2 rounded bg-white">
                     <?php foreach($warehouses as $wh): ?>
                         <option value="<?= $wh['id'] ?>"><?= $wh['name'] ?></option>
@@ -581,7 +597,6 @@ $total_asset_group = 0;
     </div>
 </div>
 
-<!-- MODAL MANAGE SN (EXISTING) -->
 <div id="snModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
     <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6 relative flex flex-col max-h-[90vh]">
         <button onclick="document.getElementById('snModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
@@ -594,22 +609,18 @@ $total_asset_group = 0;
             <input type="hidden" name="sn_product_id" id="sn_product_id">
             
             <div class="flex justify-between items-center mb-2">
-                <span class="text-xs font-bold text-gray-500 uppercase">Daftar SN Terdaftar</span>
+                <span class="text-xs font-bold text-gray-500 uppercase">Daftar SN</span>
                 <div class="text-xs text-gray-400 flex items-center gap-2">
-                    <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="chk_show_all_sn" onchange="loadSNs()"> Tampilkan Sold/Keluar</label>
+                    <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="chk_show_all_sn" onchange="loadSNs()"> Tampilkan Sold</label>
                 </div>
             </div>
 
             <div class="overflow-y-auto flex-1 border rounded bg-gray-50 p-2 mb-4" id="sn_list_container">
-                <!-- Ajax Content Here -->
                 <div class="text-center text-gray-400 py-10"><i class="fas fa-spinner fa-spin"></i> Memuat data...</div>
             </div>
             
-            <div class="bg-yellow-50 p-3 rounded text-xs text-yellow-800 mb-4 flex items-start gap-2">
-                <i class="fas fa-exclamation-triangle mt-0.5"></i>
-                <div>
-                    <b>Perhatian:</b> Menghapus SN yang statusnya 'AVAILABLE' akan <b>mengurangi stok fisik</b> barang tersebut secara otomatis.
-                </div>
+            <div class="bg-yellow-50 p-3 rounded text-xs text-yellow-800 mb-4">
+                <b>Perhatian:</b> Menghapus SN 'AVAILABLE' akan mengurangi stok fisik.
             </div>
 
             <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 shadow">Simpan Perubahan</button>
@@ -618,44 +629,15 @@ $total_asset_group = 0;
 </div>
 
 <script>
-// --- EXPORT EXCEL ---
 function exportToExcel() {
-    // Siapkan data array
     const data = <?= json_encode($export_data) ?>;
     if(data.length === 0) { alert("Tidak ada data untuk diexport"); return; }
-    
-    // Buat Workbook
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Data Barang");
-    
-    // Download
     XLSX.writeFile(wb, "Data_Barang_<?= date('Ymd_His') ?>.xlsx");
 }
 
-// --- PRINT LABEL ---
-function printLabelDirect(sku, name) {
-    // Set content to hidden div
-    document.getElementById('lbl_name').innerText = name.substring(0, 30);
-    
-    try {
-        bwipjs.toCanvas('lbl_barcode_canvas', {
-            bcid:        'datamatrix',       // Barcode type
-            text:        sku,    // Text to encode
-            scale:       4,               // 3x scaling factor
-            height:      12,              // Bar height, in millimeters
-            includetext: false,            // Show human-readable text
-            textxalign:  'center',        // Always good to set this
-        });
-        
-        // Trigger Print
-        setTimeout(() => window.print(), 300);
-    } catch (e) {
-        alert("Gagal generate barcode: " + e);
-    }
-}
-
-// --- MANAGE SN MODAL ---
 function manageSN(id, name) {
     document.getElementById('snModal').classList.remove('hidden');
     document.getElementById('sn_modal_title').innerText = name;
@@ -706,6 +688,107 @@ async function loadSNs() {
         
     } catch (e) {
         container.innerHTML = '<div class="text-center text-red-500 py-4">Gagal memuat data.</div>';
+    }
+}
+
+// --- NEW BARCODE MODAL LOGIC ---
+let currentPrintSku = '';
+let currentPrintName = '';
+
+function openBarcodePreview(sku, name) {
+    currentPrintSku = sku;
+    currentPrintName = name;
+    
+    document.getElementById('barcodeModal').classList.remove('hidden');
+    
+    // Generate Canvas Image
+    const canvas = document.getElementById('preview_canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Set Size (Approx 50mm x 30mm @ High DPI for Screen)
+    // 8 dots/mm = 400px width for 50mm
+    canvas.width = 400; 
+    canvas.height = 240;
+    
+    // Background White
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Border visual check
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#ccc';
+    ctx.strokeRect(0,0, canvas.width, canvas.height);
+    
+    // Draw SKU (Top)
+    ctx.fillStyle = 'black';
+    ctx.font = 'bold 24px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(sku, canvas.width / 2, 35);
+    
+    // Draw Name (Bottom)
+    ctx.font = 'bold 18px Arial';
+    let dispName = name.length > 25 ? name.substring(0, 25) + '...' : name;
+    ctx.fillText(dispName, canvas.width / 2, canvas.height - 20);
+    
+    // Draw Barcode (Middle) using bwip-js offscreen
+    try {
+        let cvs = document.createElement('canvas');
+        bwipjs.toCanvas(cvs, {
+            bcid:        'code128',
+            text:        sku,
+            scale:       2,
+            height:      10, // Approx height
+            includetext: false,
+        });
+        // Center barcode image
+        const x = (canvas.width - cvs.width) / 2;
+        const y = 50; 
+        ctx.drawImage(cvs, x, y);
+    } catch (e) {
+        ctx.font = '12px Arial';
+        ctx.fillText("Barcode Error", canvas.width/2, canvas.height/2);
+    }
+}
+
+function downloadBarcodeImg() {
+    const canvas = document.getElementById('preview_canvas');
+    const link = document.createElement('a');
+    link.download = `Label-${currentPrintSku}.png`;
+    link.href = canvas.toDataURL("image/png");
+    link.click();
+}
+
+function printBarcodeLabel() {
+    // Gunakan fungsi print direct yang sudah ada di hidden area, lebih presisi untuk printer thermal
+    printLabelDirect(currentPrintSku, currentPrintName);
+}
+
+// Existing Print Function (Used by table direct button and modal)
+function printLabelDirect(sku, name) {
+    document.getElementById('lbl_name').innerText = name.substring(0, 40); 
+    document.getElementById('lbl_sku').innerText = sku;
+    
+    try {
+        bwipjs.toCanvas('lbl_barcode_canvas', {
+            bcid:        'code128',       
+            text:        sku,             
+            scale:       2,               
+            height:      10,              
+            includetext: false,           
+            textxalign:  'center',
+        });
+        
+        setTimeout(() => window.print(), 300);
+    } catch (e) {
+        // Fallback
+        bwipjs.toCanvas('lbl_barcode_canvas', {
+            bcid:        'datamatrix',
+            text:        sku,
+            scale:       3,
+            height:      10,
+            includetext: false,
+        });
+        setTimeout(() => window.print(), 300);
     }
 }
 </script>

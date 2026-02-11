@@ -327,10 +327,10 @@ $total_asset_group = 0;
         <div class="p-6 bg-gray-200 flex justify-center">
             <!-- Container Simulasi Kertas 100x150mm (Aspect Ratio 2:3) -->
             <div id="label_preview_container" class="bg-white shadow-lg flex flex-col items-center justify-center p-4 text-center border border-gray-300" style="width: 240px; height: 360px;">
-                <div class="font-mono font-bold text-2xl mb-4 text-black" id="prev_sku">SKU</div>
+                <div class="font-mono font-bold text-lg mb-4 text-black" id="prev_sku">SKU</div>
                 <!-- PREVIEW GAMBAR QR CODE -->
                 <img id="prev_barcode_img" class="w-8/12 mb-4 grayscale" alt="Barcode">
-                <div class="font-bold text-lg leading-tight line-clamp-3 text-black" id="prev_name">Nama Barang</div>
+                <div class="font-bold text-sm leading-tight line-clamp-3 text-black" id="prev_name">Nama Barang</div>
             </div>
         </div>
 
@@ -706,24 +706,24 @@ function downloadLabelImage() {
     ctx.fillStyle = "black";
     ctx.textAlign = "center";
     
-    // SKU
-    ctx.font = "bold 60px 'Courier New'";
+    // SKU (Lebih Kecil)
+    ctx.font = "bold 40px 'Courier New'"; // Reduced from 60
     ctx.fillText(currentSku, canvas.width/2, 200);
     
     // Barcode Image
     const img = document.getElementById('prev_barcode_img');
-    const imgWidth = canvas.width * 0.8;
+    const imgWidth = canvas.width * 0.65; // Reduced from 0.8
     const imgHeight = imgWidth * (img.naturalHeight / img.naturalWidth);
     ctx.drawImage(img, (canvas.width - imgWidth)/2, 250, imgWidth, imgHeight);
     
-    // Name
-    ctx.font = "bold 40px Arial";
-    let nameY = 250 + imgHeight + 80;
+    // Name (Lebih Kecil)
+    ctx.font = "bold 30px Arial"; // Reduced from 40
+    let nameY = 250 + imgHeight + 60;
     
     var words = currentName.split(' ');
     var line = '';
-    var lineHeight = 50;
-    var maxWidth = canvas.width * 0.9;
+    var lineHeight = 40; // Reduced from 50
+    var maxWidth = canvas.width * 0.8; // Reduced width
     
     for(var n = 0; n < words.length; n++) {
       var testLine = line + words[n] + ' ';
@@ -791,27 +791,27 @@ function executePrintWindow() {
                     }
 
                     .sku { 
-                        font-size: 24pt; 
-                        font-weight: 900; 
+                        font-size: 16pt; 
+                        font-weight: bold; 
                         font-family: 'Courier New', monospace; 
-                        margin-bottom: 5mm; 
+                        margin-bottom: 3mm; 
                         color: black;
                     }
                     
                     img { 
-                        width: 70%; /* QR Code Width */
+                        width: 65%; /* QR Code Width */
                         height: auto; 
                         max-height: 80mm; /* Allow more height for square QR */
                         image-rendering: pixelated; 
-                        margin-bottom: 5mm;
+                        margin-bottom: 3mm;
                         display: block;
                     }
                     
                     .name { 
-                        font-size: 18pt; 
+                        font-size: 12pt; 
                         font-weight: bold; 
-                        line-height: 1.2; 
-                        width: 100%;
+                        line-height: 1.3; 
+                        width: 90%;
                         word-wrap: break-word;
                         color: black;
                     }

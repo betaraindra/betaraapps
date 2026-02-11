@@ -327,20 +327,28 @@ $total_asset_group = 0;
         <div class="p-6 bg-gray-200 flex justify-center">
             <!-- Container Simulasi Kertas 100x150mm (Aspect Ratio 2:3) -->
             <div id="label_preview_container" class="bg-white shadow-lg flex flex-col items-center justify-center p-4 text-center border border-gray-300" style="width: 240px; height: 360px;">
-                <div class="font-mono font-bold text-2xl mb-4" id="prev_sku">SKU</div>
-                <img id="prev_barcode_img" class="w-10/12 mb-4" alt="Barcode">
-                <div class="font-bold text-lg leading-tight line-clamp-3" id="prev_name">Nama Barang</div>
+                <div class="font-mono font-bold text-2xl mb-4 text-black" id="prev_sku">SKU</div>
+                <img id="prev_barcode_img" class="w-10/12 mb-4 grayscale" alt="Barcode">
+                <div class="font-bold text-lg leading-tight line-clamp-3 text-black" id="prev_name">Nama Barang</div>
             </div>
         </div>
 
         <!-- Footer Actions -->
-        <div class="p-4 bg-white border-t flex gap-2">
-            <button onclick="downloadLabelImage()" class="flex-1 bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 shadow flex items-center justify-center gap-2">
-                <i class="fas fa-download"></i> Save Image
-            </button>
-            <button onclick="executePrintWindow()" class="flex-1 bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 shadow flex items-center justify-center gap-2">
-                <i class="fas fa-print"></i> Cetak
-            </button>
+        <div class="p-4 bg-white border-t flex gap-2 flex-col">
+            <div class="text-xs text-red-600 bg-red-50 p-2 rounded text-center mb-2 border border-red-200">
+                <i class="fas fa-exclamation-triangle"></i> <b>PENTING SAAT PRINT:</b><br>
+                Pilih Ukuran Kertas: <b>100x150mm</b> (di Setting Printer)<br>
+                Margins: <b>None / Minimum</b><br>
+                Scale: <b>Fit to Printable Area</b>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="downloadLabelImage()" class="flex-1 bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 shadow flex items-center justify-center gap-2">
+                    <i class="fas fa-download"></i> Save Image
+                </button>
+                <button onclick="executePrintWindow()" class="flex-1 bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 shadow flex items-center justify-center gap-2">
+                    <i class="fas fa-print"></i> Cetak
+                </button>
+            </div>
         </div>
     </div>
 </div>
@@ -682,11 +690,10 @@ function closeLabelModal() {
 }
 
 function downloadLabelImage() {
-    // Generate Canvas High Res untuk Download
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     
-    // Ukuran Canvas (High Res untuk 100x150mm)
+    // Ukuran Canvas High Res untuk 100x150mm (Approx 378x567 px @ 96DPI, but double for quality)
     canvas.width = 756; 
     canvas.height = 1134;
     
@@ -694,7 +701,7 @@ function downloadLabelImage() {
     ctx.fillStyle = "white";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     
-    // Draw Content
+    // Draw Content (Black)
     ctx.fillStyle = "black";
     ctx.textAlign = "center";
     
@@ -712,7 +719,6 @@ function downloadLabelImage() {
     ctx.font = "bold 40px Arial";
     let nameY = 250 + imgHeight + 80;
     
-    // Simple text wrap
     var words = currentName.split(' ');
     var line = '';
     var lineHeight = 50;
@@ -739,73 +745,97 @@ function downloadLabelImage() {
 }
 
 function executePrintWindow() {
-    // Gunakan Data URL yang sudah di-render
     if(!currentBarcodeDataUrl) return;
     
-    // Buka Jendela Baru (Isolasi CSS)
-    const win = window.open('', '_blank', 'width=500,height=600');
+    // Gunakan Image Object untuk Preload sebelum Print
+    const img = new Image();
+    img.src = currentBarcodeDataUrl;
     
-    win.document.write(`
-        <html>
-        <head>
-            <title>Print Label ${currentSku}</title>
-            <style>
-                @page { 
-                    size: 100mm 150mm; 
-                    margin: 0; 
-                }
-                body { 
-                    margin: 0; 
-                    padding: 0;
-                    width: 100mm;
-                    height: 150mm;
-                    display: flex; 
-                    flex-direction: column; 
-                    align-items: center; 
-                    justify-content: center; 
-                    font-family: Arial, sans-serif;
-                    background: white;
-                }
-                .sku { 
-                    font-size: 24pt; 
-                    font-weight: 900; 
-                    font-family: 'Courier New', monospace; 
-                    margin-bottom: 5mm; 
-                    text-align: center;
-                }
-                img { 
-                    width: 80%; 
-                    height: auto; 
-                    max-height: 50mm; 
-                    image-rendering: pixelated; 
-                    margin-bottom: 5mm;
-                }
-                .name { 
-                    font-size: 16pt; 
-                    font-weight: bold; 
-                    text-align: center; 
-                    line-height: 1.2; 
-                    width: 90%;
-                    word-wrap: break-word;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="sku">${currentSku}</div>
-            <img src="${currentBarcodeDataUrl}" alt="Barcode"/>
-            <div class="name">${currentName}</div>
-            <script>
-                // Auto Print saat gambar loaded
-                window.onload = function() {
-                    setTimeout(function() {
-                        window.print();
-                        // window.close(); // Opsional: tutup otomatis
-                    }, 500);
-                };
-            <\/script>
-        </body>
-        </html>
-    `);
-    win.document.close();
+    img.onload = function() {
+        const win = window.open('', '_blank', 'width=500,height=600');
+        
+        win.document.write(`
+            <html>
+            <head>
+                <title>Print Label ${currentSku}</title>
+                <style>
+                    /* GLOBAL RESET */
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    
+                    /* FORCING BLACK AND WHITE (High Contrast for Thermal) */
+                    body { 
+                        font-family: Arial, sans-serif;
+                        background: white;
+                        color: black;
+                        filter: grayscale(100%) contrast(200%); 
+                    }
+
+                    /* PAGE SETUP - STRICT */
+                    @page { 
+                        size: 100mm 150mm; 
+                        margin: 0; 
+                    }
+                    
+                    /* CONTAINER */
+                    .label-container {
+                        width: 100mm;
+                        height: 150mm;
+                        display: flex; 
+                        flex-direction: column; 
+                        align-items: center; 
+                        justify-content: center; 
+                        text-align: center;
+                        border: 1px dotted transparent; /* Debug border if needed */
+                        padding: 5mm;
+                    }
+
+                    .sku { 
+                        font-size: 24pt; 
+                        font-weight: 900; 
+                        font-family: 'Courier New', monospace; 
+                        margin-bottom: 5mm; 
+                        color: black;
+                    }
+                    
+                    img { 
+                        width: 85%; 
+                        height: auto; 
+                        max-height: 50mm; 
+                        image-rendering: pixelated; 
+                        margin-bottom: 5mm;
+                        display: block;
+                    }
+                    
+                    .name { 
+                        font-size: 18pt; 
+                        font-weight: bold; 
+                        line-height: 1.2; 
+                        width: 100%;
+                        word-wrap: break-word;
+                        color: black;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="label-container">
+                    <div class="sku">${currentSku}</div>
+                    <img src="${currentBarcodeDataUrl}" alt="Barcode"/>
+                    <div class="name">${currentName}</div>
+                </div>
+                <script>
+                    // Execute print only when window is fully loaded
+                    window.onload = function() {
+                        setTimeout(function() {
+                            window.focus();
+                            window.print();
+                            // Optional: window.close(); 
+                        }, 500);
+                    };
+                <\/script>
+            </body>
+            </html>
+        `);
+        win.document.close();
+    };
 }
 </script>

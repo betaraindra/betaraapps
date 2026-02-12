@@ -83,38 +83,48 @@ $end_date = $_GET['end'] ?? date('Y-m-d');
 $q = $_GET['q'] ?? '';
 $tab = $_GET['tab'] ?? 'stock'; // stock, history, finance, activity
 
-// --- 1. OPTIMIZED DATA STOK FISIK (Menggunakan JOIN aggregation) ---
+// --- 1. OPTIMIZED DATA STOK FISIK (Fix Bug: Gunakan LEFT JOIN) ---
 $total_asset_value = 0;
 $total_ready_qty = 0;
 
 if ($tab === 'stock') {
-    // UPDATE LOGIC: Unit Ready dihitung real dari tabel SN (Status AVAILABLE) jika barang ber-SN
-    // Jika non-SN, fallback ke hitungan Transaksi
+    // FIX: Gunakan LEFT JOIN ke Subquery Transaksi & Subquery SN.
+    // Filter di WHERE clause memastikan barang muncul jika (Ada Riwayat Transaksi OR Ada Stok Fisik SN)
     $sql_stock = "
         SELECT p.id, p.sku, p.name, p.unit, p.buy_price, p.has_serial_number,
-               -- Total Masuk
-               COALESCE(SUM(CASE WHEN i.type = 'IN' THEN i.quantity ELSE 0 END), 0) as qty_in,
+               -- Get Transaction Stats (From Subquery)
+               COALESCE(trx.qty_in, 0) as qty_in,
+               COALESCE(trx.qty_out_total, 0) as qty_out_total,
+               COALESCE(trx.qty_used, 0) as qty_used,
                
-               -- Total Keluar (SEMUA)
-               COALESCE(SUM(CASE WHEN i.type = 'OUT' THEN i.quantity ELSE 0 END), 0) as qty_out_total,
-               
-               -- Keluar Khusus Aktivitas/Pemakaian
-               COALESCE(SUM(CASE 
-                    WHEN i.type = 'OUT' AND (i.notes LIKE 'Aktivitas:%' OR i.notes LIKE '%[PEMAKAIAN]%') 
-                    THEN i.quantity ELSE 0 
-               END), 0) as qty_used,
-               
-               -- Real Available Count from product_serials (Subquery)
-               (SELECT COUNT(*) FROM product_serials ps WHERE ps.product_id = p.id AND ps.warehouse_id = ? AND ps.status = 'AVAILABLE') as sn_ready_count
+               -- Get SN Stats (From Subquery)
+               COALESCE(sn.cnt, 0) as sn_ready_count
                
         FROM products p
-        JOIN inventory_transactions i ON p.id = i.product_id
-        WHERE i.warehouse_id = ?
-        AND (p.name LIKE ? OR p.sku LIKE ?)
-        GROUP BY p.id
-        HAVING qty_in > 0
+        -- 1. Join Transactions (LEFT JOIN agar barang tanpa transaksi tapi ada SN tetap muncul)
+        LEFT JOIN (
+            SELECT product_id,
+                   SUM(CASE WHEN type = 'IN' THEN quantity ELSE 0 END) as qty_in,
+                   SUM(CASE WHEN type = 'OUT' THEN quantity ELSE 0 END) as qty_out_total,
+                   SUM(CASE WHEN type = 'OUT' AND (notes LIKE 'Aktivitas:%' OR notes LIKE '%[PEMAKAIAN]%') THEN quantity ELSE 0 END) as qty_used
+            FROM inventory_transactions
+            WHERE warehouse_id = ?
+            GROUP BY product_id
+        ) trx ON p.id = trx.product_id
+        
+        -- 2. Join Serial Numbers (Physical Stock Check)
+        LEFT JOIN (
+            SELECT product_id, COUNT(*) as cnt 
+            FROM product_serials 
+            WHERE warehouse_id = ? AND status = 'AVAILABLE'
+            GROUP BY product_id
+        ) sn ON p.id = sn.product_id
+        
+        WHERE (p.name LIKE ? OR p.sku LIKE ?)
+        AND (trx.qty_in > 0 OR sn.cnt > 0) -- TAMPILKAN JIKA: Ada Riwayat Transaksi ATAU Ada Stok Fisik
         ORDER BY p.name ASC
     ";
+    
     $stmt_stock = $pdo->prepare($sql_stock);
     $stmt_stock->execute([$id, $id, "%$q%", "%$q%"]);
     $stocks = $stmt_stock->fetchAll();

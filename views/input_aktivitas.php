@@ -24,13 +24,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                 $ref_custom = "ACT/" . date('ymd') . "/" . rand(100,999);
             }
 
-            // Akun Pengeluaran (Beban Material / Operasional)
-            // Prioritas: 2105 (Material Habis Pakai) -> 2009 (Wilayah) -> 2002 (Ops Umum)
-            $accId = $pdo->query("SELECT id FROM accounts WHERE code = '2105' LIMIT 1")->fetchColumn();
-            if (!$accId) $accId = $pdo->query("SELECT id FROM accounts WHERE code = '2009' LIMIT 1")->fetchColumn();
-            if (!$accId) $accId = $pdo->query("SELECT id FROM accounts WHERE code = '2002' LIMIT 1")->fetchColumn();
-
-            $total_expense = 0;
             $items_saved = 0;
 
             foreach ($cart as $item) {
@@ -84,23 +77,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                     }
                 }
 
-                // Hitung Nilai Beban (HPP * Qty) untuk Keuangan
-                $item_cost = $prod['buy_price'] * $qty;
-                $total_expense += $item_cost;
                 $items_saved++;
             }
 
-            // 6. Catat Keuangan (Expense)
-            // Ini yang diminta: Pencatatan pengeluaran material berdasarkan harga beli
-            if ($total_expense > 0 && $accId) {
-                $fin_desc = "[PEMAKAIAN] Aktivitas Wilayah: $main_desc [Wilayah: $wh_name]";
-                $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, 'EXPENSE', ?, ?, ?, ?)")
-                    ->execute([$date, $accId, $total_expense, $fin_desc, $_SESSION['user_id']]);
-                
-                $msg_finance = " & Tercatat Beban Rp " . number_format($total_expense, 0, ',', '.');
-            } else {
-                $msg_finance = " (Tanpa nilai beban keuangan)";
-            }
+            // 6. UPDATE: TIDAK MENCATAT KE KEUANGAN (Hanya Logistik)
+            // Sesuai permintaan: "hasil input aktivitas tidak tercatat di keuangan hanya catatan alokasi material di wilayah"
+            $msg_finance = " (Logistik Only)";
 
             $pdo->commit();
             $_SESSION['flash'] = ['type'=>'success', 'message'=>"Berhasil menyimpan aktivitas ($items_saved item). Stok berkurang & SN ditandai Terpakai." . $msg_finance];
@@ -144,7 +126,7 @@ $history = $pdo->query("
                 </h2>
                 <p class="text-sm text-gray-500 mt-1">
                     Catat pemakaian material (Modem, Kabel, dll) untuk instalasi atau maintenance.
-                    <br><span class="text-red-500 font-bold text-xs">* SN yang dipilih akan otomatis hilang dari stok gudang (Status: SOLD) dan tercatat sebagai Beban Keuangan.</span>
+                    <br><span class="text-red-500 font-bold text-xs">* SN akan ditandai SOLD (Terpakai). Transaksi ini HANYA mencatat mutasi stok (Logistik), tidak masuk Laporan Keuangan.</span>
                 </p>
             </div>
         </div>
@@ -495,6 +477,6 @@ function validateCart() {
         alert("Daftar aktivitas masih kosong!");
         return false;
     }
-    return confirm("Pastikan data sudah benar. Stok akan berkurang dan SN akan ditandai TERPAKAI (SOLD). Beban keuangan akan dicatat otomatis. Lanjutkan?");
+    return confirm("Pastikan data sudah benar. Stok akan berkurang dan SN akan ditandai TERPAKAI (SOLD). Lanjutkan?");
 }
 </script>

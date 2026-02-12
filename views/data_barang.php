@@ -1,7 +1,7 @@
 <?php
 checkRole(['SUPER_ADMIN', 'ADMIN_GUDANG', 'MANAGER', 'SVP']);
 
-// --- SELF-HEALING: AUTO ADD COLUMN NOTES ---
+// --- SELF-HEALING 1: AUTO ADD COLUMN NOTES ---
 try {
     $pdo->query("SELECT notes FROM products LIMIT 1");
 } catch (Exception $e) {
@@ -10,9 +10,7 @@ try {
     } catch (Exception $ex) { }
 }
 
-// --- SELF-HEALING: FIX ORPHANED SOLD SNs (BUG FIX) ---
-// Memastikan SN yang statusnya 'SOLD' tapi transaksinya sudah dihapus kembali menjadi 'AVAILABLE'
-// Ini otomatis memperbaiki kolom 'Used' jika data transaksi dihapus tidak bersih.
+// --- SELF-HEALING 2: FIX ORPHANED SOLD SNs (CLEANUP) ---
 try {
     $pdo->exec("
         UPDATE product_serials ps 
@@ -24,6 +22,25 @@ try {
     ");
 } catch (Exception $ex) { 
     // Silent error
+}
+
+// --- SELF-HEALING 3: SYNC MASTER STOCK WITH SN COUNT (FIX SYNC ISSUE) ---
+// Memastikan kolom products.stock sama dengan jumlah SN status 'AVAILABLE' di tabel serials
+// Hanya dijalankan untuk produk yang memiliki SN (has_serial_number=1) dan stoknya tidak sinkron.
+try {
+    $pdo->query("
+        UPDATE products p
+        JOIN (
+            SELECT product_id, COUNT(*) as real_stock 
+            FROM product_serials 
+            WHERE status = 'AVAILABLE' 
+            GROUP BY product_id
+        ) ps ON p.id = ps.product_id
+        SET p.stock = ps.real_stock
+        WHERE p.has_serial_number = 1 AND p.stock != ps.real_stock
+    ");
+} catch (Exception $ex) { 
+    // Silent error 
 }
 
 // --- AMBIL DATA MASTER UNTUK FORM ---
@@ -62,22 +79,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $pdo->beginTransaction();
         try {
-            // Hapus SN yang dicentang (FIX BUG: Only count actual deleted rows)
-            $deleted_count = 0;
+            // HAPUS SN YANG DICENTANG (Termasuk SOLD)
+            $deleted_stock_count = 0; // Hanya hitung pengurangan stok master jika status AVAILABLE
+            
             if (!empty($sn_deletes)) {
-                $placeholders = implode(',', array_fill(0, count($sn_deletes), '?'));
-                
-                // Validasi: Pastikan status AVAILABLE sebelum hapus di level query
-                $stmtDel = $pdo->prepare("DELETE FROM product_serials WHERE id IN ($placeholders) AND product_id = ? AND status='AVAILABLE'");
-                $paramsDel = $sn_deletes;
-                $paramsDel[] = $prod_id;
-                $stmtDel->execute($paramsDel);
-                
-                // Hitung jumlah yang BENAR-BENAR terhapus
-                $deleted_count = $stmtDel->rowCount();
+                foreach ($sn_deletes as $del_id) {
+                    // Ambil info SN sebelum hapus
+                    $stmtInfo = $pdo->prepare("SELECT status, out_transaction_id FROM product_serials WHERE id = ?");
+                    $stmtInfo->execute([$del_id]);
+                    $snInfo = $stmtInfo->fetch();
+
+                    if ($snInfo) {
+                        if ($snInfo['status'] === 'AVAILABLE') {
+                            // Jika Available, hapus dan tandai untuk kurangi stok master
+                            $pdo->prepare("DELETE FROM product_serials WHERE id = ?")->execute([$del_id]);
+                            $deleted_stock_count++;
+                        } 
+                        elseif ($snInfo['status'] === 'SOLD') {
+                            // Jika SOLD, hapus SN dan update transaksi aktivitas terkait (Cascade)
+                            // Ini memenuhi request: "di data aktivitas wilayah juga terhapus"
+                            if ($snInfo['out_transaction_id']) {
+                                $trxId = $snInfo['out_transaction_id'];
+                                
+                                // Kurangi Qty di Inventory Transaction
+                                $pdo->prepare("UPDATE inventory_transactions SET quantity = quantity - 1 WHERE id = ?")->execute([$trxId]);
+                                
+                                // Cek sisa Qty, jika <= 0 maka hapus transaksi
+                                $checkQty = $pdo->prepare("SELECT quantity FROM inventory_transactions WHERE id = ?");
+                                $checkQty->execute([$trxId]);
+                                $currQty = $checkQty->fetchColumn();
+                                
+                                if ($currQty <= 0) {
+                                    $pdo->prepare("DELETE FROM inventory_transactions WHERE id = ?")->execute([$trxId]);
+                                }
+                            }
+                            // Hapus baris SN
+                            $pdo->prepare("DELETE FROM product_serials WHERE id = ?")->execute([$del_id]);
+                        }
+                    }
+                }
             }
 
-            // Update SN yang diedit
+            // UPDATE SN YANG DIEDIT
             $stmtUpd = $pdo->prepare("UPDATE product_serials SET serial_number = ? WHERE id = ? AND product_id = ? AND status='AVAILABLE'");
             
             foreach ($sn_ids as $index => $sn_id) {
@@ -95,24 +138,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
             
-            // Update Stok Produk hanya jika ada SN yang benar-benar terhapus
-            if ($deleted_count > 0) {
-                $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$deleted_count, $prod_id]);
+            // Update Stok Master Produk (Hanya jika AVAILABLE dihapus)
+            if ($deleted_stock_count > 0) {
+                $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$deleted_stock_count, $prod_id]);
                 
-                // Catat Log Pengurangan Stok karena Hapus SN
-                $note = "Koreksi SN (Hapus $deleted_count SN via Data Barang)";
+                // Catat Log Pengurangan Stok
+                $note = "Koreksi SN (Hapus $deleted_stock_count SN Available via Data Barang)";
                 $def_wh = $pdo->query("SELECT id FROM warehouses LIMIT 1")->fetchColumn();
                 $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'OUT', ?, ?, ?, 'CORRECTION', ?, ?)")
-                    ->execute([$prod_id, $def_wh, $deleted_count, $note, $_SESSION['user_id']]);
+                    ->execute([$prod_id, $def_wh, $deleted_stock_count, $note, $_SESSION['user_id']]);
             }
 
             $pdo->commit();
-            
-            if (!empty($sn_deletes) && $deleted_count == 0) {
-                $_SESSION['flash'] = ['type'=>'warning', 'message'=>'Update Berhasil, namun SN yang dipilih tidak terhapus karena statusnya SOLD/Terpakai.'];
-            } else {
-                $_SESSION['flash'] = ['type'=>'success', 'message'=>'Data Serial Number berhasil diperbarui.'];
-            }
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>'Data Serial Number berhasil diperbarui.'];
             
         } catch (Exception $e) {
             $pdo->rollBack();
@@ -605,7 +643,11 @@ $total_asset_group = 0;
             </div>
             
             <div class="bg-yellow-50 p-3 rounded text-xs text-yellow-800 mb-4">
-                <b>Perhatian:</b> Menghapus SN 'AVAILABLE' akan mengurangi stok fisik.
+                <b>Perhatian:</b> 
+                <ul class="list-disc ml-4">
+                    <li>Hapus <b>READY</b>: Mengurangi Stok Master.</li>
+                    <li>Hapus <b>SOLD</b>: <span class="font-bold text-red-600">BERBAHAYA!</span> Mengupdate/Menghapus Data Aktivitas Wilayah (Rollback).</li>
+                </ul>
             </div>
 
             <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 shadow">Simpan Perubahan</button>
@@ -654,6 +696,9 @@ async function loadSNs() {
             const rowClass = isSold ? 'bg-red-50 text-gray-500' : 'bg-white';
             const statusBadge = isSold ? '<span class="bg-red-200 text-red-800 px-1 rounded text-[10px]">SOLD</span>' : '<span class="bg-green-200 text-green-800 px-1 rounded text-[10px]">READY</span>';
             
+            // ALLOW DELETE FOR BOTH NOW
+            const deleteCheckbox = `<input type="checkbox" name="sn_deletes[]" value="${item.id}" class="accent-red-500 w-4 h-4 cursor-pointer" title="${isSold ? 'Hapus SOLD & Rollback Transaksi' : 'Hapus Stok'}">`;
+
             html += `<tr class="${rowClass} border-b">
                 <td class="p-2 text-center">${idx + 1}</td>
                 <td class="p-2">
@@ -664,7 +709,7 @@ async function loadSNs() {
                     ${statusBadge} ${item.wh_name}
                 </td>
                 <td class="p-2 text-center">
-                    ${!isSold ? `<input type="checkbox" name="sn_deletes[]" value="${item.id}" class="accent-red-500 w-4 h-4 cursor-pointer" title="Hapus SN ini">` : '-'}
+                    ${deleteCheckbox}
                 </td>
             </tr>`;
         });

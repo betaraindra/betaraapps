@@ -10,6 +10,22 @@ try {
     } catch (Exception $ex) { }
 }
 
+// --- SELF-HEALING: FIX ORPHANED SOLD SNs (BUG FIX) ---
+// Memastikan SN yang statusnya 'SOLD' tapi transaksinya sudah dihapus kembali menjadi 'AVAILABLE'
+// Ini otomatis memperbaiki kolom 'Used' jika data transaksi dihapus tidak bersih.
+try {
+    $pdo->exec("
+        UPDATE product_serials ps 
+        LEFT JOIN inventory_transactions it ON ps.out_transaction_id = it.id 
+        SET ps.status = 'AVAILABLE', ps.out_transaction_id = NULL 
+        WHERE ps.status = 'SOLD' 
+        AND ps.out_transaction_id IS NOT NULL 
+        AND it.id IS NULL
+    ");
+} catch (Exception $ex) { 
+    // Silent error
+}
+
 // --- AMBIL DATA MASTER UNTUK FORM ---
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
 $category_accounts = $pdo->query("SELECT * FROM accounts WHERE code IN ('3003', '2005', '2105') ORDER BY code ASC")->fetchAll();
@@ -46,14 +62,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $pdo->beginTransaction();
         try {
-            // Hapus SN yang dicentang
+            // Hapus SN yang dicentang (FIX BUG: Only count actual deleted rows)
+            $deleted_count = 0;
             if (!empty($sn_deletes)) {
                 $placeholders = implode(',', array_fill(0, count($sn_deletes), '?'));
-                // Validasi: Pastikan status AVAILABLE sebelum hapus
+                
+                // Validasi: Pastikan status AVAILABLE sebelum hapus di level query
                 $stmtDel = $pdo->prepare("DELETE FROM product_serials WHERE id IN ($placeholders) AND product_id = ? AND status='AVAILABLE'");
                 $paramsDel = $sn_deletes;
                 $paramsDel[] = $prod_id;
                 $stmtDel->execute($paramsDel);
+                
+                // Hitung jumlah yang BENAR-BENAR terhapus
+                $deleted_count = $stmtDel->rowCount();
             }
 
             // Update SN yang diedit
@@ -74,8 +95,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
             
-            if (!empty($sn_deletes)) {
-                $deleted_count = count($sn_deletes);
+            // Update Stok Produk hanya jika ada SN yang benar-benar terhapus
+            if ($deleted_count > 0) {
                 $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$deleted_count, $prod_id]);
                 
                 // Catat Log Pengurangan Stok karena Hapus SN
@@ -86,7 +107,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $pdo->commit();
-            $_SESSION['flash'] = ['type'=>'success', 'message'=>'Data Serial Number berhasil diperbarui.'];
+            
+            if (!empty($sn_deletes) && $deleted_count == 0) {
+                $_SESSION['flash'] = ['type'=>'warning', 'message'=>'Update Berhasil, namun SN yang dipilih tidak terhapus karena statusnya SOLD/Terpakai.'];
+            } else {
+                $_SESSION['flash'] = ['type'=>'success', 'message'=>'Data Serial Number berhasil diperbarui.'];
+            }
+            
         } catch (Exception $e) {
             $pdo->rollBack();
             $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal update SN: '.$e->getMessage()];

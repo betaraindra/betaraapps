@@ -101,9 +101,10 @@ if ($view_type == 'ALL_TRANSAKSI') {
         
         foreach($all_warehouses as $wh) {
             // Support format: [Wilayah: Nama] OR [Wilayah: @Nama]
-            $tag1 = "[Wilayah: " . $wh['name'] . "]";
-            $tag2 = "[Wilayah: @" . $wh['name'] . "]";
-            $is_tagged = (strpos($row_desc_str, $tag1) !== false) || (strpos($row_desc_str, $tag2) !== false);
+            // Use regex to match [Wilayah: @?NAME followed by space or ]
+            $p_name = preg_quote($wh['name'], '/');
+            $pattern = "/\[Wilayah:\s*@?" . $p_name . "(\s|\])/i";
+            $is_tagged = preg_match($pattern, $row_desc_str);
             
             if ($is_tagged) {
                 if ($row['type'] == 'INCOME') {
@@ -328,9 +329,10 @@ if ($view_type == 'CUSTOM') {
         
         foreach($all_warehouses as $wh) {
             // Support format: [Wilayah: Nama] OR [Wilayah: @Nama]
-            $tag1 = "[Wilayah: " . $wh['name'] . "]";
-            $tag2 = "[Wilayah: @" . $wh['name'] . "]";
-            $is_tagged = (strpos($row_desc_str, $tag1) !== false) || (strpos($row_desc_str, $tag2) !== false);
+            // Use regex to match [Wilayah: @?NAME followed by space or ]
+            $p_name = preg_quote($wh['name'], '/');
+            $pattern = "/\[Wilayah:\s*@?" . $p_name . "(\s|\])/i";
+            $is_tagged = preg_match($pattern, $row_desc_str);
             
             if ($is_tagged) {
                 if ($row['type'] == 'INCOME') {
@@ -607,9 +609,10 @@ if ($view_type == 'CUSTOM') {
                             
                             foreach($all_warehouses as $wh) {
                                 // Support format: [Wilayah: Nama] OR [Wilayah: @Nama]
-                                $tag1 = "[Wilayah: " . $wh['name'] . "]";
-                                $tag2 = "[Wilayah: @" . $wh['name'] . "]";
-                                $is_tagged = (strpos($row_desc_str, $tag1) !== false) || (strpos($row_desc_str, $tag2) !== false);
+                                // Use regex to match [Wilayah: @?NAME followed by space or ]
+                                $p_name = preg_quote($wh['name'], '/');
+                                $pattern = "/\[Wilayah:\s*@?" . $p_name . "(\s|\])/i";
+                                $is_tagged = preg_match($pattern, $row_desc_str);
                                 
                                 $val_in = 0;
                                 $val_out = 0;

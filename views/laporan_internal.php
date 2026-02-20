@@ -516,8 +516,8 @@ if ($view_type == 'CUSTOM') {
                     <th colspan="2" class="p-1 border border-black text-center">PENGELUARAN</th>
                     <th rowspan="3" class="p-1 border border-black text-center w-24 align-middle">Sisa Saldo / Selisih Perbulan</th>
                     <th rowspan="3" class="p-1 border border-black text-center w-24 align-middle">TOTAL PEMBAGIAN WIL<br>(RP)</th>
-                    <th colspan="<?= $wh_count * 2 ?>" class="p-1 border border-black text-center bg-green-100">INPUT PEMBAGIAN PEMASUKAN BERDASARKAN WILAYAH (INCOME)</th>
-                    <th colspan="<?= $wh_count * 2 ?>" class="p-1 border border-black text-center bg-red-100">INPUT PENGELUARAN BERDASARKAN WILAYAH (EXPENSE)</th>
+                    <th colspan="<?= $wh_count ?>" class="p-1 border border-black text-center bg-green-100">INPUT PEMBAGIAN PEMASUKAN BERDASARKAN WILAYAH (INCOME)</th>
+                    <th colspan="<?= $wh_count ?>" class="p-1 border border-black text-center bg-red-100">INPUT PENGELUARAN BERDASARKAN WILAYAH (EXPENSE)</th>
                 </tr>
                 <tr>
                     <th rowspan="2" class="p-1 border border-black text-center w-24">PER HARI</th>
@@ -525,21 +525,14 @@ if ($view_type == 'CUSTOM') {
                     <th rowspan="2" class="p-1 border border-black text-center w-24">PER HARI</th>
                     <th rowspan="2" class="p-1 border border-black text-center w-24">PER BULAN</th>
                     <?php foreach($all_warehouses as $wh): ?>
-                        <th colspan="2" class="p-1 border border-black text-center bg-green-50"><?= $wh['name'] ?></th>
+                        <th rowspan="2" class="p-1 border border-black text-center w-20 bg-green-50 text-[9px]"><?= $wh['name'] ?></th>
                     <?php endforeach; ?>
                     <?php foreach($all_warehouses as $wh): ?>
-                        <th colspan="2" class="p-1 border border-black text-center bg-red-50"><?= $wh['name'] ?></th>
+                        <th rowspan="2" class="p-1 border border-black text-center w-20 bg-red-50 text-[9px]"><?= $wh['name'] ?></th>
                     <?php endforeach; ?>
                 </tr>
                 <tr>
-                    <?php foreach($all_warehouses as $wh): ?>
-                        <th class="p-1 border border-black text-center w-20 bg-green-50 text-[9px]">Per Hari</th>
-                        <th class="p-1 border border-black text-center w-20 bg-green-50 text-[9px]">Per Bulan</th>
-                    <?php endforeach; ?>
-                    <?php foreach($all_warehouses as $wh): ?>
-                        <th class="p-1 border border-black text-center w-20 bg-red-50 text-[9px]">Per Hari</th>
-                        <th class="p-1 border border-black text-center w-20 bg-red-50 text-[9px]">Per Bulan</th>
-                    <?php endforeach; ?>
+                    <!-- Empty row for rowspan alignment -->
                 </tr>
             </thead>
             <tbody>
@@ -559,7 +552,6 @@ if ($view_type == 'CUSTOM') {
                         $val = $grand_wh_income[$wh['id']] ?? 0;
                     ?>
                         <td class="p-1 border-r border-black text-right bg-green-100 text-green-800 font-bold"><?= $val != 0 ? formatRupiah($val) : '-' ?></td>
-                        <td class="p-1 border-r border-black text-right bg-green-200 text-green-900 font-bold"><?= $val != 0 ? formatRupiah($val) : '-' ?></td>
                     <?php endforeach; ?>
 
                     <!-- EXPENSE PER WILAYAH -->
@@ -567,14 +559,13 @@ if ($view_type == 'CUSTOM') {
                         $val = $grand_wh_expense[$wh['id']] ?? 0;
                     ?>
                         <td class="p-1 border-r border-black text-right bg-red-100 text-red-800 font-bold"><?= $val != 0 ? formatRupiah($val) : '-' ?></td>
-                        <td class="p-1 border-r border-black text-right bg-red-200 text-red-900 font-bold"><?= $val != 0 ? formatRupiah($val) : '-' ?></td>
                     <?php endforeach; ?>
                 </tr>
                 <?php endif; ?>
 
                 <?php 
                 if(empty($grouped_data)): ?>
-                    <tr><td colspan="<?= 9 + ($wh_count * 4) ?>" class="p-4 text-center text-gray-500 italic">Tidak ada transaksi.</td></tr>
+                    <tr><td colspan="<?= 9 + ($wh_count * 2) ?>" class="p-4 text-center text-gray-500 italic">Tidak ada transaksi.</td></tr>
                 <?php else:
                     // LOOP PER BULAN
                     foreach($grouped_data as $month_key => $rows):
@@ -655,7 +646,6 @@ if ($view_type == 'CUSTOM') {
                                 <td class="p-1 border-r border-black text-right text-[10px] <?= $val > 0 ? 'text-green-600 font-bold' : 'text-gray-300' ?>">
                                     <?= $val != 0 ? formatRupiah($val) : '-' ?>
                                 </td>
-                                <td class="p-1 border-r border-black text-right text-[10px] bg-green-50 text-gray-400">-</td>
                             <?php endforeach; ?>
 
                             <!-- EXPENSE COLUMNS -->
@@ -665,7 +655,6 @@ if ($view_type == 'CUSTOM') {
                                 <td class="p-1 border-r border-black text-right text-[10px] <?= $val > 0 ? 'text-red-600 font-bold' : 'text-gray-300' ?>">
                                     <?= $val != 0 ? formatRupiah($val) : '-' ?>
                                 </td>
-                                <td class="p-1 border-r border-black text-right text-[10px] bg-red-50 text-gray-400">-</td>
                             <?php endforeach; ?>
                         </tr>
                     <?php endforeach; ?>
@@ -703,9 +692,6 @@ if ($view_type == 'CUSTOM') {
                             <td class="p-1 border-r border-black text-right text-[10px] bg-green-100 text-green-800">
                                 <?= $val != 0 ? formatRupiah($val) : '-' ?>
                             </td>
-                            <td class="p-1 border-r border-black text-right text-[10px] bg-green-200 text-green-900 font-bold">
-                                <?= $val != 0 ? formatRupiah($val) : '-' ?>
-                            </td>
                         <?php endforeach; ?>
 
                         <!-- Summary Wilayah EXPENSE -->
@@ -715,14 +701,11 @@ if ($view_type == 'CUSTOM') {
                             <td class="p-1 border-r border-black text-right text-[10px] bg-red-100 text-red-800">
                                 <?= $val != 0 ? formatRupiah($val) : '-' ?>
                             </td>
-                            <td class="p-1 border-r border-black text-right text-[10px] bg-red-200 text-red-900 font-bold">
-                                <?= $val != 0 ? formatRupiah($val) : '-' ?>
-                            </td>
                         <?php endforeach; ?>
                     </tr>
                     
                     <!-- Spacer -->
-                    <tr><td colspan="<?= 9 + ($wh_count * 4) ?>" class="h-4 bg-white border-none"></td></tr>
+                    <tr><td colspan="<?= 9 + ($wh_count * 2) ?>" class="h-4 bg-white border-none"></td></tr>
 
                 <?php endforeach; endif; ?>
             </tbody>

@@ -116,7 +116,7 @@ if ($action === 'get_product_by_sku') {
     // 1. Cek apakah ini Serial Number Unik? (Hanya Available)
     $stmtSn = $pdo->prepare("
         SELECT ps.product_id, ps.serial_number, ps.warehouse_id, 
-               p.sku, p.name, p.unit, p.stock as global_stock, p.sell_price, p.buy_price
+               p.sku, p.name, p.unit, p.stock as global_stock, p.sell_price, p.buy_price, p.has_serial_number
         FROM product_serials ps
         JOIN products p ON ps.product_id = p.id
         WHERE ps.serial_number = ? AND ps.status = 'AVAILABLE'
@@ -135,7 +135,8 @@ if ($action === 'get_product_by_sku') {
             'stock' => $snData['global_stock'],
             'sell_price' => $snData['sell_price'],
             'buy_price' => $snData['buy_price'],
-            'detected_warehouse_id' => $snData['warehouse_id'], // Auto Select This Warehouse
+            'has_serial_number' => $snData['has_serial_number'],
+            'detected_warehouse_id' => $snData['detected_warehouse_id'] ?? $snData['warehouse_id'], // Fix variable name if needed, but original was just warehouse_id
             'scanned_sn' => $snData['serial_number'] // Auto Select This SN
         ];
         echo json_encode($response);

@@ -350,22 +350,48 @@ productSelect.on('select2:select', async function (e) {
             const resSn = await fetch(`api.php?action=get_available_sns&product_id=${prodData.id}&warehouse_id=${whId}`);
             const sns = await resSn.json();
             
-            // C. Update Stock Display based on Count SN
-            document.getElementById('info_stock').innerText = sns.length;
-            
-            // D. Populate SN Select
-            if(sns.length > 0) {
-                sns.forEach(sn => {
-                    const option = new Option(sn, sn, false, false);
-                    snSelect.append(option);
-                });
-                snSelect.prop('disabled', false).trigger('change');
+            // C. Update Stock Display based on Count SN (or Stock if Non-SN)
+            if (prodData.has_serial_number == 0) {
+                // Non-SN: Use physical stock
+                document.getElementById('info_stock').innerText = prodData.stock;
+                $('#inp_qty').data('has-sn', 0);
+                
+                // Enable Manual Qty Input
+                document.getElementById('inp_qty').readOnly = false;
+                document.getElementById('inp_qty').classList.remove('bg-gray-100');
+                document.getElementById('inp_qty').classList.add('bg-white');
+                document.getElementById('inp_qty').value = 1;
+                
+                // Disable SN Select
+                snSelect.prop('disabled', true);
                 document.getElementById('info_stock').classList.remove('text-red-600');
                 document.getElementById('info_stock').classList.add('text-blue-600');
+                
             } else {
-                snSelect.prop('disabled', true);
-                document.getElementById('info_stock').classList.add('text-red-600');
-                document.getElementById('info_stock').classList.remove('text-blue-600');
+                // SN Item
+                document.getElementById('info_stock').innerText = sns.length;
+                $('#inp_qty').data('has-sn', 1);
+                
+                // Disable Manual Qty (Follow SN)
+                document.getElementById('inp_qty').readOnly = true;
+                document.getElementById('inp_qty').classList.add('bg-gray-100');
+                document.getElementById('inp_qty').classList.remove('bg-white');
+                document.getElementById('inp_qty').value = 0;
+
+                // D. Populate SN Select
+                if(sns.length > 0) {
+                    sns.forEach(sn => {
+                        const option = new Option(sn, sn, false, false);
+                        snSelect.append(option);
+                    });
+                    snSelect.prop('disabled', false).trigger('change');
+                    document.getElementById('info_stock').classList.remove('text-red-600');
+                    document.getElementById('info_stock').classList.add('text-blue-600');
+                } else {
+                    snSelect.prop('disabled', true);
+                    document.getElementById('info_stock').classList.add('text-red-600');
+                    document.getElementById('info_stock').classList.remove('text-blue-600');
+                }
             }
         }
     } catch(err) {
@@ -376,9 +402,12 @@ productSelect.on('select2:select', async function (e) {
 
 // 3. SN SELECTION -> UPDATE QTY
 snSelect.on('change', function() {
-    const selected = $(this).val();
-    const qty = selected ? selected.length : 0;
-    document.getElementById('inp_qty').value = qty;
+    const hasSn = $('#inp_qty').data('has-sn');
+    if (hasSn == 1) {
+        const selected = $(this).val();
+        const qty = selected ? selected.length : 0;
+        document.getElementById('inp_qty').value = qty;
+    }
 });
 
 // 4. ADD TO CART
@@ -386,18 +415,21 @@ function addToCart() {
     const sku = productSelect.val();
     const name = $('#inp_qty').data('prod-name');
     const qty = parseInt(document.getElementById('inp_qty').value);
-    const sns = snSelect.val(); // Array of strings
+    const hasSn = $('#inp_qty').data('has-sn');
+    const sns = snSelect.val() || []; // Array of strings
     const notes = document.getElementById('inp_notes').value;
 
     if(!sku || qty <= 0) {
-        alert("Pilih barang dan minimal 1 Serial Number!");
+        alert("Pilih barang dan masukkan Qty!");
         return;
     }
 
-    // Validasi 1 Qty = 1 SN
-    if(sns.length !== qty) {
-        alert("Jumlah SN yang dipilih tidak sama dengan Qty!");
-        return;
+    // Validasi 1 Qty = 1 SN (Only for SN items)
+    if(hasSn == 1) {
+        if(sns.length !== qty) {
+            alert("Jumlah SN yang dipilih tidak sama dengan Qty!");
+            return;
+        }
     }
 
     // Cek duplikat di cart

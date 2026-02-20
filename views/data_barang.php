@@ -209,12 +209,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $initial_stock = (int)($_POST['initial_stock'] ?? 0);
                 $wh_id = $_POST['warehouse_id'] ?? null;
                 $sn_string = $_POST['sn_list_text'] ?? '';
+                $has_sn = isset($_POST['has_serial_number']) ? 1 : 0; // Checkbox value
 
                 if ($initial_stock > 0 && empty($wh_id)) throw new Exception("Gudang Penempatan wajib dipilih untuk stok awal.");
 
                 // --- VALIDASI JUMLAH SN vs STOCK (STRICT MODE) ---
                 $sns = [];
-                if ($initial_stock > 0) {
+                if ($has_sn && $initial_stock > 0) {
                     $raw_sns = explode(',', $sn_string);
                     $clean_sns = [];
                     foreach($raw_sns as $s) {
@@ -238,8 +239,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $pdo->beginTransaction();
 
-                $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, image_url, has_serial_number, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)");
-                $stmt->execute([$sku, $name, $category, $unit, $buy_price, $sell_price, $initial_stock, $image_path, $notes]);
+                $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, image_url, has_serial_number, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute([$sku, $name, $category, $unit, $buy_price, $sell_price, $initial_stock, $image_path, $has_sn, $notes]);
                 $new_id = $pdo->lastInsertId();
 
                 if ($initial_stock > 0) {
@@ -248,8 +249,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ->execute([$new_id, $wh_id, $initial_stock, $ref, $_SESSION['user_id']]);
                     $trx_id = $pdo->lastInsertId();
 
-                    $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
-                    foreach($sns as $sn) $stmtSn->execute([$new_id, $sn, $wh_id, $trx_id]);
+                    // Insert SN only if has_sn is true
+                    if ($has_sn) {
+                        $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+                        foreach($sns as $sn) $stmtSn->execute([$new_id, $sn, $wh_id, $trx_id]);
+                    }
                 }
                 
                 $pdo->commit();
@@ -422,10 +426,26 @@ $total_asset_group = 0;
 
 <!-- HEADER & FILTER -->
 <div class="mb-6 flex flex-col md:flex-row justify-between items-center gap-4 no-print">
-    <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-box text-blue-600"></i> Data Barang</h2>
+    <div class="flex items-center gap-4">
+        <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-box text-blue-600"></i> Data Barang</h2>
+        <button onclick="document.getElementById('modalAdd').classList.remove('hidden')" class="bg-blue-600 text-white px-3 py-2 rounded text-sm font-bold shadow hover:bg-blue-700 flex items-center gap-2">
+            <i class="fas fa-plus"></i> Tambah Barang
+        </button>
+    </div>
     <div class="flex gap-2">
         <button onclick="document.getElementById('importModal').classList.remove('hidden')" class="bg-indigo-600 text-white px-3 py-2 rounded text-sm font-bold shadow hover:bg-indigo-700"><i class="fas fa-file-import"></i> Import Excel</button>
         <button onclick="exportToExcel()" class="bg-green-600 text-white px-3 py-2 rounded text-sm font-bold shadow hover:bg-green-700"><i class="fas fa-file-export"></i> Export Excel</button>
+    </div>
+</div>
+
+<!-- MODAL ADD BARANG -->
+<div id="modalAdd" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto relative">
+        <button onclick="document.getElementById('modalAdd').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600 z-10"><i class="fas fa-times text-xl"></i></button>
+        <div class="p-6">
+            <h3 class="text-xl font-bold mb-4 border-b pb-2 text-blue-700"><i class="fas fa-box"></i> Tambah Barang Baru</h3>
+            <?php include 'views/data_barang_form.php'; ?>
+        </div>
     </div>
 </div>
 
@@ -463,17 +483,9 @@ $total_asset_group = 0;
 </div>
 
 <!-- SPLIT LAYOUT -->
-<div class="grid grid-cols-1 lg:grid-cols-4 gap-6 page-content-wrapper">
-    <!-- LEFT: FORM -->
-    <div class="lg:col-span-1 no-print order-1 lg:order-1">
-        <?php include 'views/data_barang_form.php'; ?>
-        <div class="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-xs text-blue-800">
-            <i class="fas fa-info-circle mr-1"></i> <b>Info:</b> Stok ditampilkan adalah <b>Total Aset</b> (Ready + Terpakai/Sold untuk Aktivitas).
-        </div>
-    </div>
-
+<div class="grid grid-cols-1 gap-6 page-content-wrapper">
     <!-- RIGHT: TABLE -->
-    <div class="lg:col-span-3 order-2 lg:order-2">
+    <div class="col-span-full">
         <div class="bg-white rounded-lg shadow overflow-hidden">
             <div class="overflow-x-auto">
                 <table class="w-full text-xs text-left border-collapse border border-gray-300">
@@ -513,24 +525,35 @@ $total_asset_group = 0;
                                 'Catatan' => $p['notes']
                             ];
                         ?>
-                        <tr class="hover:bg-gray-50 group">
+                        <tr class="hover:bg-gray-50 group" id="row_<?= $prod_id ?>">
                             <td class="p-1 border text-center align-middle">
                                 <?php if(!empty($p['image_url'])): ?><img src="<?= $p['image_url'] ?>" class="w-8 h-8 object-cover rounded border bg-white mx-auto cursor-pointer" onclick="window.open(this.src)"><?php endif; ?>
                             </td>
                             <td class="p-2 border font-mono text-blue-600 whitespace-nowrap align-middle">
-                                <?= htmlspecialchars($p['sku']) ?>
+                                <input type="text" id="sku_<?= $prod_id ?>" value="<?= htmlspecialchars($p['sku']) ?>" class="w-full border-none bg-transparent focus:bg-white focus:border focus:border-blue-500 rounded px-1 font-mono text-xs" onchange="markEdited(<?= $prod_id ?>)">
+                                <!-- Hidden Fields to Preserve Data -->
+                                <input type="hidden" id="cat_<?= $prod_id ?>" value="<?= htmlspecialchars($p['category']) ?>">
+                                <input type="hidden" id="note_<?= $prod_id ?>" value="<?= htmlspecialchars($p['notes']) ?>">
+                                <input type="hidden" id="img_<?= $prod_id ?>" value="<?= htmlspecialchars($p['image_url']) ?>">
                                 <div class="mt-1">
-                                    <!-- TOMBOL LABEL DIPERBAIKI -->
                                     <button onclick="openLabelPreview('<?= h($p['sku']) ?>', '<?= h($p['name']) ?>')" class="text-[9px] text-gray-500 hover:text-gray-800 border px-1 rounded bg-gray-50 flex items-center gap-1 w-full justify-center"><i class="fas fa-barcode"></i> Label</button>
                                 </div>
                             </td>
                             <td class="p-1 border text-center align-middle">
                                 <button onclick="manageSN(<?= $p['id'] ?>, '<?= h($p['name']) ?>')" class="bg-purple-100 hover:bg-purple-200 text-purple-700 px-1 py-1 rounded text-[10px] font-bold w-full" title="Klik untuk Edit SN">SN</button>
                             </td>
-                            <td class="p-2 border font-bold text-gray-700 align-middle"><?= htmlspecialchars($p['name']) ?></td>
-                            <td class="p-2 border text-right text-red-600 font-medium align-middle"><?= number_format($p['buy_price'],0,',','.') ?></td>
-                            <td class="p-2 border text-right text-green-600 font-bold align-middle"><?= number_format($p['sell_price'],0,',','.') ?></td>
-                            <td class="p-2 border text-center text-gray-500 align-middle"><?= htmlspecialchars($p['unit']) ?></td>
+                            <td class="p-2 border font-bold text-gray-700 align-middle">
+                                <input type="text" id="name_<?= $prod_id ?>" value="<?= htmlspecialchars($p['name']) ?>" class="w-full border-none bg-transparent focus:bg-white focus:border focus:border-blue-500 rounded px-1 font-bold text-xs" onchange="markEdited(<?= $prod_id ?>)">
+                            </td>
+                            <td class="p-2 border text-right text-red-600 font-medium align-middle">
+                                <input type="text" id="buy_<?= $prod_id ?>" value="<?= number_format($p['buy_price'],0,',','.') ?>" class="w-full border-none bg-transparent focus:bg-white focus:border focus:border-blue-500 rounded px-1 text-right text-xs" onkeyup="fmtRupiah(this); markEdited(<?= $prod_id ?>)">
+                            </td>
+                            <td class="p-2 border text-right text-green-600 font-bold align-middle">
+                                <input type="text" id="sell_<?= $prod_id ?>" value="<?= number_format($p['sell_price'],0,',','.') ?>" class="w-full border-none bg-transparent focus:bg-white focus:border focus:border-blue-500 rounded px-1 text-right text-xs font-bold" onkeyup="fmtRupiah(this); markEdited(<?= $prod_id ?>)">
+                            </td>
+                            <td class="p-2 border text-center text-gray-500 align-middle">
+                                <input type="text" id="unit_<?= $prod_id ?>" value="<?= htmlspecialchars($p['unit']) ?>" class="w-full border-none bg-transparent focus:bg-white focus:border focus:border-blue-500 rounded px-1 text-center text-xs" onchange="markEdited(<?= $prod_id ?>)">
+                            </td>
                             <?php foreach($warehouses as $wh): 
                                 $cell_total = 0; $cell_ready = 0; $cell_used = 0;
                                 $is_sn_item = ($p['has_serial_number'] == 1);
@@ -567,7 +590,9 @@ $total_asset_group = 0;
                             </td>
                             <td class="p-1 border text-center align-middle">
                                 <div class="flex flex-col gap-1 items-center">
-                                    <a href="?page=data_barang&edit_id=<?= $p['id'] ?>" class="bg-yellow-100 text-yellow-700 p-1 rounded hover:bg-yellow-200 w-full text-[10px] font-bold"><i class="fas fa-pencil-alt"></i> Edit</a>
+                                    <!-- SAVE BUTTON (Hidden by default) -->
+                                    <button id="btn_save_<?= $p['id'] ?>" onclick="saveRow(<?= $p['id'] ?>)" class="hidden bg-green-600 text-white p-1 rounded hover:bg-green-700 w-full text-[10px] font-bold shadow-lg animate-pulse"><i class="fas fa-save"></i> Simpan</button>
+                                    
                                     <form method="POST" onsubmit="return confirm('Hapus barang?')" class="w-full">
                                         <?= csrf_field() ?>
                                         <input type="hidden" name="delete_id" value="<?= $p['id'] ?>">
@@ -656,6 +681,55 @@ $total_asset_group = 0;
 </div>
 
 <script>
+function fmtRupiah(i) { let v = i.value.replace(/\D/g, ''); i.value = v ? new Intl.NumberFormat('id-ID').format(v) : ''; }
+
+function markEdited(id) {
+    document.getElementById('btn_save_' + id).classList.remove('hidden');
+}
+
+function saveRow(id) {
+    const sku = document.getElementById('sku_' + id).value;
+    const name = document.getElementById('name_' + id).value;
+    const buy = document.getElementById('buy_' + id).value;
+    const sell = document.getElementById('sell_' + id).value;
+    const unit = document.getElementById('unit_' + id).value;
+    
+    // Hidden fields
+    const cat = document.getElementById('cat_' + id).value;
+    const note = document.getElementById('note_' + id).value;
+    const img = document.getElementById('img_' + id).value;
+    
+    // Create hidden form to submit
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = window.location.href; // Preserve current URL with filters
+    
+    const fields = {
+        'save_product': '1',
+        'edit_id': id,
+        'sku': sku,
+        'name': name,
+        'buy_price': buy,
+        'sell_price': sell,
+        'unit': unit,
+        'category': cat,
+        'notes': note,
+        'existing_image': img,
+        'csrf_token': '<?= $_SESSION['csrf_token'] ?? '' ?>'
+    };
+    
+    for (const key in fields) {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = key;
+        input.value = fields[key];
+        form.appendChild(input);
+    }
+    
+    document.body.appendChild(form);
+    form.submit();
+}
+
 function exportToExcel() {
     const data = <?= json_encode($export_data) ?>;
     if(data.length === 0) { alert("Tidak ada data untuk diexport"); return; }

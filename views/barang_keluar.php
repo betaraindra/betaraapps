@@ -22,7 +22,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                 if (!$prod) throw new Exception("SKU {$item['sku']} tidak ditemukan.");
 
                 $qty = count($item['sns']);
-                if ($qty == 0) throw new Exception("SN untuk {$item['name']} kosong.");
+                // Jika Non-SN, qty ambil dari input manual
+                if (empty($item['sns'])) {
+                    $qty = (int)$item['qty'];
+                }
+                
+                if ($qty <= 0) throw new Exception("Qty untuk {$item['name']} tidak valid.");
 
                 $notes = $item['notes'];
                 
@@ -80,14 +85,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                     // 2. Update Stok
                     $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$qty, $prod['id']]);
 
-                    // 3. Update Status SN
-                    $snStmt = $pdo->prepare("UPDATE product_serials SET status = 'SOLD', out_transaction_id = ? WHERE product_id = ? AND serial_number = ? AND warehouse_id = ? AND status = 'AVAILABLE'");
-                    foreach ($item['sns'] as $sn) {
-                        $snStmt->execute([$trx_out_id, $prod['id'], $sn, $wh_id]);
-                        if ($snStmt->rowCount() == 0) throw new Exception("SN $sn tidak tersedia di Gudang $wh_name.");
+                    // 3. Update Status SN (Hanya jika ada SN)
+                    if (!empty($item['sns'])) {
+                        $snStmt = $pdo->prepare("UPDATE product_serials SET status = 'SOLD', out_transaction_id = ? WHERE product_id = ? AND serial_number = ? AND warehouse_id = ? AND status = 'AVAILABLE'");
+                        foreach ($item['sns'] as $sn) {
+                            $snStmt->execute([$trx_out_id, $prod['id'], $sn, $wh_id]);
+                            if ($snStmt->rowCount() == 0) throw new Exception("SN $sn tidak tersedia di Gudang $wh_name.");
+                        }
                     }
 
-                    // 4. Catat Keuangan (Pendapatan)
+                    // 4. Catat Keuangan (Pendapatan) - DISABLED BY REQUEST
+                    /*
                     $val = $qty * $prod['sell_price'];
                     $accId = $pdo->query("SELECT id FROM accounts WHERE code='4001'")->fetchColumn(); 
                     if($accId && $val > 0) {
@@ -95,6 +103,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_transaction'])) 
                         $pdo->prepare("INSERT INTO finance_transactions (date, type, account_id, amount, description, user_id) VALUES (?, 'INCOME', ?, ?, ?, ?)")
                             ->execute([$_POST['date'], $accId, $val, $desc, $_SESSION['user_id']]);
                     }
+                    */
                 }
             }
             $pdo->commit();
@@ -400,18 +409,37 @@ async function loadProduct(sku) {
         const snSel = $('#sn_select');
         snSel.empty(); // Clear previous items
         
-        if(sns.length > 0) {
-            document.getElementById('sn_area').classList.remove('hidden');
-            sns.forEach(sn => snSel.append(new Option(sn, sn, false, false)));
-            
-            if (data.scanned_sn && sns.includes(data.scanned_sn)) {
-                snSel.val([data.scanned_sn]).trigger('change');
-            } else {
-                snSel.trigger('change');
-            }
-        } else {
-            alert("Tidak ada SN tersedia (Available) untuk barang ini di Gudang yang dipilih!");
+        // LOGIC NON-SN: Jika barang tidak punya SN (has_serial_number=0), maka input Qty Manual
+        if (data.has_serial_number == 0) {
             document.getElementById('sn_area').classList.add('hidden');
+            document.getElementById('inp_qty').readOnly = false;
+            document.getElementById('inp_qty').classList.remove('bg-gray-100');
+            document.getElementById('inp_qty').classList.add('bg-white');
+            document.getElementById('inp_qty').value = 1;
+            document.getElementById('inp_qty').focus();
+            
+            // Simpan flag di dataset
+            document.getElementById('inp_qty').dataset.hasSn = 0;
+        } else {
+            // LOGIC SN
+            document.getElementById('inp_qty').readOnly = true;
+            document.getElementById('inp_qty').classList.add('bg-gray-100');
+            document.getElementById('inp_qty').classList.remove('bg-white');
+            document.getElementById('inp_qty').dataset.hasSn = 1;
+
+            if(sns.length > 0) {
+                document.getElementById('sn_area').classList.remove('hidden');
+                sns.forEach(sn => snSel.append(new Option(sn, sn, false, false)));
+                
+                if (data.scanned_sn && sns.includes(data.scanned_sn)) {
+                    snSel.val([data.scanned_sn]).trigger('change');
+                } else {
+                    snSel.trigger('change');
+                }
+            } else {
+                alert("Tidak ada SN tersedia (Available) untuk barang ini di Gudang yang dipilih!");
+                document.getElementById('sn_area').classList.add('hidden');
+            }
         }
         
         document.getElementById('inp_qty').dataset.sku = data.sku;
@@ -435,13 +463,24 @@ function processScan(txt) {
 
 function addToCart() {
     const qty = parseInt(document.getElementById('inp_qty').value);
-    if(!qty || qty <= 0) { alert("Pilih minimal 1 SN!"); return; }
+    const hasSn = document.getElementById('inp_qty').dataset.hasSn;
     
+    if(!qty || qty <= 0) { alert("Qty minimal 1!"); return; }
+    
+    // Validasi SN jika HasSN = 1
+    const selectedSns = $('#sn_select').val() || [];
+    if (hasSn == 1 && selectedSns.length === 0) {
+        alert("Pilih minimal 1 SN!"); return;
+    }
+    if (hasSn == 1 && selectedSns.length !== qty) {
+        alert("Jumlah SN dipilih tidak sama dengan Qty!"); return;
+    }
+
     cart.push({
         sku: document.getElementById('inp_qty').dataset.sku,
         name: document.getElementById('inp_qty').dataset.name,
         qty: qty,
-        sns: $('#sn_select').val(),
+        sns: selectedSns,
         notes: document.getElementById('inp_notes').value
     });
     renderCart();

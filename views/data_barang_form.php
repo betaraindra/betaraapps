@@ -108,6 +108,21 @@ $val_img = $edit_item['image_url'] ?? '';
 
         <!-- STOK & GUDANG (LOGIC KHUSUS) -->
         <div class="bg-blue-50 p-3 rounded border border-blue-100">
+            <!-- OPTION SN / NON-SN -->
+            <?php if(!$is_edit): ?>
+            <div class="mb-3 border-b border-blue-200 pb-2">
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" name="has_serial_number" id="chk_use_sn" value="1" checked onchange="toggleSnMode()">
+                    <span class="font-bold text-blue-800 text-sm">Barang Menggunakan Serial Number (SN)</span>
+                </label>
+                <p class="text-[10px] text-blue-600 ml-6">
+                    <i class="fas fa-info-circle"></i> 
+                    <b>Aktif:</b> Stok dilacak per unit (Wajib SN). 
+                    <b>Non-Aktif:</b> Stok hanya jumlah (Qty) biasa.
+                </p>
+            </div>
+            <?php endif; ?>
+
             <div class="grid grid-cols-2 gap-3 mb-2">
                 <div>
                     <label class="block text-xs font-bold text-blue-800 mb-1">
@@ -132,10 +147,10 @@ $val_img = $edit_item['image_url'] ?? '';
             
             <!-- SN INPUT TOGGLE (Hanya Tampil saat Tambah Baru atau Stok > 0) -->
             <?php if(!$is_edit): ?>
-            <div>
+            <div id="sn_input_wrapper">
                 <label class="flex items-center gap-2 cursor-pointer mb-2">
-                    <input type="checkbox" id="chk_has_sn" class="rounded text-blue-600" onchange="toggleSnInput()">
-                    <span class="text-xs font-bold text-gray-600">Input Serial Number (SN)</span>
+                    <input type="checkbox" id="chk_has_sn_input" class="rounded text-blue-600" onchange="toggleSnInput()">
+                    <span class="text-xs font-bold text-gray-600">Input Serial Number (SN) Sekarang</span>
                 </label>
                 <div id="sn_input_area" class="hidden">
                     <textarea name="sn_list_text" id="sn_list_input" rows="3" class="w-full border p-2 rounded text-xs font-mono uppercase" placeholder="Scan/Ketik SN dipisahkan koma..."></textarea>
@@ -201,16 +216,14 @@ function validateProductForm() {
         return false;
     }
 
-    // 2. Cek SN vs Stock (VALIDASI KETAT)
-    // Logika: 
-    // - Jika SN diisi -> Jumlah Harus Sama
-    // - Jika SN kosong -> Konfirmasi Auto Generate
+    // 2. Cek SN Logic
+    const useSn = document.getElementById('chk_use_sn').checked;
     
-    const snText = document.getElementById('sn_list_input').value.trim();
-    const snList = snText ? snText.split(',').filter(item => item.trim() !== '') : [];
-    const snCount = snList.length;
+    if (useSn && stock > 0) {
+        const snText = document.getElementById('sn_list_input').value.trim();
+        const snList = snText ? snText.split(',').filter(item => item.trim() !== '') : [];
+        const snCount = snList.length;
 
-    if (stock > 0) {
         if (snCount > 0) {
             // User sudah mengisi sebagian SN
             if (snCount !== stock) {
@@ -228,8 +241,21 @@ function validateProductForm() {
     return true;
 }
 
+function toggleSnMode() {
+    const useSn = document.getElementById('chk_use_sn').checked;
+    const snWrapper = document.getElementById('sn_input_wrapper');
+    
+    if(useSn) {
+        snWrapper.classList.remove('hidden');
+    } else {
+        snWrapper.classList.add('hidden');
+        // Clear SN input if disabled
+        document.getElementById('sn_list_input').value = '';
+    }
+}
+
 function toggleSnInput() {
-    const chk = document.getElementById('chk_has_sn');
+    const chk = document.getElementById('chk_has_sn_input');
     const area = document.getElementById('sn_input_area');
     if(chk.checked) area.classList.remove('hidden'); else area.classList.add('hidden');
 }

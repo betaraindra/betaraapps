@@ -20,6 +20,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_inbound'])) {
                 $qty = (float)$item['qty'];
                 $sns = $item['sns'] ?? []; 
                 $notes = $item['notes'];
+                $has_sn = isset($item['has_sn']) ? (int)$item['has_sn'] : 1; // Default 1 if not set
                 
                 // Cek / Buat Produk
                 $stmt = $pdo->prepare("SELECT id, stock, buy_price FROM products WHERE sku = ?");
@@ -33,8 +34,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_inbound'])) {
                     $pdo->prepare("UPDATE products SET stock = stock + ?, buy_price = ?, sell_price = ? WHERE id = ?")
                         ->execute([$qty, cleanNumber($item['buy_price']), cleanNumber($item['sell_price']), $prod_id]);
                 } else {
-                    $stmtIns = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, has_serial_number) VALUES (?, ?, ?, ?, ?, ?, ?, 1)");
-                    $stmtIns->execute([$sku, $item['name'], $item['category'], $item['unit'], cleanNumber($item['buy_price']), cleanNumber($item['sell_price']), $qty]);
+                    $stmtIns = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, has_serial_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmtIns->execute([$sku, $item['name'], $item['category'], $item['unit'], cleanNumber($item['buy_price']), cleanNumber($item['sell_price']), $qty, $has_sn]);
                     $prod_id = $pdo->lastInsertId();
                 }
 
@@ -44,7 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_inbound'])) {
                 $stmtTrx->execute([$date, $prod_id, $warehouse_id, $qty, $reference, $full_notes, $_SESSION['user_id']]);
                 $trx_id = $pdo->lastInsertId();
 
-                // Simpan SN Baru
+                // Simpan SN Baru (Hanya jika ada SN)
                 if (!empty($sns)) {
                     $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
                     foreach ($sns as $sn) {
@@ -56,7 +57,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_inbound'])) {
                     }
                 }
 
-                // Keuangan (Pengeluaran Pembelian Aset)
+                // Keuangan (Pengeluaran Pembelian Aset) - DISABLED BY REQUEST
+                // "Pisahkan inventori dengan keuangan atau jangan sinkron ke catatan keuangan"
+                /*
                 $buy_val = cleanNumber($item['buy_price']);
                 if ($buy_val > 0) {
                     $total = $qty * $buy_val;
@@ -68,6 +71,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_inbound'])) {
                             ->execute([$date, $accId, $total, $desc, $_SESSION['user_id']]);
                     }
                 }
+                */
                 $count++;
             }
             $pdo->commit();
@@ -83,7 +87,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_inbound'])) {
 
 // Data
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
-$products = $pdo->query("SELECT sku, name, category, unit, buy_price, sell_price FROM products ORDER BY name ASC")->fetchAll();
+$products = $pdo->query("SELECT sku, name, category, unit, buy_price, sell_price, has_serial_number FROM products ORDER BY name ASC")->fetchAll();
 $cats = $pdo->query("SELECT * FROM accounts WHERE code IN ('3003','2005','2105') OR type='ASSET'")->fetchAll();
 $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
 ?>
@@ -221,6 +225,14 @@ $app_ref = strtoupper(str_replace(' ', '', $settings['app_name'] ?? 'SIKI'));
                         </select>
                     </div>
                 </div>
+                
+                <!-- NEW ITEM OPTION: NON-SN -->
+                <div id="new_item_options" class="hidden mb-4 bg-yellow-50 p-2 rounded border border-yellow-200">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" id="chk_new_is_sn" checked onchange="toggleNewItemSn()">
+                        <span class="font-bold text-gray-700 text-xs">Barang Baru ini menggunakan Serial Number (SN)</span>
+                    </label>
+                </div>
 
                 <!-- SN AREA (Manual untuk Barang Masuk) -->
                 <div id="sn_wrapper" class="hidden mt-4 bg-white p-3 rounded border border-gray-300">
@@ -315,10 +327,18 @@ function handleScanResult(sku) {
     if(opt.length > 0) {
         $('#product_select').val(sku).trigger('change');
         $('#product_select').trigger({type: 'select2:select'});
+        document.getElementById('new_item_options').classList.add('hidden');
     } else {
         document.getElementById('extra_details').classList.remove('hidden');
+        document.getElementById('new_item_options').classList.remove('hidden');
         document.getElementById('inp_name').focus();
+        document.getElementById('chk_new_is_sn').checked = true;
+        renderSnInputs();
     }
+}
+
+function toggleNewItemSn() {
+    renderSnInputs();
 }
 
 function activateUSB() {
@@ -467,7 +487,21 @@ function renderSnInputs() {
     const wrap = document.getElementById('sn_wrapper');
     document.getElementById('extra_details').classList.remove('hidden');
 
-    if (qty > 0) {
+    // Cek apakah barang SN atau Non-SN
+    const sku = document.getElementById('inp_sku').value;
+    const opt = $(`#product_select option[value='${sku}']`);
+    let hasSn = 1;
+    
+    if(opt.length > 0) {
+        // Existing Item
+        const d = opt.data('json');
+        if(d && d.has_serial_number == 0) hasSn = 0;
+    } else {
+        // New Item
+        hasSn = document.getElementById('chk_new_is_sn').checked ? 1 : 0;
+    }
+
+    if (qty > 0 && hasSn == 1) {
         wrap.classList.remove('hidden');
         let oldValues = [];
         document.querySelectorAll('.sn-field').forEach(i => oldValues.push(i.value));
@@ -486,6 +520,9 @@ function renderSnInputs() {
     } else {
         wrap.classList.add('hidden');
     }
+    
+    // Simpan state sementara di input qty
+    document.getElementById('inp_qty').dataset.hasSn = hasSn;
 }
 
 function genRowSn(btn) {
@@ -555,17 +592,34 @@ function addToCart() {
     const name = document.getElementById('inp_name').value;
     const qty = parseInt(document.getElementById('inp_qty').value);
     if(!sku || !name || !qty || qty <= 0) { alert("Lengkapi Data!"); return; }
+    
+    // Cek SN requirement
+    const hasSn = document.getElementById('inp_qty').dataset.hasSn || 1;
+
     let sns = [];
-    let validSn = true;
-    document.querySelectorAll('.sn-field').forEach(i => { if(!i.value.trim()) validSn = false; sns.push(i.value.trim()); });
-    if(!validSn) { alert("Lengkapi semua SN! Gunakan tombol Generate jika tidak ada barcode SN."); return; }
-    cart.push({ sku, name, qty, sns, buy_price: document.getElementById('inp_buy').value, sell_price: document.getElementById('inp_sell').value, unit: document.getElementById('inp_unit').value, category: document.getElementById('inp_cat').value, notes: document.getElementById('inp_notes').value });
+    if (hasSn == 1) {
+        let validSn = true;
+        document.querySelectorAll('.sn-field').forEach(i => { if(!i.value.trim()) validSn = false; sns.push(i.value.trim()); });
+        if(!validSn) { alert("Lengkapi semua SN! Gunakan tombol Generate jika tidak ada barcode SN."); return; }
+    }
+
+    cart.push({ 
+        sku, name, qty, sns, 
+        buy_price: document.getElementById('inp_buy').value, 
+        sell_price: document.getElementById('inp_sell').value, 
+        unit: document.getElementById('inp_unit').value, 
+        category: document.getElementById('inp_cat').value, 
+        notes: document.getElementById('inp_notes').value,
+        has_sn: hasSn 
+    });
     renderCart();
     $('#product_select').val(null).trigger('change');
     document.getElementById('inp_sku').value = '';
     document.getElementById('inp_name').value = '';
     document.getElementById('inp_qty').value = '';
     document.getElementById('sn_wrapper').classList.add('hidden');
+    document.getElementById('new_item_options').classList.add('hidden');
+    document.getElementById('extra_details').classList.add('hidden');
 }
 function renderCart() {
     const tb = document.getElementById('cart_body'); tb.innerHTML = '';

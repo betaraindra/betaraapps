@@ -100,7 +100,10 @@ if ($view_type == 'ALL_TRANSAKSI') {
         $row_wil_net = 0;
         
         foreach($all_warehouses as $wh) {
-            $is_tagged = strpos($row_desc_str, "[Wilayah: " . $wh['name'] . "]") !== false;
+            // Support format: [Wilayah: Nama] OR [Wilayah: @Nama]
+            $tag1 = "[Wilayah: " . $wh['name'] . "]";
+            $tag2 = "[Wilayah: @" . $wh['name'] . "]";
+            $is_tagged = (strpos($row_desc_str, $tag1) !== false) || (strpos($row_desc_str, $tag2) !== false);
             
             if ($is_tagged) {
                 if ($row['type'] == 'INCOME') {
@@ -324,7 +327,10 @@ if ($view_type == 'CUSTOM') {
         $row_wil_net = 0;
         
         foreach($all_warehouses as $wh) {
-            $is_tagged = strpos($row_desc_str, "[Wilayah: " . $wh['name'] . "]") !== false;
+            // Support format: [Wilayah: Nama] OR [Wilayah: @Nama]
+            $tag1 = "[Wilayah: " . $wh['name'] . "]";
+            $tag2 = "[Wilayah: @" . $wh['name'] . "]";
+            $is_tagged = (strpos($row_desc_str, $tag1) !== false) || (strpos($row_desc_str, $tag2) !== false);
             
             if ($is_tagged) {
                 if ($row['type'] == 'INCOME') {
@@ -600,7 +606,10 @@ if ($view_type == 'CUSTOM') {
                             $wh_amounts_out = [];
                             
                             foreach($all_warehouses as $wh) {
-                                $is_tagged = strpos($row_desc_str, "[Wilayah: " . $wh['name'] . "]") !== false;
+                                // Support format: [Wilayah: Nama] OR [Wilayah: @Nama]
+                                $tag1 = "[Wilayah: " . $wh['name'] . "]";
+                                $tag2 = "[Wilayah: @" . $wh['name'] . "]";
+                                $is_tagged = (strpos($row_desc_str, $tag1) !== false) || (strpos($row_desc_str, $tag2) !== false);
                                 
                                 $val_in = 0;
                                 $val_out = 0;

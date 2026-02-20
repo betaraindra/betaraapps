@@ -35,7 +35,9 @@ $revenue = $pdo->query("
 ")->fetchColumn() ?: 0;
 
 // 2. COGS / HPP (HARGA POKOK PENJUALAN)
-// A. HPP VIRTUAL (Dari Mutasi Barang Keluar)
+// A. HPP VIRTUAL (Dari Mutasi Barang Keluar) - DISABLED BY USER REQUEST
+$cogs_inv = 0; 
+/* 
 $cogs_inv = $pdo->query("
     SELECT SUM(i.quantity * p.buy_price) 
     FROM inventory_transactions i 
@@ -43,6 +45,7 @@ $cogs_inv = $pdo->query("
     WHERE i.type = 'OUT' 
     AND i.date BETWEEN '$start' AND '$end'
 ")->fetchColumn() ?: 0;
+*/
 
 // B. HPP MANUAL / IMPORT (Akun 2001)
 // Ambil transaksi EXPENSE yang akunnya spesifik HPP
@@ -109,8 +112,17 @@ $total_exp_all = $pdo->query("SELECT SUM(amount) FROM finance_transactions WHERE
 $cash_balance = $initial_capital + $total_rev_all - $total_exp_all;
 
 // Inventory Value (Nilai Aset Barang saat ini)
-// Menggunakan buy_price (HPP)
-$inventory_value = $pdo->query("SELECT SUM(stock * buy_price) FROM products")->fetchColumn() ?: 0;
+// Menggunakan buy_price (HPP) - DISABLED BY USER REQUEST
+// $inventory_value = $pdo->query("SELECT SUM(stock * buy_price) FROM products")->fetchColumn() ?: 0;
+
+// GANTI DENGAN: Nilai Aset dari Akumulasi Transaksi Keuangan (Akun Tipe ASSET)
+// Asset = Total Expense (Beli Aset) - Total Income (Jual Aset) [ALL TIME]
+$inventory_value = $pdo->query("
+    SELECT 
+        (SELECT COALESCE(SUM(amount),0) FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='EXPENSE' AND a.type='ASSET' AND f.date <= '$end')
+        -
+        (SELECT COALESCE(SUM(amount),0) FROM finance_transactions f JOIN accounts a ON f.account_id=a.id WHERE f.type='INCOME' AND a.type='ASSET' AND f.date <= '$end')
+")->fetchColumn() ?: 0;
 
 // Laba Ditahan (Retained Earnings) = Total Aset - Modal Disetor - Kewajiban
 // Aset = Kas + Stok
@@ -340,7 +352,7 @@ $retained_earnings_before = $retained_earnings_total - $net_profit_period;
                             <span class="font-mono"><?= formatRupiah($cash_balance) ?></span>
                         </div>
                         <div class="flex justify-between pl-4">
-                            <span>Nilai Persediaan (Stok Barang)</span>
+                            <span>Nilai Aset (Dari Keuangan)</span>
                             <span class="font-mono"><?= formatRupiah($inventory_value) ?></span>
                         </div>
                         <div class="flex justify-between font-bold border-t-2 border-black pt-2 mt-4 bg-gray-50 p-1 print:bg-transparent">

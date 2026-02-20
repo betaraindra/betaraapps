@@ -51,20 +51,29 @@ $category_accounts = $pdo->query("SELECT * FROM accounts WHERE code IN ('3003', 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     validate_csrf();
 
-    // 1. DELETE PRODUCT
+    // 1. DELETE PRODUCT (CASCADE)
     if (isset($_POST['delete_id'])) {
         $id = $_POST['delete_id'];
         
-        $chk = $pdo->query("SELECT COUNT(*) FROM inventory_transactions WHERE product_id=$id")->fetchColumn();
-        if ($chk > 0) {
-            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal: Barang ini memiliki riwayat transaksi.'];
-        } else {
+        $pdo->beginTransaction();
+        try {
             $img = $pdo->query("SELECT image_url FROM products WHERE id=$id")->fetchColumn();
             if ($img && file_exists($img)) unlink($img);
             
+            // Hapus Riwayat Transaksi (Inventory)
+            $pdo->prepare("DELETE FROM inventory_transactions WHERE product_id=?")->execute([$id]);
+            
+            // Hapus Serial Number
             $pdo->prepare("DELETE FROM product_serials WHERE product_id=?")->execute([$id]);
+            
+            // Hapus Produk Master
             $pdo->prepare("DELETE FROM products WHERE id=?")->execute([$id]);
-            $_SESSION['flash'] = ['type'=>'success', 'message'=>'Barang berhasil dihapus.'];
+            
+            $pdo->commit();
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>'Barang dan riwayat transaksi berhasil dihapus.'];
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal menghapus: ' . $e->getMessage()];
         }
         echo "<script>window.location='?page=data_barang';</script>";
         exit;
@@ -426,26 +435,10 @@ $total_asset_group = 0;
 
 <!-- HEADER & FILTER -->
 <div class="mb-6 flex flex-col md:flex-row justify-between items-center gap-4 no-print">
-    <div class="flex items-center gap-4">
-        <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-box text-blue-600"></i> Data Barang</h2>
-        <button onclick="document.getElementById('modalAdd').classList.remove('hidden')" class="bg-blue-600 text-white px-3 py-2 rounded text-sm font-bold shadow hover:bg-blue-700 flex items-center gap-2">
-            <i class="fas fa-plus"></i> Tambah Barang
-        </button>
-    </div>
+    <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-box text-blue-600"></i> Data Barang</h2>
     <div class="flex gap-2">
         <button onclick="document.getElementById('importModal').classList.remove('hidden')" class="bg-indigo-600 text-white px-3 py-2 rounded text-sm font-bold shadow hover:bg-indigo-700"><i class="fas fa-file-import"></i> Import Excel</button>
         <button onclick="exportToExcel()" class="bg-green-600 text-white px-3 py-2 rounded text-sm font-bold shadow hover:bg-green-700"><i class="fas fa-file-export"></i> Export Excel</button>
-    </div>
-</div>
-
-<!-- MODAL ADD BARANG -->
-<div id="modalAdd" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-    <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto relative">
-        <button onclick="document.getElementById('modalAdd').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600 z-10"><i class="fas fa-times text-xl"></i></button>
-        <div class="p-6">
-            <h3 class="text-xl font-bold mb-4 border-b pb-2 text-blue-700"><i class="fas fa-box"></i> Tambah Barang Baru</h3>
-            <?php include 'views/data_barang_form.php'; ?>
-        </div>
     </div>
 </div>
 

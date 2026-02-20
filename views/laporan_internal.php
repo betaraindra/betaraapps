@@ -501,7 +501,7 @@ if ($view_type == 'CUSTOM') {
             <thead class="bg-red-200 font-bold text-gray-900 border-b-2 border-black">
                 <tr>
                     <th rowspan="3" class="p-1 border border-black text-center align-middle w-16">Tanggal</th>
-                    <th rowspan="3" class="p-1 border border-black text-center align-middle w-16">Reference</th>
+                    <th rowspan="3" class="p-1 border border-black text-center align-middle w-32">Akun & Kode</th>
                     <th rowspan="3" class="p-1 border border-black align-middle w-48 text-center">URAIAN</th>
                     
                     <th colspan="2" class="p-1 border border-black text-center">PEMASUKAN</th>
@@ -594,7 +594,13 @@ if ($view_type == 'CUSTOM') {
                     ?>
                         <tr class="hover:bg-gray-50 border-b border-gray-300">
                             <td class="p-1 border-r border-black text-center whitespace-nowrap"><?= date('d/m/Y', strtotime($row['date'])) ?></td>
-                            <td class="p-1 border-r border-black text-center font-mono text-[10px]"><?= $row['code'] ?></td>
+                            
+                            <!-- UPDATED COLUMN: Nama Akun & Kode -->
+                            <td class="p-1 border-r border-black text-left">
+                                <div class="font-bold text-[10px] leading-tight text-blue-900"><?= htmlspecialchars($row['acc_name']) ?></div>
+                                <div class="font-mono text-[9px] text-gray-500"><?= $row['code'] ?></div>
+                            </td>
+
                             <td class="p-1 border-r border-black truncate max-w-xs" title="<?= htmlspecialchars($row['description']) ?>"><?= htmlspecialchars($row['description']) ?></td>
                             
                             <td class="p-1 border-r border-black text-right <?= $row['type'] == 'INCOME' ? 'text-green-700 font-bold' : '' ?>"><?= $row['type'] == 'INCOME' ? formatRupiah($amount) : '-' ?></td>

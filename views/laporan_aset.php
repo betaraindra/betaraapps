@@ -8,10 +8,15 @@ while ($row = $config_query->fetch()) $config[$row['setting_key']] = $row['setti
 
 // --- GET MASTER DATA FOR FILTER ---
 $categories_data = $pdo->query("
-    SELECT DISTINCT p.category AS code, a.name 
-    FROM products p 
-    LEFT JOIN accounts a ON p.category = a.code 
-    ORDER BY p.category ASC
+    SELECT * FROM (
+        SELECT DISTINCT p.category AS code, a.name 
+        FROM products p 
+        LEFT JOIN accounts a ON p.category = a.code 
+        WHERE p.category IS NOT NULL AND p.category != ''
+        UNION 
+        SELECT code, name FROM accounts WHERE code = '2105' OR name LIKE '%Material Habis Pakai%'
+    ) AS combined
+    ORDER BY code ASC
 ")->fetchAll();
 
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();

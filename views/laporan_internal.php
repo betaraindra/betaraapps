@@ -68,8 +68,9 @@ if ($view_type == 'ALL_TRANSAKSI') {
         $stmt_wh_name->execute([$f_wh_id]);
         $wh_target_name = $stmt_wh_name->fetchColumn();
         if ($wh_target_name) {
-            $sql .= " AND f.description LIKE ?";
+            $sql .= " AND (f.description LIKE ? OR f.description LIKE ?)";
             $params[] = "%[Wilayah: $wh_target_name]%";
+            $params[] = "%[Wilayah: @$wh_target_name]%";
         }
     }
 
@@ -200,8 +201,9 @@ if ($view_type == 'ANGGARAN') {
         $stmt_wh->execute([$budget_warehouse]); 
         $bg_wh_name = $stmt_wh->fetchColumn();
         if ($bg_wh_name) { 
-            $wh_clause = " AND f.description LIKE ?"; 
+            $wh_clause = " AND (f.description LIKE ? OR f.description LIKE ?)"; 
             $params[] = "%[Wilayah: $bg_wh_name]%"; 
+            $params[] = "%[Wilayah: @$bg_wh_name]%"; 
         }
     }
     
@@ -228,28 +230,55 @@ $total_wilayah_rev = 0;
 $total_wilayah_exp = 0;
 
 if ($view_type == 'WILAYAH') {
+    // 1. Fetch all transactions for period (Optimized)
+    $sql = "SELECT amount, type, description FROM finance_transactions WHERE date BETWEEN ? AND ?";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([$start, $end]);
+    $all_trx = $stmt->fetchAll();
+
+    // 2. Initialize accumulators
+    $wh_stats = [];
     foreach ($all_warehouses as $wh) {
-        $wh_name = $wh['name'];
-        // Cari transaksi yang tag [Wilayah: NamaGudang]
+        $wh_stats[$wh['id']] = [
+            'revenue' => 0,
+            'expense' => 0
+        ];
+    }
+
+    // 3. Process transactions using Regex (Same logic as ALL_TRANSAKSI)
+    foreach ($all_trx as $row) {
+        $desc = (string)($row['description'] ?? '');
         
-        $rev = $pdo->prepare("SELECT SUM(amount) FROM finance_transactions WHERE type='INCOME' AND date BETWEEN ? AND ? AND description LIKE ?");
-        $rev->execute([$start, $end, "%[Wilayah: $wh_name]%"]);
-        $val_rev = $rev->fetchColumn() ?: 0;
+        foreach ($all_warehouses as $wh) {
+            // Support format: [Wilayah: Nama] OR [Wilayah: @Nama]
+            $p_name = preg_quote($wh['name'], '/');
+            $pattern = "/\[Wilayah:\s*@?" . $p_name . "(\s|\])/i";
+            
+            if (preg_match($pattern, $desc)) {
+                if ($row['type'] == 'INCOME') {
+                    $wh_stats[$wh['id']]['revenue'] += $row['amount'];
+                } else {
+                    $wh_stats[$wh['id']]['expense'] += $row['amount'];
+                }
+            }
+        }
+    }
 
-        $exp = $pdo->prepare("SELECT SUM(amount) FROM finance_transactions WHERE type='EXPENSE' AND date BETWEEN ? AND ? AND description LIKE ?");
-        $exp->execute([$start, $end, "%[Wilayah: $wh_name]%"]);
-        $val_exp = $exp->fetchColumn() ?: 0;
-
+    // 4. Build Output Array
+    foreach ($all_warehouses as $wh) {
+        $rev = $wh_stats[$wh['id']]['revenue'];
+        $exp = $wh_stats[$wh['id']]['expense'];
+        
         $wilayah_summary[] = [
             'id' => $wh['id'],
-            'name' => $wh_name,
+            'name' => $wh['name'],
             'location' => $wh['location'],
-            'revenue' => $val_rev,
-            'expense' => $val_exp,
-            'profit' => $val_rev - $val_exp
+            'revenue' => $rev,
+            'expense' => $exp,
+            'profit' => $rev - $exp
         ];
-        $total_wilayah_rev += $val_rev;
-        $total_wilayah_exp += $val_exp;
+        $total_wilayah_rev += $rev;
+        $total_wilayah_exp += $exp;
     }
 }
 
@@ -296,8 +325,9 @@ if ($view_type == 'CUSTOM') {
         $stmt_wh_name->execute([$c_wh]);
         $wh_target_name = $stmt_wh_name->fetchColumn();
         if ($wh_target_name) {
-            $sql .= " AND f.description LIKE ?";
+            $sql .= " AND (f.description LIKE ? OR f.description LIKE ?)";
             $params[] = "%[Wilayah: $wh_target_name]%";
+            $params[] = "%[Wilayah: @$wh_target_name]%";
         }
     }
     

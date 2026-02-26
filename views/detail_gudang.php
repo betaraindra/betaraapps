@@ -96,9 +96,11 @@ if ($tab === 'stock') {
                COALESCE(trx.qty_in, 0) as qty_in,
                COALESCE(trx.qty_out_total, 0) as qty_out_total,
                COALESCE(trx.qty_used, 0) as qty_used,
+               COALESCE(trx.qty_damaged_trx, 0) as qty_damaged_trx,
                
                -- Get SN Stats (From Subquery)
-               COALESCE(sn.cnt, 0) as sn_ready_count
+               COALESCE(sn.cnt, 0) as sn_ready_count,
+               COALESCE(sn_dmg.cnt, 0) as sn_damaged_count
                
         FROM products p
         -- 1. Join Transactions (LEFT JOIN agar barang tanpa transaksi tapi ada SN tetap muncul)
@@ -106,38 +108,58 @@ if ($tab === 'stock') {
             SELECT product_id,
                    SUM(CASE WHEN type = 'IN' THEN quantity ELSE 0 END) as qty_in,
                    SUM(CASE WHEN type = 'OUT' THEN quantity ELSE 0 END) as qty_out_total,
-                   SUM(CASE WHEN type = 'OUT' AND (notes LIKE 'Aktivitas:%' OR notes LIKE '%[PEMAKAIAN]%') THEN quantity ELSE 0 END) as qty_used
+                   SUM(CASE WHEN type = 'OUT' AND (notes LIKE 'Aktivitas:%' OR notes LIKE '%[PEMAKAIAN]%') THEN quantity ELSE 0 END) as qty_used,
+                   SUM(CASE WHEN type = 'OUT' AND notes LIKE 'Rusak:%' THEN quantity ELSE 0 END) as qty_damaged_trx
             FROM inventory_transactions
             WHERE warehouse_id = ?
             GROUP BY product_id
         ) trx ON p.id = trx.product_id
         
-        -- 2. Join Serial Numbers (Physical Stock Check)
+        -- 2. Join Serial Numbers (Physical Stock Check - Available)
         LEFT JOIN (
             SELECT product_id, COUNT(*) as cnt 
             FROM product_serials 
             WHERE warehouse_id = ? AND status = 'AVAILABLE'
             GROUP BY product_id
         ) sn ON p.id = sn.product_id
+
+        -- 3. Join Serial Numbers (Physical Stock Check - Damaged)
+        LEFT JOIN (
+            SELECT product_id, COUNT(*) as cnt 
+            FROM product_serials 
+            WHERE warehouse_id = ? AND status = 'DEFECTIVE'
+            GROUP BY product_id
+        ) sn_dmg ON p.id = sn_dmg.product_id
         
         WHERE (p.name LIKE ? OR p.sku LIKE ?)
-        AND (trx.qty_in > 0 OR sn.cnt > 0) -- TAMPILKAN JIKA: Ada Riwayat Transaksi ATAU Ada Stok Fisik
+        AND (trx.qty_in > 0 OR sn.cnt > 0 OR sn_dmg.cnt > 0) -- TAMPILKAN JIKA: Ada Riwayat Transaksi ATAU Ada Stok Fisik (Ready/Rusak)
         ORDER BY p.name ASC
     ";
     
     $stmt_stock = $pdo->prepare($sql_stock);
-    $stmt_stock->execute([$id, $id, "%$q%", "%$q%"]);
+    $stmt_stock->execute([$id, $id, $id, "%$q%", "%$q%"]);
     $stocks = $stmt_stock->fetchAll();
     
     foreach($stocks as $s) {
         $trx_ready = $s['qty_in'] - $s['qty_out_total'];
         
         // PRIORITAS: Unit Ready diambil dari Count Available SN jika has_serial_number=1
-        // Jika SN status SOLD (sudah terpakai di aktivitas), count ini TIDAK akan memasukkannya.
         $ready_stock = ($s['has_serial_number'] == 1) ? $s['sn_ready_count'] : $trx_ready;
         
+        // Unit Rusak Logic
+        $damaged_stock = ($s['has_serial_number'] == 1) ? $s['sn_damaged_count'] : $s['qty_damaged_trx'];
+
         $used_stock = $s['qty_used'];
-        $asset_qty = $ready_stock + $used_stock;
+        $asset_qty = $ready_stock + $used_stock; // Rusak tidak dihitung aset? Atau dihitung?
+        // Biasanya Rusak = Aset yang perlu dihapuskan (Write-off) atau diperbaiki.
+        // Untuk saat ini, kita hitung sebagai aset jika masih ada fisiknya (DEFECTIVE).
+        // Tapi logic sebelumnya: asset_qty = ready + used.
+        // Jika Rusak (Non-SN) itu OUT, maka sudah hilang dari asset_qty (karena ready = IN - OUT).
+        // Jika Rusak (SN) itu DEFECTIVE, maka tidak masuk ready_stock.
+        // Jika mau dihitung aset, harus ditambahkan.
+        // Tapi request user hanya "Tambahkan Kolom Unit Rusak". Tidak spesifik minta ubah nilai aset.
+        // Biarkan nilai aset seperti logic sebelumnya (Ready + Used). Rusak dianggap loss/expense atau pending.
+        
         $asset_value = $asset_qty * $s['buy_price'];
         
         $total_asset_value += $asset_value;
@@ -332,6 +354,7 @@ if ($tab === 'activity') {
                         <th class="p-3 border-b text-right text-purple-600" title="Barang dipakai untuk aktivitas internal">Terpakai (Akt)</th>
                         <th class="p-3 border-b text-right text-red-600" title="Barang keluar dijual/transfer (Bukan aktivitas)">Keluar Lain</th>
                         <th class="p-3 border-b text-right bg-blue-100 text-blue-800 font-bold" title="Barang fisik tersedia di rak (Cek SN Available)">Unit Ready</th>
+                        <th class="p-3 border-b text-right bg-red-50 text-red-800 font-bold" title="Barang Rusak / Defective">Unit Rusak</th>
                         <th class="p-3 border-b text-center">Sat</th>
                         <th class="p-3 border-b text-right font-bold text-gray-800" title="(Ready + Terpakai) x Harga Beli">Nilai Aset (Rp)</th>
                     </tr>
@@ -343,8 +366,11 @@ if ($tab === 'activity') {
                         // Jika SN sudah terpakai (Aktivitas), statusnya SOLD, tidak akan masuk sini.
                         $ready_stock = ($s['has_serial_number'] == 1) ? $s['sn_ready_count'] : $trx_ready;
                         
+                        // Unit Rusak Logic
+                        $damaged_stock = ($s['has_serial_number'] == 1) ? $s['sn_damaged_count'] : $s['qty_damaged_trx'];
+
                         $used_stock = $s['qty_used'];
-                        $other_out = $s['qty_out_total'] - $used_stock;
+                        $other_out = $s['qty_out_total'] - $used_stock - $s['qty_damaged_trx']; // Exclude Rusak from Other Out
                         $asset_qty = $ready_stock + $used_stock;
                         $asset_value = $asset_qty * $s['buy_price'];
                     ?>
@@ -352,9 +378,36 @@ if ($tab === 'activity') {
                         <td class="p-3 font-mono text-xs"><?= h($s['sku']) ?></td>
                         <td class="p-3 font-medium"><?= h($s['name']) ?></td>
                         <td class="p-3 text-right text-green-600 font-medium"><?= number_format($s['qty_in']) ?></td>
-                        <td class="p-3 text-right text-purple-600 font-bold"><?= number_format($used_stock) ?></td>
+                        
+                        <!-- TERPAKAI (USED) -->
+                        <td class="p-3 text-right text-purple-600 font-bold">
+                            <?php if($s['has_serial_number'] == 1 && $used_stock > 0): ?>
+                                <span class="cursor-pointer hover:underline" onclick="showSnDetail(<?= $s['id'] ?>, <?= $id ?>, 'USED', '<?= h($s['name']) ?>')"><?= number_format($used_stock) ?></span>
+                            <?php else: ?>
+                                <?= number_format($used_stock) ?>
+                            <?php endif; ?>
+                        </td>
+                        
                         <td class="p-3 text-right text-red-600"><?= number_format($other_out) ?></td>
-                        <td class="p-3 text-right font-bold bg-blue-50 text-blue-800 text-lg"><?= number_format($ready_stock) ?></td>
+                        
+                        <!-- READY -->
+                        <td class="p-3 text-right font-bold bg-blue-50 text-blue-800 text-lg">
+                            <?php if($s['has_serial_number'] == 1 && $ready_stock > 0): ?>
+                                <span class="cursor-pointer hover:underline" onclick="showSnDetail(<?= $s['id'] ?>, <?= $id ?>, 'READY', '<?= h($s['name']) ?>')"><?= number_format($ready_stock) ?></span>
+                            <?php else: ?>
+                                <?= number_format($ready_stock) ?>
+                            <?php endif; ?>
+                        </td>
+                        
+                        <!-- RUSAK (DAMAGED) -->
+                        <td class="p-3 text-right font-bold bg-red-50 text-red-800 text-lg">
+                            <?php if($s['has_serial_number'] == 1 && $damaged_stock > 0): ?>
+                                <span class="cursor-pointer hover:underline" onclick="showSnDetail(<?= $s['id'] ?>, <?= $id ?>, 'DAMAGED', '<?= h($s['name']) ?>')"><?= number_format($damaged_stock) ?></span>
+                            <?php else: ?>
+                                <?= number_format($damaged_stock) ?>
+                            <?php endif; ?>
+                        </td>
+                        
                         <td class="p-3 text-center text-xs text-gray-500"><?= h($s['unit']) ?></td>
                         <td class="p-3 text-right font-bold"><?= formatRupiah($asset_value) ?></td>
                     </tr>
@@ -591,5 +644,78 @@ function openEditActivity(data) {
     document.getElementById('edit_reference').value = data.reference;
     document.getElementById('edit_notes').value = data.notes;
     document.getElementById('modalEditActivity').classList.remove('hidden');
+}
+</script>
+
+<!-- SN DETAIL MODAL (READ ONLY) -->
+<div id="snDetailModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-lg p-6 relative flex flex-col max-h-[90vh]">
+        <button onclick="document.getElementById('snDetailModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+        <h3 class="text-xl font-bold mb-2 text-blue-700 flex items-center gap-2"><i class="fas fa-list"></i> Detail Serial Number</h3>
+        <p class="text-sm text-gray-600 border-b pb-2 mb-2">
+            Barang: <span id="snd_title" class="font-bold"></span><br>
+            Status: <span id="snd_status" class="font-bold"></span>
+        </p>
+        
+        <div class="overflow-y-auto flex-1 border rounded bg-gray-50 p-2" id="snd_list_container">
+            <div class="text-center text-gray-400 py-10"><i class="fas fa-spinner fa-spin"></i> Memuat data...</div>
+        </div>
+        
+        <div class="mt-4 text-right">
+            <button onclick="document.getElementById('snDetailModal').classList.add('hidden')" class="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600">Tutup</button>
+        </div>
+    </div>
+</div>
+
+<script>
+async function showSnDetail(prodId, whId, status, prodName) {
+    document.getElementById('snDetailModal').classList.remove('hidden');
+    document.getElementById('snd_title').innerText = prodName;
+    
+    let statusLabel = '';
+    let statusColor = '';
+    if(status === 'READY') { statusLabel = 'READY (Available)'; statusColor = 'text-green-600'; }
+    else if(status === 'USED') { statusLabel = 'TERPAKAI (Sold)'; statusColor = 'text-purple-600'; }
+    else if(status === 'DAMAGED') { statusLabel = 'RUSAK (Defective)'; statusColor = 'text-red-600'; }
+    
+    document.getElementById('snd_status').innerText = statusLabel;
+    document.getElementById('snd_status').className = 'font-bold ' + statusColor;
+    
+    const container = document.getElementById('snd_list_container');
+    container.innerHTML = '<div class="text-center text-gray-400 py-10"><i class="fas fa-spinner fa-spin"></i> Memuat data...</div>';
+    
+    try {
+        const res = await fetch(`api.php?action=get_sn_by_status&product_id=${prodId}&warehouse_id=${whId}&status=${status}`);
+        const data = await res.json();
+        
+        if (data.length === 0) {
+            container.innerHTML = '<div class="text-center text-gray-400 py-10 italic">Tidak ada data Serial Number.</div>';
+            return;
+        }
+        
+        let html = '<table class="w-full text-xs text-left border-collapse">';
+        html += '<thead class="bg-gray-200 text-gray-600 font-bold"><tr><th class="p-2 w-10">#</th><th class="p-2">Serial Number</th><th class="p-2">Gudang</th><th class="p-2">Info</th></tr></thead><tbody>';
+        
+        data.forEach((item, idx) => {
+            let info = '-';
+            if (status === 'USED' && item.reference) {
+                info = `<span class="text-gray-500">Ref: ${item.reference}</span>`;
+            } else if (status === 'DAMAGED' && item.notes) {
+                 info = `<span class="text-red-500 truncate block max-w-[150px]" title="${item.notes}">${item.notes}</span>`;
+            }
+            
+            html += `<tr class="bg-white border-b hover:bg-gray-50">
+                <td class="p-2 text-center">${idx + 1}</td>
+                <td class="p-2 font-mono font-bold">${item.serial_number}</td>
+                <td class="p-2">${item.wh_name || '-'}</td>
+                <td class="p-2">${info}</td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+        
+    } catch (e) {
+        container.innerHTML = '<div class="text-center text-red-500 py-4">Gagal memuat data.</div>';
+    }
 }
 </script>

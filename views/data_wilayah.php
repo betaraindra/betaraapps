@@ -127,10 +127,11 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
             // E. TOP 10 MATERIAL PER WILAYAH
             $sql_top = "
                 SELECT 
-                    p.name, p.unit, p.has_serial_number,
+                    p.id, p.name, p.unit, p.has_serial_number,
                     COALESCE(SUM(CASE WHEN i.date BETWEEN ? AND ? AND i.type='IN' THEN i.quantity ELSE 0 END), 0) as qty_in,
                     COALESCE(SUM(CASE WHEN i.date BETWEEN ? AND ? AND i.type='OUT' THEN i.quantity ELSE 0 END), 0) as qty_out,
                     COALESCE(SUM(CASE WHEN i.date BETWEEN ? AND ? AND i.type='OUT' AND (i.notes LIKE 'Aktivitas:%' OR i.notes LIKE '%[PEMAKAIAN]%') THEN i.quantity ELSE 0 END), 0) as qty_used,
+                    COALESCE(SUM(CASE WHEN i.date BETWEEN ? AND ? AND i.type='OUT' AND i.notes LIKE 'Rusak:%' THEN i.quantity ELSE 0 END), 0) as qty_damaged_trx,
                     (
                         CASE 
                             WHEN p.has_serial_number = 1 THEN 
@@ -138,12 +139,24 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
                             ELSE 
                                 (SELECT COALESCE(SUM(IF(t.type='IN', t.quantity, -t.quantity)), 0) FROM inventory_transactions t WHERE t.product_id = p.id AND t.warehouse_id = ?)
                         END
-                    ) as ready_stock
+                    ) as ready_stock,
+                    (
+                        CASE 
+                            WHEN p.has_serial_number = 1 THEN 
+                                (SELECT COUNT(*) FROM product_serials ps WHERE ps.product_id = p.id AND ps.warehouse_id = ? AND ps.status = 'DEFECTIVE')
+                            ELSE 
+                                0 -- Untuk Non-SN, kita pakai qty_damaged_trx di atas (akumulasi periode) atau mau total? 
+                                  -- Request user: 'Kolom Unit Rusak'. Biasanya stok saat ini.
+                                  -- Tapi Non-SN tidak punya status 'DEFECTIVE'.
+                                  -- Jadi kita anggap Non-SN Rusak = Akumulasi Transaksi Rusak (Periode ini? Atau Selamanya?)
+                                  -- Untuk konsistensi tabel 'Top 10' yg berbasis periode, kita pakai qty_damaged_trx.
+                        END
+                    ) as damaged_stock_sn
                 FROM inventory_transactions i
                 JOIN products p ON i.product_id = p.id
                 WHERE i.warehouse_id = ?
                 GROUP BY p.id, p.name, p.unit, p.has_serial_number
-                HAVING ready_stock > 0 OR qty_used > 0 OR qty_in > 0 OR qty_out > 0
+                HAVING ready_stock > 0 OR qty_used > 0 OR qty_in > 0 OR qty_out > 0 OR qty_damaged_trx > 0 OR damaged_stock_sn > 0
                 ORDER BY ready_stock DESC, qty_used DESC
                 LIMIT 10
             ";
@@ -152,7 +165,9 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
                 $start_date, $end_date, 
                 $start_date, $end_date, 
                 $start_date, $end_date, 
+                $start_date, $end_date,
                 $wh_id, $wh_id, 
+                $wh_id, // For damaged_stock_sn subquery
                 $wh_id
             ]);
             $top_items = $stmt_top->fetchAll();
@@ -209,6 +224,7 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
                             <tr>
                                 <th class="p-2 pl-4 w-1/3">Nama Barang</th>
                                 <th class="p-2 text-center w-20 text-blue-600 font-bold">Ready</th>
+                                <th class="p-2 text-center text-red-600 font-bold">Rusak</th>
                                 <th class="p-2 text-center text-green-600">Masuk</th>
                                 <th class="p-2 text-center text-red-600">Keluar</th>
                                 <th class="p-2 pr-4 text-right text-purple-700 font-bold bg-purple-50">Terpakai</th>
@@ -216,9 +232,11 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
                         </thead>
                         <tbody class="divide-y divide-gray-100">
                             <?php if(empty($top_items)): ?>
-                                <tr><td colspan="5" class="p-4 text-center text-gray-400 italic">Belum ada pergerakan material pada periode ini.</td></tr>
+                                <tr><td colspan="6" class="p-4 text-center text-gray-400 italic">Belum ada pergerakan material pada periode ini.</td></tr>
                             <?php else: ?>
-                                <?php foreach($top_items as $item): ?>
+                                <?php foreach($top_items as $item): 
+                                    $damaged = ($item['has_serial_number'] == 1) ? $item['damaged_stock_sn'] : $item['qty_damaged_trx'];
+                                ?>
                                 <tr class="hover:bg-gray-50">
                                     <td class="p-2 pl-4 font-medium text-gray-700 truncate max-w-[150px]" title="<?= htmlspecialchars($item['name']) ?>">
                                         <?= htmlspecialchars($item['name']) ?>
@@ -226,6 +244,10 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
                                     <!-- KOLOM READY STOCK -->
                                     <td class="p-2 text-center text-blue-700 font-bold text-[10px]">
                                         <?= number_format($item['ready_stock']) ?> <?= htmlspecialchars($item['unit']) ?>
+                                    </td>
+                                    <!-- KOLOM RUSAK -->
+                                    <td class="p-2 text-center text-red-600 font-bold text-[10px]">
+                                        <?= number_format($damaged) ?>
                                     </td>
                                     <td class="p-2 text-center text-green-600 font-medium">
                                         <?= $item['qty_in'] > 0 ? '+'.$item['qty_in'] : '-' ?>

@@ -19,15 +19,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
             // Ambil Nama Gudang untuk Log
             $wh_name = $pdo->query("SELECT name FROM warehouses WHERE id = $wh_id")->fetchColumn();
             
-            // Generate Reference jika kosong
+            // 2. Generate Reference jika kosong
             if(empty($ref_custom)) {
                 $ref_custom = "ACT/" . date('ymd') . "/" . rand(100,999);
             }
 
+            $inputType = $_POST['input_type'] ?? 'PEMAKAIAN'; // PEMAKAIAN or RUSAK
             $items_saved = 0;
 
             foreach ($cart as $item) {
-                // 1. Validasi Barang & Ambil Harga Beli (HPP)
+                // ... (Validasi Barang) ...
                 $stmt = $pdo->prepare("SELECT id, name, buy_price, stock, has_serial_number FROM products WHERE sku = ?");
                 $stmt->execute([$item['sku']]);
                 $prod = $stmt->fetch();
@@ -37,15 +38,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                 $qty = (int)$item['qty'];
                 $sns = $item['sns'] ?? [];
                 
-                // 2. Validasi SN (1 Qty = 1 SN)
+                // ... (Validasi SN) ...
                 if ($prod['has_serial_number'] == 1) {
                     if (count($sns) !== $qty) {
                         throw new Exception("Error {$prod['name']}: Jumlah Qty ($qty) harus sama dengan jumlah SN yang dipilih (" . count($sns) . ").");
                     }
                     
-                    // Cek status SN apakah masih AVAILABLE di gudang ini (Anti Race Condition)
+                    // Cek status SN
                     $placeholders = implode(',', array_fill(0, count($sns), '?'));
-                    // Pastikan hanya cek SN yang statusnya AVAILABLE
                     $chkSn = $pdo->prepare("SELECT COUNT(*) FROM product_serials WHERE product_id = ? AND warehouse_id = ? AND status = 'AVAILABLE' AND serial_number IN ($placeholders)");
                     $paramsSn = [$prod['id'], $wh_id, ...$sns];
                     $chkSn->execute($paramsSn);
@@ -57,9 +57,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                 }
 
                 // 3. Catat Transaksi Inventori (OUT)
-                $item_note = "Aktivitas: $main_desc";
+                if ($inputType === 'RUSAK') {
+                    $item_note = "Rusak: $main_desc";
+                    $sn_status = 'DEFECTIVE';
+                } else {
+                    $item_note = "Aktivitas: $main_desc";
+                    $sn_status = 'SOLD';
+                }
+
                 if(!empty($item['notes'])) $item_note .= " (" . $item['notes'] . ")";
-                // Tambahkan list SN ke notes transaksi agar mudah dibaca di history
                 if(!empty($sns)) $item_note .= " [SN: " . implode(', ', $sns) . "]";
 
                 $stmtTrx = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
@@ -69,11 +75,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                 // 4. Update Stok Fisik
                 $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?")->execute([$qty, $prod['id']]);
 
-                // 5. Update Status SN menjadi SOLD
+                // 5. Update Status SN
                 if (!empty($sns)) {
-                    $updSn = $pdo->prepare("UPDATE product_serials SET status='SOLD', out_transaction_id=? WHERE product_id=? AND serial_number=? AND warehouse_id=?");
+                    $updSn = $pdo->prepare("UPDATE product_serials SET status=?, out_transaction_id=? WHERE product_id=? AND serial_number=? AND warehouse_id=?");
                     foreach ($sns as $sn) {
-                        $updSn->execute([$trx_id, $prod['id'], $sn, $wh_id]);
+                        $updSn->execute([$sn_status, $trx_id, $prod['id'], $sn, $wh_id]);
                     }
                 }
 
@@ -159,8 +165,21 @@ $history = $pdo->query("
                     <input type="text" name="reference" class="w-full border p-2 rounded text-sm uppercase" placeholder="Contoh: PLG-001">
                 </div>
                 <div class="md:col-span-3">
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Jenis Input</label>
+                    <div class="flex gap-4">
+                        <label class="flex items-center gap-2 cursor-pointer bg-green-50 px-4 py-2 rounded border border-green-200 hover:bg-green-100">
+                            <input type="radio" name="input_type" value="PEMAKAIAN" checked class="text-green-600 focus:ring-green-500" onchange="toggleInputType()">
+                            <span class="text-sm font-bold text-green-800"><i class="fas fa-tools mr-1"></i> Pemakaian (Normal)</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer bg-red-50 px-4 py-2 rounded border border-red-200 hover:bg-red-100">
+                            <input type="radio" name="input_type" value="RUSAK" class="text-red-600 focus:ring-red-500" onchange="toggleInputType()">
+                            <span class="text-sm font-bold text-red-800"><i class="fas fa-exclamation-triangle mr-1"></i> Unit Rusak / Defective</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="md:col-span-3">
                     <label class="block text-xs font-bold text-gray-700 mb-1">Deskripsi Pekerjaan <span class="text-red-500">*</span></label>
-                    <input type="text" name="description" class="w-full border p-2 rounded text-sm" placeholder="Contoh: Pasang Baru Bpk. Budi - Paket 50Mbps" required>
+                    <input type="text" name="description" id="inp_desc" class="w-full border p-2 rounded text-sm" placeholder="Contoh: Pasang Baru Bpk. Budi - Paket 50Mbps" required>
                 </div>
             </div>
         </div>
@@ -306,6 +325,35 @@ $history = $pdo->query("
 let cart = [];
 const productSelect = $('#product_select');
 const snSelect = $('#sn_select');
+
+function toggleInputType() {
+    // Check if cart has items
+    if (cart.length > 0) {
+        if(!confirm("Mengubah jenis input akan mengosongkan daftar barang saat ini. Lanjutkan?")) {
+            // Revert radio button selection
+            const current = document.querySelector('input[name="input_type"]:checked').value;
+            const previous = current === 'PEMAKAIAN' ? 'RUSAK' : 'PEMAKAIAN';
+            document.querySelector(`input[name="input_type"][value="${previous}"]`).checked = true;
+            return;
+        }
+        resetCart();
+    }
+
+    const type = document.querySelector('input[name="input_type"]:checked').value;
+    const descInput = document.getElementById('inp_desc');
+    
+    if (type === 'RUSAK') {
+        descInput.placeholder = "Contoh: Rusak kena petir, Port LAN mati, dll";
+        document.getElementById('btn_submit').classList.remove('bg-green-600', 'hover:bg-green-700');
+        document.getElementById('btn_submit').classList.add('bg-red-600', 'hover:bg-red-700');
+        document.getElementById('btn_submit').innerHTML = '<i class="fas fa-exclamation-triangle mr-2"></i> Simpan Unit Rusak';
+    } else {
+        descInput.placeholder = "Contoh: Pasang Baru Bpk. Budi - Paket 50Mbps";
+        document.getElementById('btn_submit').classList.remove('bg-red-600', 'hover:bg-red-700');
+        document.getElementById('btn_submit').classList.add('bg-green-600', 'hover:bg-green-700');
+        document.getElementById('btn_submit').innerHTML = '<i class="fas fa-save mr-2"></i> Simpan Aktivitas & Update Stok';
+    }
+}
 
 $(document).ready(function() {
     productSelect.select2({ placeholder: 'Pilih Barang...', width: '100%' });

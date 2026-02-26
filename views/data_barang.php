@@ -332,7 +332,8 @@ if (isset($_GET['edit_id'])) {
 $stock_map = [];
 $sql_sn_stock = "SELECT product_id, warehouse_id, 
                  SUM(CASE WHEN status = 'AVAILABLE' THEN 1 ELSE 0 END) as ready,
-                 SUM(CASE WHEN status = 'SOLD' THEN 1 ELSE 0 END) as used
+                 SUM(CASE WHEN status = 'SOLD' THEN 1 ELSE 0 END) as used,
+                 SUM(CASE WHEN status = 'DEFECTIVE' THEN 1 ELSE 0 END) as damaged
                  FROM product_serials 
                  WHERE warehouse_id IS NOT NULL 
                  GROUP BY product_id, warehouse_id";
@@ -341,7 +342,8 @@ while($r = $stmt_sn_stock->fetch()) {
     $stock_map[$r['product_id']][$r['warehouse_id']] = [
         'ready' => (int)$r['ready'],
         'used' => (int)$r['used'],
-        'total' => (int)$r['ready'] + (int)$r['used']
+        'damaged' => (int)$r['damaged'],
+        'total' => (int)$r['ready'] + (int)$r['used'] + (int)$r['damaged'] // Total Aset usually includes Ready + Used + Damaged (if physical asset exists)
     ];
 }
 
@@ -548,12 +550,15 @@ $total_asset_group = 0;
                                 <input type="text" id="unit_<?= $prod_id ?>" value="<?= htmlspecialchars($p['unit']) ?>" class="w-full border-none bg-transparent focus:bg-white focus:border focus:border-blue-500 rounded px-1 text-center text-xs" onchange="markEdited(<?= $prod_id ?>)">
                             </td>
                             <?php foreach($warehouses as $wh): 
-                                $cell_total = 0; $cell_ready = 0; $cell_used = 0;
+                                $cell_total = 0; $cell_ready = 0; $cell_used = 0; $cell_damaged = 0;
                                 $is_sn_item = ($p['has_serial_number'] == 1);
                                 if ($is_sn_item) {
                                     if (isset($stock_map[$prod_id][$wh['id']])) {
                                         $d = $stock_map[$prod_id][$wh['id']];
-                                        $cell_total = $d['total']; $cell_ready = $d['ready']; $cell_used = $d['used'];
+                                        $cell_total = $d['total']; 
+                                        $cell_ready = $d['ready']; 
+                                        $cell_used = $d['used'];
+                                        $cell_damaged = $d['damaged'] ?? 0;
                                     }
                                 } else {
                                     if (isset($trx_map[$prod_id][$wh['id']])) {
@@ -564,12 +569,19 @@ $total_asset_group = 0;
                                 $export_row[$wh['name']] = $cell_total;
                             ?>
                                 <td class="p-2 border text-center align-middle">
-                                    <?php if($cell_total > 0): ?>
+                                    <?php if($cell_total > 0 || $cell_damaged > 0): ?>
                                         <div class="font-bold text-gray-800 text-sm"><?= number_format($cell_total) ?></div>
-                                        <?php if($cell_used > 0): ?>
-                                            <div class="text-[9px] text-gray-500 mt-1 whitespace-nowrap bg-gray-100 rounded px-1">
-                                                <span class="text-green-600" title="Ready">R:<?= $cell_ready ?></span> | 
-                                                <span class="text-red-600 font-bold" title="Terpakai/Sold">U:<?= $cell_used ?></span>
+                                        <?php if($is_sn_item): ?>
+                                            <div class="text-[9px] text-gray-500 mt-1 whitespace-nowrap bg-gray-100 rounded px-1 flex justify-center gap-1">
+                                                <?php if($cell_ready > 0): ?>
+                                                    <span class="text-green-600 cursor-pointer hover:underline" title="Ready (Klik utk Detail)" onclick="showSnDetail(<?= $prod_id ?>, <?= $wh['id'] ?>, 'READY', '<?= h($p['name']) ?>')">R:<?= $cell_ready ?></span>
+                                                <?php endif; ?>
+                                                <?php if($cell_used > 0): ?>
+                                                    <span class="text-purple-600 font-bold cursor-pointer hover:underline" title="Terpakai/Sold (Klik utk Detail)" onclick="showSnDetail(<?= $prod_id ?>, <?= $wh['id'] ?>, 'USED', '<?= h($p['name']) ?>')">U:<?= $cell_used ?></span>
+                                                <?php endif; ?>
+                                                <?php if($cell_damaged > 0): ?>
+                                                    <span class="text-red-600 font-bold cursor-pointer hover:underline" title="Rusak/Defective (Klik utk Detail)" onclick="showSnDetail(<?= $prod_id ?>, <?= $wh['id'] ?>, 'DAMAGED', '<?= h($p['name']) ?>')">D:<?= $cell_damaged ?></span>
+                                                <?php endif; ?>
                                             </div>
                                         <?php endif; ?>
                                     <?php else: ?>
@@ -673,7 +685,79 @@ $total_asset_group = 0;
     </div>
 </div>
 
+<!-- SN DETAIL MODAL (READ ONLY) -->
+<div id="snDetailModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-lg p-6 relative flex flex-col max-h-[90vh]">
+        <button onclick="document.getElementById('snDetailModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+        <h3 class="text-xl font-bold mb-2 text-blue-700 flex items-center gap-2"><i class="fas fa-list"></i> Detail Serial Number</h3>
+        <p class="text-sm text-gray-600 border-b pb-2 mb-2">
+            Barang: <span id="snd_title" class="font-bold"></span><br>
+            Status: <span id="snd_status" class="font-bold"></span>
+        </p>
+        
+        <div class="overflow-y-auto flex-1 border rounded bg-gray-50 p-2" id="snd_list_container">
+            <div class="text-center text-gray-400 py-10"><i class="fas fa-spinner fa-spin"></i> Memuat data...</div>
+        </div>
+        
+        <div class="mt-4 text-right">
+            <button onclick="document.getElementById('snDetailModal').classList.add('hidden')" class="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600">Tutup</button>
+        </div>
+    </div>
+</div>
+
 <script>
+async function showSnDetail(prodId, whId, status, prodName) {
+    document.getElementById('snDetailModal').classList.remove('hidden');
+    document.getElementById('snd_title').innerText = prodName;
+    
+    let statusLabel = '';
+    let statusColor = '';
+    if(status === 'READY') { statusLabel = 'READY (Available)'; statusColor = 'text-green-600'; }
+    else if(status === 'USED') { statusLabel = 'TERPAKAI (Sold)'; statusColor = 'text-purple-600'; }
+    else if(status === 'DAMAGED') { statusLabel = 'RUSAK (Defective)'; statusColor = 'text-red-600'; }
+    
+    document.getElementById('snd_status').innerText = statusLabel;
+    document.getElementById('snd_status').className = 'font-bold ' + statusColor;
+    
+    const container = document.getElementById('snd_list_container');
+    container.innerHTML = '<div class="text-center text-gray-400 py-10"><i class="fas fa-spinner fa-spin"></i> Memuat data...</div>';
+    
+    try {
+        const res = await fetch(`api.php?action=get_sn_by_status&product_id=${prodId}&warehouse_id=${whId}&status=${status}`);
+        const data = await res.json();
+        
+        if (data.length === 0) {
+            container.innerHTML = '<div class="text-center text-gray-400 py-10 italic">Tidak ada data Serial Number.</div>';
+            return;
+        }
+        
+        let html = '<table class="w-full text-xs text-left border-collapse">';
+        html += '<thead class="bg-gray-200 text-gray-600 font-bold"><tr><th class="p-2 w-10">#</th><th class="p-2">Serial Number</th><th class="p-2">Gudang</th><th class="p-2">Info</th></tr></thead><tbody>';
+        
+        data.forEach((item, idx) => {
+            let info = '-';
+            if (status === 'USED' && item.reference) {
+                info = `<span class="text-gray-500">Ref: ${item.reference}</span>`;
+            } else if (status === 'DAMAGED' && item.notes) {
+                 // Try to extract relevant note part if possible, or just show full note
+                 info = `<span class="text-red-500 truncate block max-w-[150px]" title="${item.notes}">${item.notes}</span>`;
+            }
+            
+            html += `<tr class="bg-white border-b hover:bg-gray-50">
+                <td class="p-2 text-center">${idx + 1}</td>
+                <td class="p-2 font-mono font-bold">${item.serial_number}</td>
+                <td class="p-2">${item.wh_name || '-'}</td>
+                <td class="p-2">${info}</td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+        
+    } catch (e) {
+        container.innerHTML = '<div class="text-center text-red-500 py-4">Gagal memuat data.</div>';
+    }
+}
+
 function fmtRupiah(i) { let v = i.value.replace(/\D/g, ''); i.value = v ? new Intl.NumberFormat('id-ID').format(v) : ''; }
 
 function markEdited(id) {

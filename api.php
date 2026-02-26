@@ -205,4 +205,46 @@ if ($action === 'generate_sku') {
     echo json_encode(['sku' => $sku]);
     exit;
 }
+
+// === GET SN BY STATUS (FOR MODAL VIEW) ===
+if ($action === 'get_sn_by_status') {
+    $prod_id = $_GET['product_id'] ?? 0;
+    $wh_id = $_GET['warehouse_id'] ?? 0; // 0 = All Warehouses
+    $status_type = $_GET['status'] ?? ''; // READY, USED, DAMAGED
+
+    if (empty($prod_id) || empty($status_type)) {
+        echo json_encode([]);
+        exit;
+    }
+
+    $db_status = '';
+    switch ($status_type) {
+        case 'READY': $db_status = 'AVAILABLE'; break;
+        case 'USED': $db_status = 'SOLD'; break;
+        case 'DAMAGED': $db_status = 'DEFECTIVE'; break;
+        default: echo json_encode([]); exit;
+    }
+
+    $sql = "SELECT ps.serial_number, w.name as wh_name, ps.created_at, ps.updated_at, it.reference, it.notes
+            FROM product_serials ps
+            LEFT JOIN warehouses w ON ps.warehouse_id = w.id
+            LEFT JOIN inventory_transactions it ON ps.out_transaction_id = it.id
+            WHERE ps.product_id = ? AND ps.status = ?";
+    
+    $params = [$prod_id, $db_status];
+
+    if (!empty($wh_id)) {
+        $sql .= " AND ps.warehouse_id = ?";
+        $params[] = $wh_id;
+    }
+
+    $sql .= " ORDER BY ps.updated_at DESC LIMIT 500"; // Limit to prevent overload
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    echo json_encode($data);
+    exit;
+}
 ?>

@@ -723,35 +723,67 @@ async function showSnDetail(prodId, whId, status, prodName) {
     container.innerHTML = '<div class="text-center text-gray-400 py-10"><i class="fas fa-spinner fa-spin"></i> Memuat data...</div>';
     
     try {
+        // Fetch SN Data
         const res = await fetch(`api.php?action=get_sn_by_status&product_id=${prodId}&warehouse_id=${whId}&status=${status}`);
         const data = await res.json();
+
+        // Fetch Product Details (Reuse get_product_by_sku logic via API or pass data)
+        // For simplicity, we'll fetch basic product info to show "Detail Informasi Barang"
+        // But the user request implies showing it in the popup.
+        // Let's add a section for product details in the modal first.
         
+        // Update Modal Content
+        let content = '';
+
+        // 1. Product Info Section
+        // We can get some info from the DOM since we are on data_barang page
+        const sku = document.getElementById('sku_' + prodId).value;
+        const category = document.getElementById('cat_' + prodId).value;
+        const unit = document.getElementById('unit_' + prodId).value;
+        const buyPrice = document.getElementById('buy_' + prodId).value;
+        const sellPrice = document.getElementById('sell_' + prodId).value;
+        const notes = document.getElementById('note_' + prodId).value;
+
+        content += `
+            <div class="bg-blue-50 p-3 rounded mb-4 border border-blue-100 text-xs">
+                <h4 class="font-bold text-blue-800 mb-2 border-b border-blue-200 pb-1"><i class="fas fa-info-circle"></i> Detail Informasi Barang</h4>
+                <div class="grid grid-cols-2 gap-x-4 gap-y-1">
+                    <div><span class="text-gray-500">SKU:</span> <span class="font-mono font-bold">${sku}</span></div>
+                    <div><span class="text-gray-500">Kategori:</span> <span class="font-bold">${category}</span></div>
+                    <div><span class="text-gray-500">Satuan:</span> <span class="font-bold">${unit}</span></div>
+                    <div><span class="text-gray-500">Harga Beli:</span> <span class="font-bold">Rp ${buyPrice}</span></div>
+                    <div><span class="text-gray-500">Harga Jual:</span> <span class="font-bold">Rp ${sellPrice}</span></div>
+                    <div class="col-span-2"><span class="text-gray-500">Catatan:</span> <span class="italic">${notes || '-'}</span></div>
+                </div>
+            </div>
+        `;
+        
+        // 2. SN List Section
         if (data.length === 0) {
-            container.innerHTML = '<div class="text-center text-gray-400 py-10 italic">Tidak ada data Serial Number.</div>';
-            return;
+            content += '<div class="text-center text-gray-400 py-10 italic border rounded bg-gray-50">Tidak ada data Serial Number untuk status ini.</div>';
+        } else {
+            content += '<div class="border rounded overflow-hidden"><table class="w-full text-xs text-left border-collapse">';
+            content += '<thead class="bg-gray-200 text-gray-600 font-bold"><tr><th class="p-2 w-10">#</th><th class="p-2">Serial Number</th><th class="p-2">Gudang</th><th class="p-2">Info / Ref</th></tr></thead><tbody>';
+            
+            data.forEach((item, idx) => {
+                let info = '-';
+                if (status === 'USED' && item.reference) {
+                    info = `<span class="text-gray-500">Ref: ${item.reference}</span>`;
+                } else if (status === 'DAMAGED' && item.notes) {
+                     info = `<span class="text-red-500 truncate block max-w-[150px]" title="${item.notes}">${item.notes}</span>`;
+                }
+                
+                content += `<tr class="bg-white border-b hover:bg-gray-50">
+                    <td class="p-2 text-center">${idx + 1}</td>
+                    <td class="p-2 font-mono font-bold text-blue-600">${item.serial_number}</td>
+                    <td class="p-2">${item.wh_name || '-'}</td>
+                    <td class="p-2">${info}</td>
+                </tr>`;
+            });
+            content += '</tbody></table></div>';
         }
         
-        let html = '<table class="w-full text-xs text-left border-collapse">';
-        html += '<thead class="bg-gray-200 text-gray-600 font-bold"><tr><th class="p-2 w-10">#</th><th class="p-2">Serial Number</th><th class="p-2">Gudang</th><th class="p-2">Info</th></tr></thead><tbody>';
-        
-        data.forEach((item, idx) => {
-            let info = '-';
-            if (status === 'USED' && item.reference) {
-                info = `<span class="text-gray-500">Ref: ${item.reference}</span>`;
-            } else if (status === 'DAMAGED' && item.notes) {
-                 // Try to extract relevant note part if possible, or just show full note
-                 info = `<span class="text-red-500 truncate block max-w-[150px]" title="${item.notes}">${item.notes}</span>`;
-            }
-            
-            html += `<tr class="bg-white border-b hover:bg-gray-50">
-                <td class="p-2 text-center">${idx + 1}</td>
-                <td class="p-2 font-mono font-bold">${item.serial_number}</td>
-                <td class="p-2">${item.wh_name || '-'}</td>
-                <td class="p-2">${info}</td>
-            </tr>`;
-        });
-        html += '</tbody></table>';
-        container.innerHTML = html;
+        container.innerHTML = content;
         
     } catch (e) {
         container.innerHTML = '<div class="text-center text-red-500 py-4">Gagal memuat data.</div>';

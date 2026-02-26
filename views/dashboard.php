@@ -64,6 +64,11 @@ if ($access_inventory) {
     $inv_stats['out'] = $pdo->query("SELECT SUM(quantity) FROM inventory_transactions WHERE type='OUT' AND $cond")->fetchColumn() ?: 0;
     $inv_stats['items'] = $pdo->query("SELECT COUNT(*) FROM products")->fetchColumn();
     $inv_stats['low'] = $pdo->query("SELECT COUNT(*) FROM products WHERE stock < 10")->fetchColumn();
+    
+    // Hitung Total Rusak (SN Defective + Non-SN Trx Rusak)
+    $dmg_sn = $pdo->query("SELECT COUNT(*) FROM product_serials WHERE status = 'DEFECTIVE'")->fetchColumn() ?: 0;
+    $dmg_trx = $pdo->query("SELECT SUM(quantity) FROM inventory_transactions WHERE type='OUT' AND notes LIKE 'Rusak:%'")->fetchColumn() ?: 0;
+    $inv_stats['damaged'] = $dmg_sn + $dmg_trx;
 
     // Chart 1: Daily Activity (7 Hari Terakhir dari End Date)
     $end_ts_fixed = strtotime($end_date);
@@ -87,7 +92,17 @@ if ($access_inventory) {
     }
 
     // Top Stock
-    $inv_top_stock = $pdo->query("SELECT name, stock, unit FROM products ORDER BY stock DESC LIMIT 5")->fetchAll();
+    $inv_top_stock = $pdo->query("
+        SELECT p.id, p.name, p.stock, p.unit, p.has_serial_number,
+        (
+            CASE 
+                WHEN p.has_serial_number = 1 THEN (SELECT COUNT(*) FROM product_serials WHERE product_id = p.id AND status = 'DEFECTIVE')
+                ELSE (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = p.id AND type = 'OUT' AND notes LIKE 'Rusak:%')
+            END
+        ) as damaged_qty
+        FROM products p 
+        ORDER BY p.stock DESC LIMIT 5
+    ")->fetchAll();
 }
 ?>
 
@@ -215,6 +230,10 @@ if ($access_inventory) {
             <p class="text-xs font-bold text-gray-500 uppercase">Stok Menipis (< 10)</p>
             <h3 class="text-xl font-bold text-orange-600"><?= $inv_stats['low'] ?> <span class="text-xs text-gray-400">Item</span></h3>
         </div>
+        <div class="bg-white p-4 rounded-lg shadow border-l-4 border-red-700">
+            <p class="text-xs font-bold text-gray-500 uppercase">Total Unit Rusak</p>
+            <h3 class="text-xl font-bold text-red-700"><?= number_format($inv_stats['damaged']) ?> <span class="text-xs text-gray-400">Unit</span></h3>
+        </div>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -235,6 +254,7 @@ if ($access_inventory) {
                         <tr>
                             <th class="p-2 rounded-tl">Barang</th>
                             <th class="p-2 text-right">Stok</th>
+                            <th class="p-2 text-right text-red-600">Rusak</th>
                             <th class="p-2 text-center rounded-tr">Sat</th>
                         </tr>
                     </thead>
@@ -243,6 +263,7 @@ if ($access_inventory) {
                         <tr class="hover:bg-gray-50">
                             <td class="p-2 font-medium text-gray-700 truncate max-w-[150px]"><?= $item['name'] ?></td>
                             <td class="p-2 text-right font-bold text-blue-600"><?= number_format($item['stock']) ?></td>
+                            <td class="p-2 text-right font-bold text-red-600"><?= number_format($item['damaged_qty']) ?></td>
                             <td class="p-2 text-center text-gray-500"><?= $item['unit'] ?></td>
                         </tr>
                         <?php endforeach; ?>

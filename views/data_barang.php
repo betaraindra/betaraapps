@@ -604,6 +604,7 @@ $total_asset_group = 0;
                                         <button class="bg-red-100 text-red-700 p-1 rounded hover:bg-red-200 w-full text-[10px] font-bold"><i class="fas fa-trash"></i> Hapus</button>
                                     </form>
                                     <button onclick="manageSN(<?= $p['id'] ?>, '<?= h($p['name']) ?>')" class="bg-purple-100 text-purple-700 p-1 rounded hover:bg-purple-200 w-full text-[10px] font-bold"><i class="fas fa-list-ol"></i> Edit SN</button>
+                                    <button onclick="showProductDetail(<?= $p['id'] ?>)" class="bg-blue-100 text-blue-700 p-1 rounded hover:bg-blue-200 w-full text-[10px] font-bold"><i class="fas fa-info-circle"></i> Detail</button>
                                 </div>
                             </td>
                         </tr>
@@ -705,7 +706,154 @@ $total_asset_group = 0;
     </div>
 </div>
 
+<!-- DETAIL BARANG MODAL -->
+<div id="detailBarangModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-4xl p-6 relative flex flex-col max-h-[90vh]">
+        <button onclick="document.getElementById('detailBarangModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+        <h3 class="text-xl font-bold mb-4 text-indigo-700 flex items-center gap-2"><i class="fas fa-box-open"></i> Detail Barang Lengkap</h3>
+        
+        <div class="overflow-y-auto flex-1 pr-2" id="detail_content_container">
+            <div class="text-center text-gray-400 py-10"><i class="fas fa-spinner fa-spin"></i> Memuat data...</div>
+        </div>
+        
+        <div class="mt-4 text-right border-t pt-3">
+            <button onclick="document.getElementById('detailBarangModal').classList.add('hidden')" class="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600 font-bold">Tutup</button>
+        </div>
+    </div>
+</div>
+
 <script>
+async function showProductDetail(prodId) {
+    document.getElementById('detailBarangModal').classList.remove('hidden');
+    const container = document.getElementById('detail_content_container');
+    container.innerHTML = '<div class="text-center text-gray-400 py-10"><i class="fas fa-spinner fa-spin"></i> Memuat data...</div>';
+
+    try {
+        const res = await fetch(`api.php?action=get_product_detail_full&product_id=${prodId}`);
+        const data = await res.json();
+
+        if (data.error) {
+            container.innerHTML = `<div class="text-center text-red-500 py-4">${data.error}</div>`;
+            return;
+        }
+
+        const p = data.product;
+        const stocks = data.stock_summary;
+        const mutations = data.mutations;
+
+        let html = `
+            <!-- 1. INFO UTAMA -->
+            <div class="bg-indigo-50 p-4 rounded-lg mb-6 border border-indigo-100">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="flex gap-4">
+                        ${p.image_url ? `<img src="${p.image_url}" class="w-24 h-24 object-cover rounded border bg-white">` : '<div class="w-24 h-24 bg-gray-200 rounded flex items-center justify-center text-gray-400"><i class="fas fa-image fa-2x"></i></div>'}
+                        <div>
+                            <h4 class="font-bold text-lg text-gray-800">${p.name}</h4>
+                            <div class="font-mono text-indigo-600 font-bold text-sm mb-1">${p.sku}</div>
+                            <span class="bg-gray-200 text-gray-700 px-2 py-0.5 rounded text-xs font-bold">${p.category}</span>
+                            <span class="bg-blue-100 text-blue-800 px-2 py-0.5 rounded text-xs font-bold ml-1">${p.has_serial_number == 1 ? 'Serial Number' : 'Non-SN'}</span>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2 text-sm">
+                        <div><span class="text-gray-500 block text-xs">Harga Beli</span> <span class="font-bold">Rp ${new Intl.NumberFormat('id-ID').format(p.buy_price)}</span></div>
+                        <div><span class="text-gray-500 block text-xs">Harga Jual</span> <span class="font-bold">Rp ${new Intl.NumberFormat('id-ID').format(p.sell_price)}</span></div>
+                        <div><span class="text-gray-500 block text-xs">Satuan</span> <span class="font-bold">${p.unit}</span></div>
+                        <div><span class="text-gray-500 block text-xs">Total Aset</span> <span class="font-bold text-blue-600">${new Intl.NumberFormat('id-ID').format(p.stock)}</span></div>
+                    </div>
+                </div>
+                ${p.notes ? `<div class="mt-3 text-sm text-gray-600 italic border-t border-indigo-200 pt-2"><i class="fas fa-sticky-note mr-1"></i> ${p.notes}</div>` : ''}
+            </div>
+
+            <!-- 2. STOK PER WILAYAH -->
+            <h4 class="font-bold text-gray-700 mb-2 border-b pb-1"><i class="fas fa-warehouse text-blue-500"></i> Stok per Wilayah</h4>
+            <div class="overflow-x-auto mb-6 border rounded-lg">
+                <table class="w-full text-sm text-left">
+                    <thead class="bg-gray-100 text-gray-600 font-bold uppercase text-xs">
+                        <tr>
+                            <th class="p-2">Gudang</th>
+                            <th class="p-2 text-right text-green-600">Ready</th>
+                            <th class="p-2 text-right text-purple-600">Terpakai</th>
+                            <th class="p-2 text-right text-red-600">Rusak</th>
+                            <th class="p-2 text-right">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y">
+        `;
+
+        if (stocks.length === 0) {
+            html += '<tr><td colspan="5" class="p-3 text-center text-gray-400 italic">Belum ada data stok.</td></tr>';
+        } else {
+            stocks.forEach(s => {
+                const total = parseInt(s.ready) + parseInt(s.used) + parseInt(s.damaged);
+                html += `
+                    <tr class="hover:bg-gray-50">
+                        <td class="p-2 font-medium">${s.wh_name || 'Unknown'}</td>
+                        <td class="p-2 text-right font-bold text-green-600">${new Intl.NumberFormat('id-ID').format(s.ready)}</td>
+                        <td class="p-2 text-right font-bold text-purple-600">${new Intl.NumberFormat('id-ID').format(s.used)}</td>
+                        <td class="p-2 text-right font-bold text-red-600">${new Intl.NumberFormat('id-ID').format(s.damaged)}</td>
+                        <td class="p-2 text-right font-bold">${new Intl.NumberFormat('id-ID').format(total)}</td>
+                    </tr>
+                `;
+            });
+        }
+
+        html += `
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- 3. RIWAYAT MUTASI TERAKHIR -->
+            <h4 class="font-bold text-gray-700 mb-2 border-b pb-1"><i class="fas fa-history text-orange-500"></i> 20 Mutasi Terakhir</h4>
+            <div class="overflow-x-auto border rounded-lg">
+                <table class="w-full text-xs text-left">
+                    <thead class="bg-gray-100 text-gray-600 font-bold uppercase">
+                        <tr>
+                            <th class="p-2">Tanggal</th>
+                            <th class="p-2">Tipe</th>
+                            <th class="p-2">Gudang</th>
+                            <th class="p-2 text-right">Qty</th>
+                            <th class="p-2">Ref / Ket</th>
+                            <th class="p-2">User</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y">
+        `;
+
+        if (mutations.length === 0) {
+            html += '<tr><td colspan="6" class="p-3 text-center text-gray-400 italic">Belum ada riwayat transaksi.</td></tr>';
+        } else {
+            mutations.forEach(m => {
+                let typeClass = m.type === 'IN' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
+                html += `
+                    <tr class="hover:bg-gray-50">
+                        <td class="p-2 whitespace-nowrap">${m.date}</td>
+                        <td class="p-2"><span class="${typeClass} px-1 rounded font-bold text-[10px]">${m.type}</span></td>
+                        <td class="p-2">${m.wh_name || '-'}</td>
+                        <td class="p-2 text-right font-bold">${new Intl.NumberFormat('id-ID').format(m.quantity)}</td>
+                        <td class="p-2">
+                            <div class="font-bold text-gray-700">${m.reference || '-'}</div>
+                            <div class="text-gray-500 italic truncate max-w-[150px]">${m.notes || ''}</div>
+                        </td>
+                        <td class="p-2 text-gray-500">${m.username || '-'}</td>
+                    </tr>
+                `;
+            });
+        }
+
+        html += `
+                    </tbody>
+                </table>
+            </div>
+        `;
+
+        container.innerHTML = html;
+
+    } catch (e) {
+        container.innerHTML = '<div class="text-center text-red-500 py-4">Gagal memuat data detail.</div>';
+        console.error(e);
+    }
+}
+
 async function showSnDetail(prodId, whId, status, prodName) {
     document.getElementById('snDetailModal').classList.remove('hidden');
     document.getElementById('snd_title').innerText = prodName;

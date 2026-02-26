@@ -39,7 +39,13 @@ if ($warehouse_filter === 'ALL') {
                     WHEN p.has_serial_number = 1 THEN (SELECT COUNT(*) FROM product_serials WHERE product_id = p.id AND status = 'DEFECTIVE')
                     ELSE (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = p.id AND type = 'OUT' AND notes LIKE 'Rusak:%')
                 END
-            ) as damaged_qty
+            ) as damaged_qty,
+            (
+                CASE 
+                    WHEN p.has_serial_number = 1 THEN (SELECT COUNT(*) FROM product_serials WHERE product_id = p.id AND status = 'SOLD')
+                    ELSE (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = p.id AND type = 'OUT' AND notes NOT LIKE 'Rusak:%')
+                END
+            ) as used_qty
             FROM products p 
             LEFT JOIN accounts a ON p.category = a.code
             WHERE p.stock > 0";
@@ -71,11 +77,19 @@ if ($warehouse_filter === 'ALL') {
                     WHEN p.has_serial_number = 1 THEN (SELECT COUNT(*) FROM product_serials WHERE product_id = p.id AND warehouse_id = ? AND status = 'DEFECTIVE')
                     ELSE (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = p.id AND warehouse_id = ? AND type = 'OUT' AND notes LIKE 'Rusak:%')
                 END
-            ) as damaged_qty
+            ) as damaged_qty,
+            (
+                CASE 
+                    WHEN p.has_serial_number = 1 THEN (SELECT COUNT(*) FROM product_serials WHERE product_id = p.id AND warehouse_id = ? AND status = 'SOLD')
+                    ELSE (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = p.id AND warehouse_id = ? AND type = 'OUT' AND notes NOT LIKE 'Rusak:%')
+                END
+            ) as used_qty
             FROM products p
             LEFT JOIN accounts a ON p.category = a.code
             WHERE 1=1";
     
+    $params[] = $warehouse_filter;
+    $params[] = $warehouse_filter;
     $params[] = $warehouse_filter;
     $params[] = $warehouse_filter;
     $params[] = $warehouse_filter;
@@ -131,12 +145,14 @@ unset($prod_row);
 $total_asset_value = 0;
 $total_qty = 0;
 $total_damaged = 0;
+$total_used = 0;
 $total_items = count($products);
 
 foreach($products as $p) {
     $total_asset_value += ($p['stock'] * $p['buy_price']);
     $total_qty += $p['stock'];
     $total_damaged += $p['damaged_qty'];
+    $total_used += $p['used_qty'];
 }
 ?>
 
@@ -286,6 +302,7 @@ foreach($products as $p) {
                     <th class="p-2 border border-gray-300">Kategori</th>
                     <th class="p-2 border border-gray-300 w-48">Contoh SN</th>
                     <th class="p-2 border border-gray-300 text-right">Stok</th>
+                    <th class="p-2 border border-gray-300 text-right text-purple-600">Terpakai</th>
                     <th class="p-2 border border-gray-300 text-right text-red-600">Rusak</th>
                     <th class="p-2 border border-gray-300 text-center">Sat</th>
                     <th class="p-2 border border-gray-300 text-right">Harga Beli (HPP)</th>
@@ -308,6 +325,7 @@ foreach($products as $p) {
                         <?= h($p['sn_string']) ?>
                     </td>
                     <td class="p-2 border border-gray-300 text-right font-bold"><?= number_format($p['stock']) ?></td>
+                    <td class="p-2 border border-gray-300 text-right font-bold text-purple-600"><?= number_format($p['used_qty']) ?></td>
                     <td class="p-2 border border-gray-300 text-right font-bold text-red-600"><?= number_format($p['damaged_qty']) ?></td>
                     <td class="p-2 border border-gray-300 text-center text-xs"><?= $p['unit'] ?></td>
                     <td class="p-2 border border-gray-300 text-right"><?= formatRupiah($p['buy_price']) ?></td>
@@ -317,13 +335,14 @@ foreach($products as $p) {
                 </tr>
                 <?php endforeach; ?>
                 <?php if(empty($products)): ?>
-                    <tr><td colspan="10" class="p-4 text-center text-gray-500">Tidak ada stok barang di lokasi ini.</td></tr>
+                    <tr><td colspan="11" class="p-4 text-center text-gray-500">Tidak ada stok barang di lokasi ini.</td></tr>
                 <?php endif; ?>
             </tbody>
             <tfoot class="bg-gray-100 font-bold border-t-2 border-gray-400">
                 <tr>
                     <td colspan="5" class="p-3 text-right border border-gray-300">TOTAL</td>
                     <td class="p-3 text-right text-blue-700 border border-gray-300"><?= number_format($total_qty) ?></td>
+                    <td class="p-3 text-right text-purple-700 border border-gray-300"><?= number_format($total_used) ?></td>
                     <td class="p-3 text-right text-red-700 border border-gray-300"><?= number_format($total_damaged) ?></td>
                     <td colspan="2" class="border border-gray-300"></td>
                     <td class="p-3 text-right text-lg text-blue-800 bg-blue-100 border border-gray-300">

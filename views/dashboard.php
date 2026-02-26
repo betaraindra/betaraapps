@@ -70,6 +70,15 @@ if ($access_inventory) {
     $dmg_trx = $pdo->query("SELECT SUM(quantity) FROM inventory_transactions WHERE type='OUT' AND notes LIKE 'Rusak:%'")->fetchColumn() ?: 0;
     $inv_stats['damaged'] = $dmg_sn + $dmg_trx;
 
+    // Hitung Total Terpakai (SN Sold + Non-SN Trx Used)
+    $used_sn = $pdo->query("SELECT COUNT(*) FROM product_serials WHERE status = 'SOLD'")->fetchColumn() ?: 0;
+    // Asumsi Non-SN Terpakai adalah transaksi OUT yang bukan Rusak dan bukan Transfer (jika ada)
+    // Atau lebih spesifik jika ada pola notes tertentu. Untuk saat ini kita ambil OUT yang bukan Rusak.
+    // Namun, OUT bisa juga penjualan. Jika konteksnya "Terpakai" = "Sold/Used", maka semua OUT non-rusak bisa dianggap terpakai/terjual.
+    // Sesuai request sebelumnya, "Terpakai" di detail gudang adalah "USED".
+    $used_trx = $pdo->query("SELECT SUM(quantity) FROM inventory_transactions WHERE type='OUT' AND notes NOT LIKE 'Rusak:%'")->fetchColumn() ?: 0;
+    $inv_stats['used'] = $used_sn + $used_trx;
+
     // Chart 1: Daily Activity (7 Hari Terakhir dari End Date)
     $end_ts_fixed = strtotime($end_date);
     for($i=6; $i>=0; $i--) {
@@ -99,7 +108,13 @@ if ($access_inventory) {
                 WHEN p.has_serial_number = 1 THEN (SELECT COUNT(*) FROM product_serials WHERE product_id = p.id AND status = 'DEFECTIVE')
                 ELSE (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = p.id AND type = 'OUT' AND notes LIKE 'Rusak:%')
             END
-        ) as damaged_qty
+        ) as damaged_qty,
+        (
+            CASE 
+                WHEN p.has_serial_number = 1 THEN (SELECT COUNT(*) FROM product_serials WHERE product_id = p.id AND status = 'SOLD')
+                ELSE (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = p.id AND type = 'OUT' AND notes NOT LIKE 'Rusak:%')
+            END
+        ) as used_qty
         FROM products p 
         ORDER BY p.stock DESC LIMIT 5
     ")->fetchAll();
@@ -234,6 +249,10 @@ if ($access_inventory) {
             <p class="text-xs font-bold text-gray-500 uppercase">Total Unit Rusak</p>
             <h3 class="text-xl font-bold text-red-700"><?= number_format($inv_stats['damaged']) ?> <span class="text-xs text-gray-400">Unit</span></h3>
         </div>
+        <div class="bg-white p-4 rounded-lg shadow border-l-4 border-blue-700">
+            <p class="text-xs font-bold text-gray-500 uppercase">Total Unit Terpakai</p>
+            <h3 class="text-xl font-bold text-blue-700"><?= number_format($inv_stats['used']) ?> <span class="text-xs text-gray-400">Unit</span></h3>
+        </div>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -254,6 +273,7 @@ if ($access_inventory) {
                         <tr>
                             <th class="p-2 rounded-tl">Barang</th>
                             <th class="p-2 text-right">Stok</th>
+                            <th class="p-2 text-right text-purple-600">Terpakai</th>
                             <th class="p-2 text-right text-red-600">Rusak</th>
                             <th class="p-2 text-center rounded-tr">Sat</th>
                         </tr>
@@ -263,6 +283,7 @@ if ($access_inventory) {
                         <tr class="hover:bg-gray-50">
                             <td class="p-2 font-medium text-gray-700 truncate max-w-[150px]"><?= $item['name'] ?></td>
                             <td class="p-2 text-right font-bold text-blue-600"><?= number_format($item['stock']) ?></td>
+                            <td class="p-2 text-right font-bold text-purple-600"><?= number_format($item['used_qty']) ?></td>
                             <td class="p-2 text-right font-bold text-red-600"><?= number_format($item['damaged_qty']) ?></td>
                             <td class="p-2 text-center text-gray-500"><?= $item['unit'] ?></td>
                         </tr>

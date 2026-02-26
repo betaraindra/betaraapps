@@ -247,4 +247,75 @@ if ($action === 'get_sn_by_status') {
     echo json_encode($data);
     exit;
 }
+
+// === GET PRODUCT DETAIL FULL (FOR MODAL) ===
+if ($action === 'get_product_detail_full') {
+    $prod_id = $_GET['product_id'] ?? 0;
+    
+    if (empty($prod_id)) {
+        echo json_encode(['error' => 'Invalid Product ID']);
+        exit;
+    }
+
+    // 1. Product Info
+    $stmt = $pdo->prepare("SELECT * FROM products WHERE id = ?");
+    $stmt->execute([$prod_id]);
+    $product = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$product) {
+        echo json_encode(['error' => 'Product not found']);
+        exit;
+    }
+
+    // 2. Stock Summary per Warehouse
+    $stock_summary = [];
+    if ($product['has_serial_number']) {
+        // Serialized
+        $sql = "SELECT w.name as wh_name,
+                SUM(CASE WHEN ps.status = 'AVAILABLE' THEN 1 ELSE 0 END) as ready,
+                SUM(CASE WHEN ps.status = 'SOLD' THEN 1 ELSE 0 END) as used,
+                SUM(CASE WHEN ps.status = 'DEFECTIVE' THEN 1 ELSE 0 END) as damaged
+                FROM product_serials ps
+                LEFT JOIN warehouses w ON ps.warehouse_id = w.id
+                WHERE ps.product_id = ?
+                GROUP BY ps.warehouse_id, w.name";
+        $stmtStock = $pdo->prepare($sql);
+        $stmtStock->execute([$prod_id]);
+    } else {
+        // Non-Serialized (Transaction based)
+        $sql = "SELECT w.name as wh_name,
+                (COALESCE(SUM(CASE WHEN t.type='IN' THEN t.quantity ELSE 0 END), 0) - 
+                 COALESCE(SUM(CASE WHEN t.type='OUT' THEN t.quantity ELSE 0 END), 0)) as ready,
+                (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = ? AND warehouse_id = t.warehouse_id AND type='OUT' AND notes NOT LIKE 'Rusak:%') as used,
+                (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = ? AND warehouse_id = t.warehouse_id AND type='OUT' AND notes LIKE 'Rusak:%') as damaged
+                FROM inventory_transactions t
+                LEFT JOIN warehouses w ON t.warehouse_id = w.id
+                WHERE t.product_id = ?
+                GROUP BY t.warehouse_id, w.name
+                HAVING ready > 0 OR used > 0 OR damaged > 0";
+        $stmtStock = $pdo->prepare($sql);
+        $stmtStock->execute([$prod_id, $prod_id, $prod_id]);
+    }
+    $stock_summary = $stmtStock->fetchAll(PDO::FETCH_ASSOC);
+
+    // 3. Recent Mutations (Last 20)
+    $stmtTrx = $pdo->prepare("
+        SELECT t.date, t.type, t.quantity, t.reference, t.notes, w.name as wh_name, u.username
+        FROM inventory_transactions t
+        LEFT JOIN warehouses w ON t.warehouse_id = w.id
+        LEFT JOIN users u ON t.user_id = u.id
+        WHERE t.product_id = ?
+        ORDER BY t.created_at DESC
+        LIMIT 20
+    ");
+    $stmtTrx->execute([$prod_id]);
+    $mutations = $stmtTrx->fetchAll(PDO::FETCH_ASSOC);
+
+    echo json_encode([
+        'product' => $product,
+        'stock_summary' => $stock_summary,
+        'mutations' => $mutations
+    ]);
+    exit;
+}
 ?>

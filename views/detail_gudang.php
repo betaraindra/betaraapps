@@ -686,9 +686,23 @@ async function showSnDetail(prodId, whId, status, prodName) {
     
     try {
         const res = await fetch(`api.php?action=get_sn_by_status&product_id=${prodId}&warehouse_id=${whId}&status=${status}`);
-        const data = await res.json();
         
-        if (data.length === 0) {
+        const text = await res.text();
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch (e) {
+            console.error("Invalid JSON:", text);
+            throw new Error(`Respon server tidak valid (${res.status}). Cek console.`);
+        }
+
+        if (!res.ok) {
+            throw new Error(data.error || `HTTP Error ${res.status}`);
+        }
+
+        if (data.error) throw new Error(data.error);
+        
+        if (!Array.isArray(data) || data.length === 0) {
             container.innerHTML = '<div class="text-center text-gray-400 py-10 italic">Tidak ada data Serial Number.</div>';
             return;
         }
@@ -715,7 +729,7 @@ async function showSnDetail(prodId, whId, status, prodName) {
         container.innerHTML = html;
         
     } catch (e) {
-        container.innerHTML = '<div class="text-center text-red-500 py-4">Gagal memuat data.</div>';
+        container.innerHTML = `<div class="text-center text-red-500 py-4">Gagal memuat data: ${e.message}</div>`;
     }
 }
 </script>

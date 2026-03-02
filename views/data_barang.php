@@ -884,15 +884,17 @@ async function showSnDetail(prodId, whId, status, prodName) {
         // Fetch SN Data
         const res = await fetch(`api.php?action=get_sn_by_status&product_id=${prodId}&warehouse_id=${whId}&status=${status}`);
         
-        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-        
         const text = await res.text();
         let data;
         try {
             data = JSON.parse(text);
         } catch (e) {
             console.error("Invalid JSON:", text);
-            throw new Error("Respon server tidak valid (Bukan JSON). Cek console.");
+            throw new Error(`Respon server tidak valid (${res.status}). Cek console.`);
+        }
+
+        if (!res.ok) {
+            throw new Error(data.error || `HTTP Error ${res.status}`);
         }
 
         if (data.error) throw new Error(data.error);

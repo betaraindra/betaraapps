@@ -225,7 +225,7 @@ if ($action === 'get_sn_by_status') {
         default: echo json_encode([]); exit;
     }
 
-    $sql = "SELECT ps.serial_number, w.name as wh_name, ps.created_at, ps.updated_at, it.reference, it.notes
+    $sql = "SELECT ps.serial_number, w.name as wh_name, it.reference, it.notes
             FROM product_serials ps
             LEFT JOIN warehouses w ON ps.warehouse_id = w.id
             LEFT JOIN inventory_transactions it ON ps.out_transaction_id = it.id
@@ -238,7 +238,8 @@ if ($action === 'get_sn_by_status') {
         $params[] = $wh_id;
     }
 
-    $sql .= " ORDER BY ps.updated_at DESC LIMIT 500"; // Limit to prevent overload
+    // Use created_at or id for ordering as updated_at might not exist
+    $sql .= " ORDER BY ps.id DESC LIMIT 500";
 
     try {
         $stmt = $pdo->prepare($sql);

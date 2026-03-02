@@ -240,11 +240,15 @@ if ($action === 'get_sn_by_status') {
 
     $sql .= " ORDER BY ps.updated_at DESC LIMIT 500"; // Limit to prevent overload
 
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    echo json_encode($data);
+    try {
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        echo json_encode($data);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Database Error: ' . $e->getMessage()]);
+    }
     exit;
 }
 

@@ -43,6 +43,16 @@ try {
     // Silent error 
 }
 
+// --- SELF-HEALING 4: ENSURE product_serials COLUMNS (FIX CRASH) ---
+try {
+    $pdo->query("SELECT out_transaction_id FROM product_serials LIMIT 1");
+} catch (Exception $e) {
+    try {
+        $pdo->exec("ALTER TABLE product_serials ADD COLUMN out_transaction_id INT DEFAULT NULL");
+        $pdo->exec("CREATE INDEX idx_ps_out_trx ON product_serials(out_transaction_id)");
+    } catch (Exception $ex) { }
+}
+
 // --- AMBIL DATA MASTER UNTUK FORM ---
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
 $category_accounts = $pdo->query("SELECT * FROM accounts WHERE code IN ('3003', '2005', '2105') ORDER BY code ASC")->fetchAll();
@@ -873,7 +883,19 @@ async function showSnDetail(prodId, whId, status, prodName) {
     try {
         // Fetch SN Data
         const res = await fetch(`api.php?action=get_sn_by_status&product_id=${prodId}&warehouse_id=${whId}&status=${status}`);
-        const data = await res.json();
+        
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        
+        const text = await res.text();
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch (e) {
+            console.error("Invalid JSON:", text);
+            throw new Error("Respon server tidak valid (Bukan JSON). Cek console.");
+        }
+
+        if (data.error) throw new Error(data.error);
 
         // Fetch Product Details (Reuse get_product_by_sku logic via API or pass data)
         // For simplicity, we'll fetch basic product info to show "Detail Informasi Barang"
@@ -885,12 +907,19 @@ async function showSnDetail(prodId, whId, status, prodName) {
 
         // 1. Product Info Section
         // We can get some info from the DOM since we are on data_barang page
-        const sku = document.getElementById('sku_' + prodId).value;
-        const category = document.getElementById('cat_' + prodId).value;
-        const unit = document.getElementById('unit_' + prodId).value;
-        const buyPrice = document.getElementById('buy_' + prodId).value;
-        const sellPrice = document.getElementById('sell_' + prodId).value;
-        const notes = document.getElementById('note_' + prodId).value;
+        const skuEl = document.getElementById('sku_' + prodId);
+        const catEl = document.getElementById('cat_' + prodId);
+        const unitEl = document.getElementById('unit_' + prodId);
+        const buyEl = document.getElementById('buy_' + prodId);
+        const sellEl = document.getElementById('sell_' + prodId);
+        const noteEl = document.getElementById('note_' + prodId);
+
+        const sku = skuEl ? skuEl.value : '-';
+        const category = catEl ? catEl.value : '-';
+        const unit = unitEl ? unitEl.value : '-';
+        const buyPrice = buyEl ? buyEl.value : '-';
+        const sellPrice = sellEl ? sellEl.value : '-';
+        const notes = noteEl ? noteEl.value : '';
 
         content += `
             <div class="bg-blue-50 p-3 rounded mb-4 border border-blue-100 text-xs">
@@ -907,7 +936,7 @@ async function showSnDetail(prodId, whId, status, prodName) {
         `;
         
         // 2. SN List Section
-        if (data.length === 0) {
+        if (!Array.isArray(data) || data.length === 0) {
             content += '<div class="text-center text-gray-400 py-10 italic border rounded bg-gray-50">Tidak ada data Serial Number untuk status ini.</div>';
         } else {
             content += '<div class="border rounded overflow-hidden"><table class="w-full text-xs text-left border-collapse">';
@@ -934,7 +963,8 @@ async function showSnDetail(prodId, whId, status, prodName) {
         container.innerHTML = content;
         
     } catch (e) {
-        container.innerHTML = '<div class="text-center text-red-500 py-4">Gagal memuat data.</div>';
+        console.error(e);
+        container.innerHTML = `<div class="text-center text-red-500 py-4">Gagal memuat data: ${e.message}</div>`;
     }
 }
 

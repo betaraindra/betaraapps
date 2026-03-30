@@ -16,10 +16,21 @@ while ($row = $config_query->fetch()) $config[$row['setting_key']] = $row['setti
 $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAll();
 
 // --- PREPARE QUERY ---
-$sql = "SELECT i.*, p.sku, p.name as prod_name, p.unit, p.buy_price, p.sell_price, p.image_url, w.name as wh_name 
+$sql = "SELECT i.*, p.sku, p.name as prod_name, p.unit, p.buy_price, p.sell_price, p.image_url, p.has_serial_number, p.stock, w.name as wh_name,
+               COALESCE(ps.ready, 0) as ready_count,
+               COALESCE(ps.rusak, 0) as rusak_count,
+               COALESCE(ps.terpakai, 0) as terpakai_count
         FROM inventory_transactions i 
         JOIN products p ON i.product_id=p.id 
         JOIN warehouses w ON i.warehouse_id=w.id 
+        LEFT JOIN (
+            SELECT product_id,
+                   SUM(CASE WHEN status='AVAILABLE' THEN 1 ELSE 0 END) as ready,
+                   SUM(CASE WHEN status='DEFECTIVE' THEN 1 ELSE 0 END) as rusak,
+                   SUM(CASE WHEN status='SOLD' THEN 1 ELSE 0 END) as terpakai
+            FROM product_serials
+            GROUP BY product_id
+        ) ps ON p.id = ps.product_id
         WHERE i.date BETWEEN ? AND ?";
 
 $params = [$start, $end];
@@ -240,10 +251,10 @@ if ($warehouse_filter !== 'ALL') {
                 <?php foreach($grouped_data as $key => $group): ?>
                     <!-- Header Periode -->
                     <tr class="bg-red-300 print:bg-red-300">
-                        <td colspan="7" class="border border-gray-400 p-2 font-bold text-red-900">
+                        <td colspan="8" class="border border-gray-400 p-2 font-bold text-red-900">
                             Periode <?= $group['label'] ?>
                         </td>
-                        <td colspan="5" class="border border-gray-400 p-2 font-bold text-red-900 text-right">
+                        <td colspan="6" class="border border-gray-400 p-2 font-bold text-red-900 text-right">
                             Total Nilai Material: <?= formatRupiah($group['total']) ?>
                         </td>
                     </tr>
@@ -258,6 +269,9 @@ if ($warehouse_filter !== 'ALL') {
                         <th class="border border-gray-500 p-2">Gudang</th>
                         <th class="border border-gray-500 p-2 w-16">Qty</th>
                         <th class="border border-gray-500 p-2 w-10">Sat</th>
+                        <th class="border border-gray-500 p-2 w-16">READY</th>
+                        <th class="border border-gray-500 p-2 w-16">RUSAK</th>
+                        <th class="border border-gray-500 p-2 w-16">TERPAKAI</th>
                         <th class="border border-gray-500 p-2">Ket</th>
                         <th class="border border-gray-500 p-2">User</th>
                         <th class="border border-gray-500 p-2 w-16 no-print">Cetak</th>
@@ -282,6 +296,15 @@ if ($warehouse_filter !== 'ALL') {
                             </span>
                         </td>
                         <td class="border border-gray-400 p-2 text-center"><?= $item['unit'] ?></td>
+                        <td class="border border-gray-400 p-2 text-center font-bold text-green-700">
+                            <?= $item['has_serial_number'] == 1 ? $item['ready_count'] : $item['stock'] ?>
+                        </td>
+                        <td class="border border-gray-400 p-2 text-center font-bold text-red-700">
+                            <?= $item['has_serial_number'] == 1 ? $item['rusak_count'] : '-' ?>
+                        </td>
+                        <td class="border border-gray-400 p-2 text-center font-bold text-blue-700">
+                            <?= $item['has_serial_number'] == 1 ? $item['terpakai_count'] : '-' ?>
+                        </td>
                         <td class="border border-gray-400 p-2 text-gray-600 italic"><?= $item['notes'] ?></td>
                         <td class="border border-gray-400 p-2 text-center text-[9px] text-gray-500">
                             <?php 

@@ -89,15 +89,78 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // 2. UPDATE SERIAL NUMBERS (NEW FEATURE)
+    // 2. GENERATE MISSING SN
+    if (isset($_POST['generate_missing_sn'])) {
+        $prod_id = $_POST['sn_product_id'];
+        $has_sn = isset($_POST['sn_has_sn']) ? (int)$_POST['sn_has_sn'] : 1;
+        
+        $pdo->beginTransaction();
+        try {
+            // Update has_serial_number
+            $pdo->prepare("UPDATE products SET has_serial_number = ? WHERE id = ?")->execute([$has_sn, $prod_id]);
+            
+            if ($has_sn == 1) {
+                // Get real stock from transactions
+                $real_stock = $pdo->query("
+                    SELECT (COALESCE(SUM(CASE WHEN type='IN' THEN quantity ELSE 0 END), 0) -
+                            COALESCE(SUM(CASE WHEN type='OUT' THEN quantity ELSE 0 END), 0))
+                    FROM inventory_transactions WHERE product_id=$prod_id
+                ")->fetchColumn();
+                
+                // Get current AVAILABLE SNs
+                $current_sn_count = $pdo->query("SELECT COUNT(*) FROM product_serials WHERE product_id=$prod_id AND status='AVAILABLE'")->fetchColumn();
+                
+                $missing = $real_stock - $current_sn_count;
+                
+                if ($missing > 0) {
+                    // Get product info
+                    $p_info = $pdo->query("SELECT sku FROM products WHERE id=$prod_id")->fetch();
+                    $sku = $p_info['sku'];
+                    
+                    // Get warehouse (default to first one or from latest IN transaction)
+                    $wh_id = $pdo->query("SELECT warehouse_id FROM inventory_transactions WHERE product_id=$prod_id AND type='IN' ORDER BY date DESC LIMIT 1")->fetchColumn();
+                    if (!$wh_id) $wh_id = $pdo->query("SELECT id FROM warehouses LIMIT 1")->fetchColumn();
+                    
+                    // Get latest IN transaction id
+                    $in_trx_id = $pdo->query("SELECT id FROM inventory_transactions WHERE product_id=$prod_id AND type='IN' ORDER BY date DESC LIMIT 1")->fetchColumn();
+                    
+                    $stmtSN = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+                    
+                    for ($i = 0; $i < $missing; $i++) {
+                        $sn = $sku . '-' . date('Ym') . '-' . strtoupper(substr(uniqid(), -5));
+                        $stmtSN->execute([$prod_id, $sn, $wh_id, $in_trx_id]);
+                    }
+                    
+                    // Update master stock
+                    $pdo->prepare("UPDATE products SET stock=? WHERE id=?")->execute([$real_stock, $prod_id]);
+                }
+            }
+            
+            $pdo->commit();
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>'SN berhasil digenerate.'];
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal generate SN: '.$e->getMessage()];
+        }
+        echo "<script>window.location='?page=data_barang';</script>";
+        exit;
+    }
+
+    // 3. UPDATE SERIAL NUMBERS (NEW FEATURE)
     if (isset($_POST['update_sn_list'])) {
         $prod_id = $_POST['sn_product_id'];
+        $has_sn = isset($_POST['sn_has_sn']) ? (int)$_POST['sn_has_sn'] : null;
         $sn_ids = $_POST['sn_ids'] ?? [];
         $sn_values = $_POST['sn_values'] ?? [];
         $sn_deletes = $_POST['sn_deletes'] ?? []; // Array ID yang dihapus
 
         $pdo->beginTransaction();
         try {
+            // Update has_serial_number if provided
+            if ($has_sn !== null) {
+                $pdo->prepare("UPDATE products SET has_serial_number = ? WHERE id = ?")->execute([$has_sn, $prod_id]);
+            }
+
             // HAPUS SN YANG DICENTANG (Termasuk SOLD)
             $deleted_stock_count = 0; // Hanya hitung pengurangan stok master jika status AVAILABLE
             
@@ -166,6 +229,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $def_wh = $pdo->query("SELECT id FROM warehouses LIMIT 1")->fetchColumn();
                 $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (CURDATE(), 'OUT', ?, ?, ?, 'CORRECTION', ?, ?)")
                     ->execute([$prod_id, $def_wh, $deleted_stock_count, $note, $_SESSION['user_id']]);
+            }
+
+            // Recalculate stock based on has_serial_number state
+            $p_chk = $pdo->prepare("SELECT has_serial_number, stock FROM products WHERE id=?");
+            $p_chk->execute([$prod_id]);
+            $p_data = $p_chk->fetch();
+            if ($p_data) {
+                $real_stock = 0;
+                if ($p_data['has_serial_number'] == 1) {
+                    $real_stock = $pdo->query("SELECT COUNT(*) FROM product_serials WHERE product_id=$prod_id AND status='AVAILABLE'")->fetchColumn();
+                } else {
+                    $real_stock = $pdo->query("
+                        SELECT (COALESCE(SUM(CASE WHEN type='IN' THEN quantity ELSE 0 END), 0) -
+                                COALESCE(SUM(CASE WHEN type='OUT' THEN quantity ELSE 0 END), 0))
+                        FROM inventory_transactions WHERE product_id=$prod_id
+                    ")->fetchColumn();
+                }
+                if ((int)$real_stock != (int)$p_data['stock']) {
+                    $pdo->prepare("UPDATE products SET stock=? WHERE id=?")->execute([$real_stock, $prod_id]);
+                }
             }
 
             $pdo->commit();
@@ -670,7 +753,7 @@ $total_asset_group = 0;
                                 </div>
                             </td>
                             <td class="p-1 border text-center align-middle">
-                                <button onclick="manageSN(<?= $p['id'] ?>, '<?= h($p['name']) ?>')" class="bg-purple-100 hover:bg-purple-200 text-purple-700 px-1 py-1 rounded text-[10px] font-bold w-full" title="Klik untuk Edit SN">SN</button>
+                                <button onclick="manageSN(<?= $p['id'] ?>, '<?= h($p['name']) ?>', <?= $p['has_serial_number'] ?>)" class="bg-purple-100 hover:bg-purple-200 text-purple-700 px-1 py-1 rounded text-[10px] font-bold w-full" title="Klik untuk Edit SN">SN</button>
                             </td>
                             <td class="p-2 border font-bold text-gray-700 align-middle">
                                 <input type="text" id="name_<?= $prod_id ?>" value="<?= htmlspecialchars($p['name']) ?>" class="w-full border-none bg-transparent focus:bg-white focus:border focus:border-blue-500 rounded px-1 font-bold text-xs" onchange="markEdited(<?= $prod_id ?>)">
@@ -804,7 +887,13 @@ $total_asset_group = 0;
             
             <div class="flex justify-between items-center mb-2">
                 <span class="text-xs font-bold text-gray-500 uppercase">Daftar SN</span>
-                <div class="text-xs text-gray-400 flex items-center gap-2">
+                <div class="text-xs text-gray-400 flex items-center gap-4">
+                    <label class="flex items-center gap-1 cursor-pointer font-bold text-blue-600">
+                        <select name="sn_has_sn" id="sn_has_sn" class="border rounded p-1 text-xs">
+                            <option value="1">Gunakan SN</option>
+                            <option value="0">Non-SN</option>
+                        </select>
+                    </label>
                     <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" id="chk_show_all_sn" onchange="loadSNs()"> Tampilkan Sold</label>
                 </div>
             </div>
@@ -821,7 +910,10 @@ $total_asset_group = 0;
                 </ul>
             </div>
 
-            <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 shadow">Simpan Perubahan</button>
+            <div class="flex gap-2">
+                <button type="submit" name="generate_missing_sn" value="1" class="w-1/3 bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 shadow" title="Generate otomatis SN untuk stok yang belum memiliki SN">Generate SN Kosong</button>
+                <button type="submit" class="w-2/3 bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 shadow">Simpan Perubahan</button>
+            </div>
         </form>
     </div>
 </div>
@@ -1186,10 +1278,11 @@ function exportToExcel() {
     XLSX.writeFile(wb, "Data_Barang_<?= date('Ymd_His') ?>.xlsx");
 }
 
-function manageSN(id, name) {
+function manageSN(id, name, has_sn) {
     document.getElementById('snModal').classList.remove('hidden');
     document.getElementById('sn_modal_title').innerText = name;
     document.getElementById('sn_product_id').value = id;
+    document.getElementById('sn_has_sn').value = has_sn;
     loadSNs();
 }
 

@@ -205,7 +205,7 @@ $history = $pdo->query("
                     <select id="product_select" class="w-full p-2 rounded text-sm">
                         <option value="">-- Cari Nama / SKU --</option>
                         <?php foreach($products_list as $p): ?>
-                            <option value="<?= $p['sku'] ?>"><?= $p['name'] ?></option>
+                            <option value="<?= $p['sku'] ?>"><?= $p['sku'] ?> - <?= $p['name'] ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>

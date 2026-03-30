@@ -289,7 +289,93 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 4. IMPORT DATA
     if (isset($_POST['import_products'])) {
-        $_SESSION['flash'] = ['type'=>'info', 'message'=>'Fitur import tetap berjalan normal.'];
+        validate_csrf();
+        $warehouse_id = $_POST['warehouse_id'] ?? null;
+        $import_month = $_POST['import_month'] ?? date('Y-m');
+        $json_data = $_POST['import_json'] ?? '';
+        
+        // Format tanggal menjadi hari pertama di bulan yang dipilih
+        $transaction_date = $import_month . '-01';
+        
+        $data = json_decode($json_data, true);
+        if (!$data || !is_array($data)) {
+            $_SESSION['flash'] = ['type'=>'error', 'message'=>'Gagal membaca data dari file Excel. Pastikan file tidak kosong.'];
+            echo "<script>window.location='?page=data_barang';</script>";
+            exit;
+        }
+
+        $success = 0;
+        $failed = 0;
+        $errors = [];
+
+        foreach ($data as $index => $row) {
+            $rowNum = $index + 2; // Asumsi baris 1 adalah header
+            
+            // Mapping kolom (case-insensitive keys)
+            $rowLower = array_change_key_case($row, CASE_LOWER);
+            
+            $sku = trim($rowLower['sku'] ?? '');
+            $name = trim($rowLower['nama'] ?? $rowLower['nama barang'] ?? '');
+            $category = trim($rowLower['kategori'] ?? 'Uncategorized');
+            $unit = trim($rowLower['sat'] ?? $rowLower['satuan'] ?? 'Pcs');
+            $buy_price = floatval($rowLower['hpp'] ?? $rowLower['harga beli'] ?? 0);
+            $sell_price = floatval($rowLower['jual'] ?? $rowLower['harga jual'] ?? 0);
+            $stock = intval($rowLower['stok awal'] ?? $rowLower['stok'] ?? 0);
+            $has_sn = (isset($rowLower['punya sn']) && (strtoupper($rowLower['punya sn']) == 'YA' || $rowLower['punya sn'] == 1)) ? 1 : 0;
+            $notes = trim($rowLower['catatan'] ?? '');
+
+            if (empty($sku) || empty($name)) {
+                $failed++;
+                $errors[] = "Baris $rowNum: SKU dan Nama Barang wajib diisi.";
+                continue;
+            }
+
+            // Cek apakah SKU sudah ada
+            $stmt = $pdo->prepare("SELECT id FROM products WHERE sku = ?");
+            $stmt->execute([$sku]);
+            if ($stmt->fetch()) {
+                $failed++;
+                $errors[] = "Baris $rowNum: SKU '$sku' sudah ada di database.";
+                continue;
+            }
+
+            $pdo->beginTransaction();
+            try {
+                $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, has_serial_number, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute([$sku, $name, $category, $unit, $buy_price, $sell_price, $stock, $has_sn, $notes]);
+                $new_id = $pdo->lastInsertId();
+
+                if ($stock > 0 && $warehouse_id) {
+                    $ref = "INIT/" . date('ymd', strtotime($transaction_date)) . "/" . rand(100,999);
+                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'IN', ?, ?, ?, ?, 'Saldo Awal (Import)', ?)")
+                        ->execute([$transaction_date, $new_id, $warehouse_id, $stock, $ref, $_SESSION['user_id']]);
+                }
+                
+                $pdo->commit();
+                $success++;
+            } catch (Exception $e) {
+                $pdo->rollBack();
+                $failed++;
+                $errors[] = "Baris $rowNum: Gagal menyimpan '$name' - " . $e->getMessage();
+            }
+        }
+
+        $msg = "Import Selesai. Berhasil: $success, Gagal: $failed.";
+        if ($failed > 0) {
+            $msg .= "<br>Detail Gagal:<br><ul class='list-disc ml-4 text-xs mt-1'>";
+            $limit = min(5, count($errors));
+            for ($i = 0; $i < $limit; $i++) {
+                $msg .= "<li>" . htmlspecialchars($errors[$i]) . "</li>";
+            }
+            if (count($errors) > 5) {
+                $msg .= "<li>...dan " . (count($errors) - 5) . " lainnya</li>";
+            }
+            $msg .= "</ul>";
+            $_SESSION['flash'] = ['type'=>'warning', 'message'=>$msg];
+        } else {
+            $_SESSION['flash'] = ['type'=>'success', 'message'=>$msg];
+        }
+
         echo "<script>window.location='?page=data_barang';</script>";
         exit;
     }
@@ -640,22 +726,27 @@ $total_asset_group = 0;
                 <li>Kolom Wajib: SKU, Nama Barang.</li>
             </ul>
         </div>
-        <form method="POST" enctype="multipart/form-data">
+        <form method="POST" id="importForm" onsubmit="handleImport(event)">
             <input type="hidden" name="import_products" value="1">
+            <input type="hidden" name="import_json" id="import_json" value="">
             <?= csrf_field() ?>
             <div class="mb-4">
                 <label class="block text-sm font-bold text-gray-700 mb-2">Pilih File Excel</label>
-                <input type="file" name="excel_file" accept=".xlsx, .xls" class="w-full border p-2 rounded bg-gray-50" required>
+                <input type="file" id="excel_file" accept=".xlsx, .xls" class="w-full border p-2 rounded bg-gray-50" required>
             </div>
             <div class="mb-4">
-                <label class="block text-sm font-bold text-gray-700 mb-2">Pilih Gudang</label>
+                <label class="block text-sm font-bold text-gray-700 mb-2">Bulan & Tahun Import (Untuk Stok Awal)</label>
+                <input type="month" name="import_month" class="w-full border p-2 rounded bg-white" required value="<?= date('Y-m') ?>">
+            </div>
+            <div class="mb-4">
+                <label class="block text-sm font-bold text-gray-700 mb-2">Pilih Gudang (Untuk Stok Awal)</label>
                 <select name="warehouse_id" class="w-full border p-2 rounded bg-white">
                     <?php foreach($warehouses as $wh): ?>
                         <option value="<?= $wh['id'] ?>"><?= $wh['name'] ?></option>
                     <?php endforeach; ?>
                 </select>
             </div>
-            <button type="submit" class="w-full bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 shadow">Import Sekarang</button>
+            <button type="submit" id="btn_import" class="w-full bg-green-600 text-white py-2 rounded font-bold hover:bg-green-700 shadow">Import Sekarang</button>
         </form>
     </div>
 </div>
@@ -1017,6 +1108,34 @@ function saveRow(id) {
     
     document.body.appendChild(form);
     form.submit();
+}
+
+function handleImport(e) {
+    e.preventDefault();
+    const file = document.getElementById('excel_file').files[0];
+    if (!file) return;
+    
+    document.getElementById('btn_import').innerText = 'Memproses...';
+    document.getElementById('btn_import').disabled = true;
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, {type: 'array'});
+            const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+            const jsonData = XLSX.utils.sheet_to_json(firstSheet);
+            
+            document.getElementById('import_json').value = JSON.stringify(jsonData);
+            document.getElementById('importForm').removeAttribute('onsubmit');
+            document.getElementById('importForm').submit();
+        } catch (err) {
+            alert('Gagal membaca file Excel. Pastikan format benar.');
+            document.getElementById('btn_import').innerText = 'Import Sekarang';
+            document.getElementById('btn_import').disabled = false;
+        }
+    };
+    reader.readAsArrayBuffer(file);
 }
 
 function exportToExcel() {

@@ -320,7 +320,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $unit = trim($rowLower['sat'] ?? $rowLower['satuan'] ?? 'Pcs');
             $buy_price = floatval($rowLower['hpp'] ?? $rowLower['harga beli'] ?? 0);
             $sell_price = floatval($rowLower['jual'] ?? $rowLower['harga jual'] ?? 0);
-            $stock = intval($rowLower['stok awal'] ?? $rowLower['stok'] ?? 0);
+            $stock = intval($rowLower['total'] ?? $rowLower['stok awal'] ?? $rowLower['stok'] ?? 0);
             $has_sn = (isset($rowLower['punya sn']) && (strtoupper($rowLower['punya sn']) == 'YA' || $rowLower['punya sn'] == 1)) ? 1 : 0;
             $notes = trim($rowLower['catatan'] ?? '');
 
@@ -383,7 +383,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if ($has_sn) {
                             $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
                             for ($i = 1; $i <= $stock; $i++) {
-                                $sn = $sku . '-' . date('Ym', strtotime($transaction_date)) . '-' . str_pad($i, 4, '0', STR_PAD_LEFT);
+                                $sn = $sku . '-' . date('Ym', strtotime($transaction_date)) . '-' . strtoupper(substr(uniqid(), -5));
                                 $stmtSn->execute([$prod_id, $sn, $warehouse_id, $trx_id]);
                             }
                         }

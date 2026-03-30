@@ -201,7 +201,11 @@ $history = $pdo->query("
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <!-- Select Barang -->
                 <div>
-                    <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang</label>
+                    <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang (Ketik SKU / Scan)</label>
+                    <div class="flex gap-1 mb-2">
+                        <input type="text" id="scan_sku_input" class="w-full border p-2 rounded font-mono font-bold text-blue-700 uppercase focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Scan Barcode SKU disini..." onkeypress="handleUsbScan(event)">
+                        <button type="button" onclick="activateUSB()" class="bg-blue-100 hover:bg-blue-200 text-blue-700 border border-blue-300 rounded px-3" title="Fokus ke Input Scan"><i class="fas fa-barcode"></i></button>
+                    </div>
                     <select id="product_select" class="w-full p-2 rounded text-sm">
                         <option value="">-- Cari Nama / SKU --</option>
                         <?php foreach($products_list as $p): ?>
@@ -359,6 +363,32 @@ $(document).ready(function() {
     productSelect.select2({ placeholder: 'Pilih Barang...', width: '100%' });
     snSelect.select2({ placeholder: 'Cari/Pilih SN...', width: '100%', tags: false }); // Tags false = User must select from list (Available only)
 });
+
+function activateUSB() {
+    const el = document.getElementById('scan_sku_input');
+    el.focus();
+    el.value = '';
+    el.classList.add('ring-4', 'ring-blue-400');
+    setTimeout(() => el.classList.remove('ring-4', 'ring-blue-400'), 1000);
+}
+
+function handleUsbScan(e) {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        const txt = e.target.value.trim();
+        if(!txt) return;
+        
+        // Cari di select option
+        const opt = $(`#product_select option[value='${txt}']`);
+        if(opt.length > 0) {
+            productSelect.val(txt).trigger('change');
+            productSelect.trigger({type: 'select2:select'});
+        } else {
+            alert('SKU tidak ditemukan di database!');
+        }
+        e.target.value = '';
+    }
+}
 
 // 1. GUDANG CHANGE -> RESET UI
 $('#warehouse_id').on('change', function() {

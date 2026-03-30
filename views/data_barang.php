@@ -295,7 +295,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $json_data = $_POST['import_json'] ?? '';
         
         // Format tanggal menjadi hari pertama di bulan yang dipilih
-        $transaction_date = $import_month . '-01';
+        $transaction_date = $import_month . '-01 00:00:00';
         
         $data = json_decode($json_data, true);
         if (!$data || !is_array($data)) {
@@ -331,24 +331,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             // Cek apakah SKU sudah ada
-            $stmt = $pdo->prepare("SELECT id FROM products WHERE sku = ?");
+            $stmt = $pdo->prepare("SELECT id, stock, has_serial_number FROM products WHERE sku = ?");
             $stmt->execute([$sku]);
-            if ($stmt->fetch()) {
-                $failed++;
-                $errors[] = "Baris $rowNum: SKU '$sku' sudah ada di database.";
-                continue;
-            }
+            $existing = $stmt->fetch();
 
             $pdo->beginTransaction();
             try {
-                $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, has_serial_number, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmt->execute([$sku, $name, $category, $unit, $buy_price, $sell_price, $stock, $has_sn, $notes]);
-                $new_id = $pdo->lastInsertId();
+                if ($existing) {
+                    // Update existing product
+                    $prod_id = $existing['id'];
+                    $has_sn = $existing['has_serial_number']; // Keep existing has_sn setting
+                    
+                    $stmt = $pdo->prepare("UPDATE products SET name=?, category=?, unit=?, buy_price=?, sell_price=?, stock=stock+?, notes=? WHERE id=?");
+                    $stmt->execute([$name, $category, $unit, $buy_price, $sell_price, $stock, $notes, $prod_id]);
+                    
+                    if ($stock > 0 && $warehouse_id) {
+                        $ref = "ADD/" . date('ymd', strtotime($transaction_date)) . "/" . rand(100,999);
+                        $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'IN', ?, ?, ?, ?, 'Penambahan Stok (Import)', ?)")
+                            ->execute([$transaction_date, $prod_id, $warehouse_id, $stock, $ref, $_SESSION['user_id']]);
+                        $trx_id = $pdo->lastInsertId();
 
-                if ($stock > 0 && $warehouse_id) {
-                    $ref = "INIT/" . date('ymd', strtotime($transaction_date)) . "/" . rand(100,999);
-                    $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'IN', ?, ?, ?, ?, 'Saldo Awal (Import)', ?)")
-                        ->execute([$transaction_date, $new_id, $warehouse_id, $stock, $ref, $_SESSION['user_id']]);
+                        if ($has_sn) {
+                            $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+                            for ($i = 1; $i <= $stock; $i++) {
+                                $sn = $sku . '-' . date('Ym', strtotime($transaction_date)) . '-' . strtoupper(substr(uniqid(), -5));
+                                $stmtSn->execute([$prod_id, $sn, $warehouse_id, $trx_id]);
+                            }
+                        }
+                    }
+                } else {
+                    // Insert new product
+                    $stmt = $pdo->prepare("INSERT INTO products (sku, name, category, unit, buy_price, sell_price, stock, has_serial_number, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmt->execute([$sku, $name, $category, $unit, $buy_price, $sell_price, $stock, $has_sn, $notes]);
+                    $prod_id = $pdo->lastInsertId();
+
+                    if ($stock > 0 && $warehouse_id) {
+                        $ref = "INIT/" . date('ymd', strtotime($transaction_date)) . "/" . rand(100,999);
+                        $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'IN', ?, ?, ?, ?, 'Saldo Awal (Import)', ?)")
+                            ->execute([$transaction_date, $prod_id, $warehouse_id, $stock, $ref, $_SESSION['user_id']]);
+                        $trx_id = $pdo->lastInsertId();
+
+                        if ($has_sn) {
+                            $stmtSn = $pdo->prepare("INSERT INTO product_serials (product_id, serial_number, status, warehouse_id, in_transaction_id) VALUES (?, ?, 'AVAILABLE', ?, ?)");
+                            for ($i = 1; $i <= $stock; $i++) {
+                                $sn = $sku . '-' . date('Ym', strtotime($transaction_date)) . '-' . str_pad($i, 4, '0', STR_PAD_LEFT);
+                                $stmtSn->execute([$prod_id, $sn, $warehouse_id, $trx_id]);
+                            }
+                        }
+                    }
                 }
                 
                 $pdo->commit();

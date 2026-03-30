@@ -330,6 +330,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 continue;
             }
 
+            // Jika total barang yang diimport lebih dari 300, paksa menjadi Non-SN
+            if ($stock > 300) {
+                $has_sn = 0;
+            }
+
             // Cek apakah SKU sudah ada
             $stmt = $pdo->prepare("SELECT id, stock, has_serial_number FROM products WHERE sku = ?");
             $stmt->execute([$sku]);
@@ -340,10 +345,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($existing) {
                     // Update existing product
                     $prod_id = $existing['id'];
-                    $has_sn = $existing['has_serial_number']; // Keep existing has_sn setting
                     
-                    $stmt = $pdo->prepare("UPDATE products SET name=?, category=?, unit=?, buy_price=?, sell_price=?, stock=stock+?, notes=? WHERE id=?");
-                    $stmt->execute([$name, $category, $unit, $buy_price, $sell_price, $stock, $notes, $prod_id]);
+                    // Jika tidak lebih dari 300, pertahankan settingan SN sebelumnya
+                    if ($stock <= 300) {
+                        $has_sn = $existing['has_serial_number']; 
+                    }
+                    
+                    $stmt = $pdo->prepare("UPDATE products SET name=?, category=?, unit=?, buy_price=?, sell_price=?, stock=stock+?, has_serial_number=?, notes=? WHERE id=?");
+                    $stmt->execute([$name, $category, $unit, $buy_price, $sell_price, $stock, $has_sn, $notes, $prod_id]);
                     
                     if ($stock > 0 && $warehouse_id) {
                         $ref = "ADD/" . date('ymd', strtotime($transaction_date)) . "/" . rand(100,999);

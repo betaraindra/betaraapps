@@ -739,8 +739,20 @@ $total_asset_group = 0;
                             ];
                         ?>
                         <tr class="hover:bg-gray-50 group" id="row_<?= $prod_id ?>">
-                            <td class="p-1 border text-center align-middle">
-                                <?php if(!empty($p['image_url'])): ?><img src="<?= $p['image_url'] ?>" class="w-8 h-8 object-cover rounded border bg-white mx-auto cursor-pointer" onclick="window.open(this.src)"><?php endif; ?>
+                            <td class="p-1 border text-center align-middle relative">
+                                <?php if(!empty($p['image_url'])): ?>
+                                    <div class="relative inline-block group/img">
+                                        <img src="<?= $p['image_url'] ?>" class="w-8 h-8 object-cover rounded border bg-white cursor-pointer" onclick="window.open(this.src)">
+                                        <div class="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity cursor-pointer rounded" onclick="document.getElementById('img_upload_<?= $prod_id ?>').click()" title="Ubah Gambar">
+                                            <i class="fas fa-edit text-white text-[10px]"></i>
+                                        </div>
+                                    </div>
+                                <?php else: ?>
+                                    <div class="w-8 h-8 bg-gray-100 border border-dashed border-gray-300 rounded mx-auto flex items-center justify-center text-gray-400 cursor-pointer hover:bg-gray-200" onclick="document.getElementById('img_upload_<?= $prod_id ?>').click()" title="Tambah Gambar">
+                                        <i class="fas fa-plus text-[10px]"></i>
+                                    </div>
+                                <?php endif; ?>
+                                <input type="file" id="img_upload_<?= $prod_id ?>" class="hidden" accept="image/*" onchange="uploadImage(<?= $prod_id ?>, this)">
                             </td>
                             <td class="p-2 border font-mono text-blue-600 whitespace-nowrap align-middle">
                                 <input type="text" id="sku_<?= $prod_id ?>" value="<?= htmlspecialchars($p['sku']) ?>" class="w-full border-none bg-transparent focus:bg-white focus:border focus:border-blue-500 rounded px-1 font-mono text-xs" onchange="markEdited(<?= $prod_id ?>)">
@@ -756,7 +768,7 @@ $total_asset_group = 0;
                                 <button onclick="manageSN(<?= $p['id'] ?>, '<?= h($p['name']) ?>', <?= $p['has_serial_number'] ?>)" class="bg-purple-100 hover:bg-purple-200 text-purple-700 px-1 py-1 rounded text-[10px] font-bold w-full" title="Klik untuk Edit SN">SN</button>
                             </td>
                             <td class="p-2 border font-bold text-gray-700 align-middle">
-                                <input type="text" id="name_<?= $prod_id ?>" value="<?= htmlspecialchars($p['name']) ?>" class="w-full border-none bg-transparent focus:bg-white focus:border focus:border-blue-500 rounded px-1 font-bold text-xs" onchange="markEdited(<?= $prod_id ?>)">
+                                <textarea id="name_<?= $prod_id ?>" class="w-full border-none bg-transparent focus:bg-white focus:border focus:border-blue-500 rounded px-1 font-bold text-xs resize-none overflow-hidden" rows="2" onchange="markEdited(<?= $prod_id ?>)" oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'"><?= htmlspecialchars($p['name']) ?></textarea>
                             </td>
                             <td class="p-2 border text-right text-red-600 font-medium align-middle">
                                 <input type="text" id="buy_<?= $prod_id ?>" value="<?= number_format($p['buy_price'],0,',','.') ?>" class="w-full border-none bg-transparent focus:bg-white focus:border focus:border-blue-500 rounded px-1 text-right text-xs" onkeyup="fmtRupiah(this); markEdited(<?= $prod_id ?>)">
@@ -955,6 +967,14 @@ $total_asset_group = 0;
 </div>
 
 <script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Auto-resize textareas on load
+    document.querySelectorAll('textarea[id^="name_"]').forEach(el => {
+        el.style.height = '';
+        el.style.height = el.scrollHeight + 'px';
+    });
+});
+
 async function showProductDetail(prodId) {
     document.getElementById('detailBarangModal').classList.remove('hidden');
     const container = document.getElementById('detail_content_container');
@@ -1236,6 +1256,53 @@ function saveRow(id) {
         input.value = fields[key];
         form.appendChild(input);
     }
+    
+    document.body.appendChild(form);
+    form.submit();
+}
+
+function uploadImage(id, input) {
+    if (!input.files || !input.files[0]) return;
+    
+    const sku = document.getElementById('sku_' + id).value;
+    const name = document.getElementById('name_' + id).value;
+    const buy = document.getElementById('buy_' + id).value;
+    const sell = document.getElementById('sell_' + id).value;
+    const unit = document.getElementById('unit_' + id).value;
+    const cat = document.getElementById('cat_' + id).value;
+    const note = document.getElementById('note_' + id).value;
+    const img = document.getElementById('img_' + id).value;
+    
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = window.location.href;
+    form.enctype = 'multipart/form-data';
+    
+    const fields = {
+        'save_product': '1',
+        'edit_id': id,
+        'sku': sku,
+        'name': name,
+        'buy_price': buy,
+        'sell_price': sell,
+        'unit': unit,
+        'category': cat,
+        'notes': note,
+        'existing_image': img,
+        'csrf_token': '<?= $_SESSION['csrf_token'] ?? '' ?>'
+    };
+    
+    for (const key in fields) {
+        const hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.name = key;
+        hidden.value = fields[key];
+        form.appendChild(hidden);
+    }
+    
+    // Move the file input into the form
+    input.name = 'image';
+    form.appendChild(input);
     
     document.body.appendChild(form);
     form.submit();

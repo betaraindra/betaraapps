@@ -147,78 +147,6 @@ if ($access_inventory) {
     </form>
 </div>
 
-<!-- ======================= SECTION KEUANGAN ======================= -->
-<?php if($access_finance): ?>
-<div class="mb-10 animate-fade-in-up">
-    <div class="flex items-center gap-2 mb-4 border-b pb-2 border-gray-300">
-        <div class="bg-blue-600 text-white p-2 rounded shadow"><i class="fas fa-chart-pie"></i></div>
-        <h3 class="text-xl font-bold text-gray-800">Ikhtisar Keuangan (Cash Flow)</h3>
-    </div>
-
-    <!-- 1. SUMMARY CARDS -->
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-        <div class="bg-white p-6 rounded-lg shadow border-t-4 border-green-500 hover:shadow-lg transition">
-            <p class="text-xs font-bold text-gray-500 uppercase tracking-wide">Total Pemasukan (Cash In)</p>
-            <h3 class="text-2xl font-bold text-green-700 mt-2"><?= formatRupiah($fin_totals['omzet']) ?></h3>
-        </div>
-        <div class="bg-white p-6 rounded-lg shadow border-t-4 border-red-500 hover:shadow-lg transition">
-            <p class="text-xs font-bold text-gray-500 uppercase tracking-wide">Total Pengeluaran (Cash Out)</p>
-            <h3 class="text-2xl font-bold text-red-700 mt-2"><?= formatRupiah($fin_totals['total_keluar']) ?></h3>
-        </div>
-        <div class="bg-white p-6 rounded-lg shadow border-t-4 border-blue-500 hover:shadow-lg transition">
-            <p class="text-xs font-bold text-gray-500 uppercase tracking-wide">Surplus / (Defisit) Kas</p>
-            <h3 class="text-2xl font-bold <?= $fin_totals['profit']>=0?'text-blue-700':'text-red-600' ?> mt-2"><?= formatRupiah($fin_totals['profit']) ?></h3>
-            <p class="text-xs text-gray-400 mt-1">Margin: <?= $fin_totals['omzet']>0 ? number_format(($fin_totals['profit']/$fin_totals['omzet'])*100, 1) : 0 ?>%</p>
-        </div>
-    </div>
-
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <!-- 2. CHART KEUANGAN -->
-        <div class="lg:col-span-1 bg-white p-4 rounded-lg shadow">
-            <h4 class="font-bold text-gray-700 mb-4 text-sm text-center">Tren Arus Kas Bulanan</h4>
-            <div class="h-64">
-                <canvas id="finChart"></canvas>
-            </div>
-        </div>
-
-        <!-- 3. DETAILED TABLE -->
-        <div class="lg:col-span-2 bg-white p-4 rounded-lg shadow overflow-hidden flex flex-col">
-            <h4 class="font-bold text-gray-700 mb-4 text-sm">Rincian Performa Bulanan</h4>
-            <div class="overflow-x-auto flex-1">
-                <table class="w-full text-xs text-right border-collapse border border-gray-200">
-                    <thead class="bg-gray-100 text-gray-700 font-bold uppercase">
-                        <tr>
-                            <th class="p-2 border text-left">Periode</th>
-                            <th class="p-2 border text-green-700">Masuk (In)</th>
-                            <th class="p-2 border text-red-600">Keluar (Out)</th>
-                            <th class="p-2 border text-blue-700">Surplus/Defisit</th>
-                        </tr>
-                    </thead>
-                    <tbody class="text-gray-600">
-                        <?php foreach($fin_report_data as $row): 
-                            $pct_profit = $row['omzet'] > 0 ? ($row['profit'] / $row['omzet']) * 100 : 0;
-                        ?>
-                        <tr class="hover:bg-gray-50 border-b">
-                            <td class="p-2 border text-left font-bold"><?= $row['label'] ?></td>
-                            <td class="p-2 border font-medium text-green-700"><?= formatRupiah($row['omzet']) ?></td>
-                            <td class="p-2 border text-red-600"><?= formatRupiah($row['total_keluar']) ?></td>
-                            <td class="p-2 border font-bold <?= $row['profit']>=0?'text-blue-700':'text-red-600' ?>">
-                                <?= formatRupiah($row['profit']) ?>
-                                <div class="text-[10px] text-gray-400 font-normal"><?= number_format($pct_profit, 1) ?>%</div>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                        <?php if(empty($fin_report_data)): ?>
-                            <tr><td colspan="4" class="p-4 text-center italic">Tidak ada data.</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-</div>
-<?php endif; ?>
-
 <!-- ======================= SECTION INVENTORI ======================= -->
 <?php if($access_inventory): ?>
 <div class="mb-6 animate-fade-in-up" style="animation-delay: 0.1s;">
@@ -302,6 +230,78 @@ if ($access_inventory) {
                 <?php else: ?>
                     <canvas id="invWhChart"></canvas>
                 <?php endif; ?>
+            </div>
+        </div>
+    </div>
+</div>
+<?php endif; ?>
+
+<!-- ======================= SECTION KEUANGAN ======================= -->
+<?php if($access_finance): ?>
+<div class="mb-10 animate-fade-in-up">
+    <div class="flex items-center gap-2 mb-4 border-b pb-2 border-gray-300">
+        <div class="bg-blue-600 text-white p-2 rounded shadow"><i class="fas fa-chart-pie"></i></div>
+        <h3 class="text-xl font-bold text-gray-800">Ikhtisar Keuangan (Cash Flow)</h3>
+    </div>
+
+    <!-- 1. SUMMARY CARDS -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+        <div class="bg-white p-6 rounded-lg shadow border-t-4 border-green-500 hover:shadow-lg transition">
+            <p class="text-xs font-bold text-gray-500 uppercase tracking-wide">Total Pemasukan (Cash In)</p>
+            <h3 class="text-2xl font-bold text-green-700 mt-2"><?= formatRupiah($fin_totals['omzet']) ?></h3>
+        </div>
+        <div class="bg-white p-6 rounded-lg shadow border-t-4 border-red-500 hover:shadow-lg transition">
+            <p class="text-xs font-bold text-gray-500 uppercase tracking-wide">Total Pengeluaran (Cash Out)</p>
+            <h3 class="text-2xl font-bold text-red-700 mt-2"><?= formatRupiah($fin_totals['total_keluar']) ?></h3>
+        </div>
+        <div class="bg-white p-6 rounded-lg shadow border-t-4 border-blue-500 hover:shadow-lg transition">
+            <p class="text-xs font-bold text-gray-500 uppercase tracking-wide">Surplus / (Defisit) Kas</p>
+            <h3 class="text-2xl font-bold <?= $fin_totals['profit']>=0?'text-blue-700':'text-red-600' ?> mt-2"><?= formatRupiah($fin_totals['profit']) ?></h3>
+            <p class="text-xs text-gray-400 mt-1">Margin: <?= $fin_totals['omzet']>0 ? number_format(($fin_totals['profit']/$fin_totals['omzet'])*100, 1) : 0 ?>%</p>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- 2. CHART KEUANGAN -->
+        <div class="lg:col-span-1 bg-white p-4 rounded-lg shadow">
+            <h4 class="font-bold text-gray-700 mb-4 text-sm text-center">Tren Arus Kas Bulanan</h4>
+            <div class="h-64">
+                <canvas id="finChart"></canvas>
+            </div>
+        </div>
+
+        <!-- 3. DETAILED TABLE -->
+        <div class="lg:col-span-2 bg-white p-4 rounded-lg shadow overflow-hidden flex flex-col">
+            <h4 class="font-bold text-gray-700 mb-4 text-sm">Rincian Performa Bulanan</h4>
+            <div class="overflow-x-auto flex-1">
+                <table class="w-full text-xs text-right border-collapse border border-gray-200">
+                    <thead class="bg-gray-100 text-gray-700 font-bold uppercase">
+                        <tr>
+                            <th class="p-2 border text-left">Periode</th>
+                            <th class="p-2 border text-green-700">Masuk (In)</th>
+                            <th class="p-2 border text-red-600">Keluar (Out)</th>
+                            <th class="p-2 border text-blue-700">Surplus/Defisit</th>
+                        </tr>
+                    </thead>
+                    <tbody class="text-gray-600">
+                        <?php foreach($fin_report_data as $row): 
+                            $pct_profit = $row['omzet'] > 0 ? ($row['profit'] / $row['omzet']) * 100 : 0;
+                        ?>
+                        <tr class="hover:bg-gray-50 border-b">
+                            <td class="p-2 border text-left font-bold"><?= $row['label'] ?></td>
+                            <td class="p-2 border font-medium text-green-700"><?= formatRupiah($row['omzet']) ?></td>
+                            <td class="p-2 border text-red-600"><?= formatRupiah($row['total_keluar']) ?></td>
+                            <td class="p-2 border font-bold <?= $row['profit']>=0?'text-blue-700':'text-red-600' ?>">
+                                <?= formatRupiah($row['profit']) ?>
+                                <div class="text-[10px] text-gray-400 font-normal"><?= number_format($pct_profit, 1) ?>%</div>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                        <?php if(empty($fin_report_data)): ?>
+                            <tr><td colspan="4" class="p-4 text-center italic">Tidak ada data.</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>

@@ -11,6 +11,11 @@ $end = $_GET['end'] ?? date('Y-m-d');
 // Default view
 $view_type = $_GET['view'] ?? 'ALL_TRANSAKSI';
 
+if ($view_type == 'CASHFLOW' && !isset($_GET['start']) && !isset($_GET['end'])) {
+    $start = date('Y-01-01');
+    $end = date('Y-12-31');
+}
+
 // GET Budget input (sanitasi format rupiah dari URL param)
 $budget_raw = $_GET['budget'] ?? '0';
 $budget_input = cleanNumber($budget_raw);

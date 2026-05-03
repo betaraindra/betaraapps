@@ -121,23 +121,23 @@ if ($view_type == 'ALL_TRANSAKSI') {
     }
 }
 
-// --- 1. DATA CASHFLOW (SUMMARY HARIAN) ---
-$cf_daily_data = [];
+// --- 1. DATA CASHFLOW (SUMMARY BULANAN) ---
+$cf_monthly_data = [];
 $cf_totals = ['in'=>0, 'out'=>0];
 
 if ($view_type == 'CASHFLOW') {
-    // Group by Date
-    $sql = "SELECT date, 
+    // Group by Month
+    $sql = "SELECT DATE_FORMAT(date, '%Y-%m') as month, 
             SUM(CASE WHEN type = 'INCOME' THEN amount ELSE 0 END) as total_in,
             SUM(CASE WHEN type = 'EXPENSE' THEN amount ELSE 0 END) as total_out
             FROM finance_transactions 
             WHERE date BETWEEN ? AND ?
-            GROUP BY date ORDER BY date ASC";
+            GROUP BY DATE_FORMAT(date, '%Y-%m') ORDER BY month ASC";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([$start, $end]);
-    $cf_daily_data = $stmt->fetchAll();
+    $cf_monthly_data = $stmt->fetchAll();
 
-    foreach($cf_daily_data as $d) {
+    foreach($cf_monthly_data as $d) {
         $cf_totals['in'] += $d['total_in'];
         $cf_totals['out'] += $d['total_out'];
     }
@@ -410,7 +410,7 @@ if ($view_type == 'CUSTOM') {
     <!-- TABS -->
     <div class="flex flex-wrap border-b border-gray-200 mb-4 space-x-1 tabs-container">
         <a href="?page=laporan_internal&view=ALL_TRANSAKSI" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='ALL_TRANSAKSI'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Semua Transaksi</a>
-        <a href="?page=laporan_internal&view=CASHFLOW" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='CASHFLOW'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Cashflow (Harian)</a>
+        <a href="?page=laporan_internal&view=CASHFLOW" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='CASHFLOW'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Cashflow (Bulanan)</a>
         <a href="?page=laporan_internal&view=ARUS_KAS" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='ARUS_KAS'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Arus Kas (Akun)</a>
         <a href="?page=laporan_internal&view=ANGGARAN" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='ANGGARAN'?'bg-indigo-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'?>">Anggaran</a>
         <a href="?page=laporan_internal&view=WILAYAH" class="px-3 py-2 text-xs md:text-sm font-bold rounded-t-lg <?=$view_type=='WILAYAH'?'bg-purple-600 text-white':'bg-purple-50 text-purple-600 hover:bg-purple-100'?>">Per Wilayah</a>
@@ -754,7 +754,7 @@ if ($view_type == 'CUSTOM') {
         </table>
     </div>
 
-    <!-- 2. VIEW: CASHFLOW (HARIAN) -->
+    <!-- 2. VIEW: CASHFLOW (BULANAN) -->
     <?php elseif ($view_type == 'CASHFLOW'): ?>
     <div class="space-y-6">
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -775,22 +775,28 @@ if ($view_type == 'CUSTOM') {
         <table class="w-full text-sm border-collapse border border-gray-400">
             <thead class="bg-gray-100 text-gray-800 font-bold">
                 <tr>
-                    <th class="p-3 border border-gray-400 text-left">Tanggal</th>
+                    <th class="p-3 border border-gray-400 text-left">Bulan</th>
                     <th class="p-3 border border-gray-400 text-right text-green-700">Total Masuk (IN)</th>
                     <th class="p-3 border border-gray-400 text-right text-red-700">Total Keluar (OUT)</th>
                     <th class="p-3 border border-gray-400 text-right text-blue-800">Selisih</th>
                 </tr>
             </thead>
             <tbody>
-                <?php foreach($cf_daily_data as $row): $diff = $row['total_in'] - $row['total_out']; ?>
+                <?php 
+                $en_m = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+                $id_m = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+                foreach($cf_monthly_data as $row): 
+                    $diff = $row['total_in'] - $row['total_out']; 
+                    $month_disp = str_ireplace($en_m, $id_m, date('F Y', strtotime($row['month'] . '-01')));
+                ?>
                 <tr class="hover:bg-gray-50 border-b border-gray-300">
-                    <td class="p-3 border-r border-gray-400"><?= date('d F Y', strtotime($row['date'])) ?></td>
+                    <td class="p-3 border-r border-gray-400"><?= $month_disp ?></td>
                     <td class="p-3 border-r border-gray-400 text-right font-medium"><?= formatRupiah($row['total_in']) ?></td>
                     <td class="p-3 border-r border-gray-400 text-right font-medium"><?= formatRupiah($row['total_out']) ?></td>
                     <td class="p-3 border-r border-gray-400 text-right font-bold <?= $diff>=0?'text-blue-700':'text-red-600' ?>"><?= formatRupiah($diff) ?></td>
                 </tr>
                 <?php endforeach; ?>
-                <?php if(empty($cf_daily_data)): ?>
+                <?php if(empty($cf_monthly_data)): ?>
                     <tr><td colspan="4" class="p-4 text-center text-gray-500">Tidak ada data.</td></tr>
                 <?php endif; ?>
             </tbody>

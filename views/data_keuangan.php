@@ -260,7 +260,7 @@ if ($filter_wh !== 'ALL') {
     }
 }
 
-$sql .= " ORDER BY f.date ASC, f.created_at ASC";
+$sql .= " ORDER BY f.date DESC, f.id DESC";
 
 $stmt = $pdo->prepare($sql);
 $stmt->execute($params);

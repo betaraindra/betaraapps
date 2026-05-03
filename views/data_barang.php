@@ -598,7 +598,7 @@ if ($cat_filter !== 'ALL') {
 
 if ($sort_by === 'name_asc') $sql .= " ORDER BY p.name ASC";
 elseif ($sort_by === 'stock_high') $sql .= " ORDER BY p.stock DESC";
-else $sql .= " ORDER BY p.created_at DESC";
+else $sql .= " ORDER BY p.id DESC";
 
 $stmt = $pdo->prepare($sql);
 $stmt->execute($params);

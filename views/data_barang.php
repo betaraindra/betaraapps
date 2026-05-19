@@ -998,7 +998,7 @@ async function showProductDetail(prodId) {
             <div class="bg-indigo-50 p-4 rounded-lg mb-6 border border-indigo-100">
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div class="flex gap-4">
-                        ${p.image_url ? `<img src="${p.image_url}" class="w-24 h-24 object-cover rounded border bg-white">` : '<div class="w-24 h-24 bg-gray-200 rounded flex items-center justify-center text-gray-400"><i class="fas fa-image fa-2x"></i></div>'}
+                        ${p.image_url ? `<a href="${p.image_url}" target="_blank" title="Lihat Gambar Penuh"><img src="${p.image_url}" class="w-24 h-24 object-cover rounded border bg-white cursor-pointer hover:opacity-80 transition"></a>` : '<div class="w-24 h-24 bg-gray-200 rounded flex items-center justify-center text-gray-400"><i class="fas fa-image fa-2x"></i></div>'}
                         <div>
                             <h4 class="font-bold text-lg text-gray-800">${p.name}</h4>
                             <div class="font-mono text-indigo-600 font-bold text-sm mb-1">${p.sku}</div>

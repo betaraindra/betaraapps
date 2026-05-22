@@ -182,7 +182,10 @@ function validate_csrf() {
 }
 
 function cleanNumber($number) {
-    $clean = str_replace('.', '', $number);
+    if (empty($number)) return 0;
+    // Strip everything except digits, comma and dot (handles negative sign as well)
+    $clean = preg_replace('/[^\d,\.-]/', '', (string)$number);
+    $clean = str_replace('.', '', $clean);
     $clean = str_replace(',', '.', $clean);
     return (float)$clean;
 }

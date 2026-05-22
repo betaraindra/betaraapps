@@ -627,10 +627,13 @@ function editTrx(data) {
     document.getElementById('edit_id').value = data.id;
     document.getElementById('edit_date').value = data.date;
     document.getElementById('edit_account_id').value = data.account_id;
-    document.getElementById('edit_amount').value = new Intl.NumberFormat('id-ID').format(data.amount);
     
-    // Split Description & Notes
-    let desc = data.description;
+    // Konversi string ke number sebelum diformat agartidak NaN
+    let amount = Number(data.amount) || 0;
+    document.getElementById('edit_amount').value = new Intl.NumberFormat('id-ID').format(amount);
+    
+    // Split Description & Notes dengan aman jika null
+    let desc = data.description || '';
     let notes = '';
     const match = desc.match(/^(.*?)\[Ket:\s*(.*?)\]$/s);
     if(match) {

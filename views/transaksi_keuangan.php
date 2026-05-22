@@ -26,7 +26,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // 2. SIMPAN TRANSAKSI BARU
+    // 2. UPDATE TRANSAKSI
+    if (isset($_POST['update_trx'])) {
+        try {
+            $id = (int)$_POST['edit_id'];
+            $date = $_POST['edit_date'];
+            $acc_id = (int)$_POST['edit_account_id'];
+            $amount = cleanNumber($_POST['edit_amount']);
+            $desc = strip_tags($_POST['edit_description']);
+            
+            $stmt = $pdo->prepare("UPDATE finance_transactions SET date=?, account_id=?, amount=?, description=? WHERE id=?");
+            $stmt->execute([$date, $acc_id, $amount, $desc, $id]);
+            
+            logActivity($pdo, 'UPDATE_KEUANGAN', "Update transaksi ID: $id Rp " . number_format($amount));
+            $_SESSION['flash'] = ['type' => 'success', 'message' => 'Transaksi berhasil diperbarui'];
+        } catch (Exception $e) {
+            $_SESSION['flash'] = ['type' => 'error', 'message' => 'Gagal update: ' . $e->getMessage()];
+        }
+        echo "<script>window.location='?page=transaksi_keuangan';</script>";
+        exit;
+    }
+
+    // 3. SIMPAN TRANSAKSI BARU
     if (isset($_POST['save_trx'])) {
         $date = $_POST['date'];
         $account_id = (int)$_POST['account_id'];
@@ -190,11 +211,14 @@ $recent = $pdo->query("SELECT f.*, a.name as acc_name, a.code as acc_code, u.use
                             <td class="p-3 text-right font-bold font-mono <?= $r['type']=='INCOME'?'text-green-600':'text-red-600' ?>">
                                 <?= $r['type']=='INCOME' ? '+' : '-' ?> <?= number_format($r['amount'], 0, ',', '.') ?>
                             </td>
-                            <td class="p-3 text-center">
-                                <form method="POST" onsubmit="return confirm('Hapus transaksi ini?')" class="inline opacity-50 group-hover:opacity-100 transition">
+                            <td class="p-3 text-center whitespace-nowrap">
+                                <button type="button" onclick='editTrx(<?= json_encode($r) ?>)' class="text-blue-400 hover:text-blue-600 p-1 opacity-50 group-hover:opacity-100 transition mr-2" title="Edit">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <form method="POST" onsubmit="return confirm('Hapus transaksi ini?')" class="inline opacity-50 group-hover:opacity-100 transition" title="Hapus">
                                     <?= csrf_field() ?>
                                     <input type="hidden" name="delete_id" value="<?= h($r['id']) ?>">
-                                    <button class="text-red-400 hover:text-red-600 p-1"><i class="fas fa-trash"></i></button>
+                                    <button type="submit" class="text-red-400 hover:text-red-600 p-1"><i class="fas fa-trash"></i></button>
                                 </form>
                             </td>
                         </tr>
@@ -209,7 +233,64 @@ $recent = $pdo->query("SELECT f.*, a.name as acc_name, a.code as acc_code, u.use
     </div>
 </div>
 
+<!-- EDIT MODAL -->
+<div id="editModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 relative">
+        <button onclick="document.getElementById('editModal').classList.add('hidden')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
+            <i class="fas fa-times text-xl"></i>
+        </button>
+        <h3 class="text-xl font-bold mb-4 border-b pb-2"><i class="fas fa-edit text-blue-600"></i> Edit Transaksi</h3>
+        
+        <form method="POST">
+            <?= csrf_field() ?>
+            <input type="hidden" name="update_trx" value="1">
+            <input type="hidden" name="edit_id" id="edit_id">
+            
+            <div class="mb-3">
+                <label class="block text-sm font-bold text-gray-700 mb-1">Tanggal</label>
+                <input type="date" name="edit_date" id="edit_date" class="w-full border p-2 rounded text-sm" required>
+            </div>
+            
+            <div class="mb-3">
+                <label class="block text-sm font-bold text-gray-700 mb-1">Kategori / Akun</label>
+                <select name="edit_account_id" id="edit_account_id" class="w-full border p-2 rounded text-sm bg-white" required>
+                    <?php foreach($accounts as $acc): ?>
+                        <option value="<?= h($acc['id']) ?>"><?= h($acc['code']) ?> - <?= h($acc['name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            
+            <div class="mb-3">
+                <label class="block text-sm font-bold text-gray-700 mb-1">Nominal (Rp)</label>
+                <input type="text" name="edit_amount" id="edit_amount" onkeyup="formatRupiah(this)" class="w-full border p-2 rounded text-sm text-right font-bold font-mono" required>
+            </div>
+            
+            <div class="mb-4">
+                <label class="block text-sm font-bold text-gray-700 mb-1">Keterangan Detail</label>
+                <textarea name="edit_description" id="edit_description" class="w-full border p-2 rounded text-sm" rows="3" required></textarea>
+            </div>
+            
+            <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 transition">
+                Simpan Perubahan
+            </button>
+        </form>
+    </div>
+</div>
+
 <script>
+function editTrx(data) {
+    document.getElementById('edit_id').value = data.id;
+    document.getElementById('edit_date').value = data.date;
+    document.getElementById('edit_account_id').value = data.account_id;
+    
+    let amount = Number(data.amount) || 0;
+    document.getElementById('edit_amount').value = new Intl.NumberFormat('id-ID').format(amount);
+    
+    document.getElementById('edit_description').value = data.description || '';
+    
+    document.getElementById('editModal').classList.remove('hidden');
+}
+
 // Format Rupiah saat mengetik (contoh: 10.000.000)
 function formatRupiah(input) {
     let value = input.value.replace(/\D/g, '');

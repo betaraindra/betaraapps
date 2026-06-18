@@ -70,13 +70,15 @@ if ($access_inventory) {
     $dmg_trx = $pdo->query("SELECT SUM(quantity) FROM inventory_transactions WHERE type='OUT' AND notes LIKE 'Rusak:%'")->fetchColumn() ?: 0;
     $inv_stats['damaged'] = $dmg_sn + $dmg_trx;
 
+    // Hitung Total Hilang (SN Missing + Non-SN Trx Hilang)
+    $missing_sn = $pdo->query("SELECT COUNT(*) FROM product_serials WHERE status = 'MISSING'")->fetchColumn() ?: 0;
+    $missing_trx = $pdo->query("SELECT SUM(quantity) FROM inventory_transactions WHERE type='OUT' AND notes LIKE 'Hilang:%'")->fetchColumn() ?: 0;
+    $inv_stats['missing'] = $missing_sn + $missing_trx;
+
     // Hitung Total Terpakai (SN Sold + Non-SN Trx Used)
     $used_sn = $pdo->query("SELECT COUNT(*) FROM product_serials WHERE status = 'SOLD'")->fetchColumn() ?: 0;
-    // Asumsi Non-SN Terpakai adalah transaksi OUT yang bukan Rusak dan bukan Transfer (jika ada)
-    // Atau lebih spesifik jika ada pola notes tertentu. Untuk saat ini kita ambil OUT yang bukan Rusak.
-    // Namun, OUT bisa juga penjualan. Jika konteksnya "Terpakai" = "Sold/Used", maka semua OUT non-rusak bisa dianggap terpakai/terjual.
-    // Sesuai request sebelumnya, "Terpakai" di detail gudang adalah "USED".
-    $used_trx = $pdo->query("SELECT SUM(quantity) FROM inventory_transactions WHERE type='OUT' AND notes NOT LIKE 'Rusak:%'")->fetchColumn() ?: 0;
+    // Asumsi Non-SN Terpakai adalah transaksi OUT yang bukan Rusak dan Hilang
+    $used_trx = $pdo->query("SELECT SUM(quantity) FROM inventory_transactions WHERE type='OUT' AND notes NOT LIKE 'Rusak:%' AND notes NOT LIKE 'Hilang:%'")->fetchColumn() ?: 0;
     $inv_stats['used'] = $used_sn + $used_trx;
 
     // Chart 1: Daily Activity (7 Hari Terakhir dari End Date)
@@ -176,6 +178,10 @@ if ($access_inventory) {
         <div class="bg-white p-4 rounded-lg shadow border-l-4 border-red-700">
             <p class="text-xs font-bold text-gray-500 uppercase">Total Unit Rusak</p>
             <h3 class="text-xl font-bold text-red-700"><?= number_format($inv_stats['damaged']) ?> <span class="text-xs text-gray-400">Unit</span></h3>
+        </div>
+        <div class="bg-white p-4 rounded-lg shadow border-l-4 border-orange-700">
+            <p class="text-xs font-bold text-gray-500 uppercase">Total Unit Hilang</p>
+            <h3 class="text-xl font-bold text-orange-700"><?= number_format($inv_stats['missing']) ?> <span class="text-xs text-gray-400">Unit</span></h3>
         </div>
         <div class="bg-white p-4 rounded-lg shadow border-l-4 border-blue-700">
             <p class="text-xs font-bold text-gray-500 uppercase">Total Unit Terpakai</p>

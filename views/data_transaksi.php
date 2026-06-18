@@ -160,8 +160,16 @@ if ($tab === 'inventory') {
         $i_params[] = "%$q%"; $i_params[] = "%$q%"; $i_params[] = "%$q%"; $i_params[] = "%$q%"; $i_params[] = "%$q%";
     }
     if ($i_type !== 'ALL') {
-        $cond .= " AND i.type = ?";
-        $i_params[] = $i_type;
+        if ($i_type == 'RUSAK') {
+            $cond .= " AND i.type = 'OUT' AND i.notes LIKE 'Rusak:%'";
+        } elseif ($i_type == 'PEMAKAIAN') {
+            $cond .= " AND i.type = 'OUT' AND i.notes LIKE 'Aktivitas:%'";
+        } elseif ($i_type == 'HILANG') {
+            $cond .= " AND i.type = 'OUT' AND i.notes LIKE 'Hilang:%'";
+        } else {
+            $cond .= " AND i.type = ?";
+            $i_params[] = $i_type;
+        }
     }
     if ($i_wh !== 'ALL') {
         $cond .= " AND i.warehouse_id = ?";
@@ -331,7 +339,10 @@ if ($tab === 'inventory') {
                     <select name="i_type" class="border p-2 rounded text-sm w-32 bg-white">
                         <option value="ALL">Semua</option>
                         <option value="IN" <?= $i_type=='IN'?'selected':'' ?>>Masuk</option>
-                        <option value="OUT" <?= $i_type=='OUT'?'selected':'' ?>>Keluar</option>
+                        <option value="OUT" <?= $i_type=='OUT'?'selected':'' ?>>Keluar (Semua)</option>
+                        <option value="PEMAKAIAN" <?= $i_type=='PEMAKAIAN'?'selected':'' ?>>Terpakai</option>
+                        <option value="RUSAK" <?= $i_type=='RUSAK'?'selected':'' ?>>Unit Rusak</option>
+                        <option value="HILANG" <?= $i_type=='HILANG'?'selected':'' ?>>Unit Hilang</option>
                     </select>
                 </div>
                 <div class="flex gap-2">
@@ -366,8 +377,17 @@ if ($tab === 'inventory') {
                         </td>
                         <td class="p-3 text-gray-600"><?= h($row['wh_name']) ?></td>
                         <td class="p-3 text-center">
-                            <span class="px-2 py-1 rounded text-xs font-bold <?= $row['type']=='IN'?'bg-green-100 text-green-700':'bg-red-100 text-red-700' ?>">
-                                <?= $row['type']=='IN'?'MASUK':'KELUAR' ?>
+                            <?php 
+                                $type_label = $row['type']=='IN' ? 'MASUK' : 'KELUAR';
+                                $bg_class = $row['type']=='IN' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700';
+                                if($row['type'] == 'OUT') {
+                                    if(strpos($row['notes'], 'Aktivitas:') === 0) { $type_label = 'TERPAKAI'; $bg_class='bg-blue-100 text-blue-700'; }
+                                    elseif(strpos($row['notes'], 'Rusak:') === 0) { $type_label = 'RUSAK'; $bg_class='bg-red-100 text-red-700'; }
+                                    elseif(strpos($row['notes'], 'Hilang:') === 0) { $type_label = 'HILANG'; $bg_class='bg-orange-100 text-orange-700'; }
+                                }
+                            ?>
+                            <span class="px-2 py-1 rounded text-xs font-bold <?= $bg_class ?>" title="<?= h($row['notes']) ?>">
+                                <?= $type_label ?>
                             </span>
                         </td>
                         <td class="p-3 text-right font-bold"><?= $row['quantity'] ?></td>

@@ -19,7 +19,8 @@ $warehouses = $pdo->query("SELECT * FROM warehouses ORDER BY name ASC")->fetchAl
 $sql = "SELECT i.*, p.sku, p.name as prod_name, p.unit, p.buy_price, p.sell_price, p.image_url, p.has_serial_number, p.stock, w.name as wh_name,
                COALESCE(ps.ready, 0) as ready_count,
                COALESCE(ps.rusak, 0) as rusak_count,
-               COALESCE(ps.terpakai, 0) as terpakai_count
+               COALESCE(ps.terpakai, 0) as terpakai_count,
+               COALESCE(ps.hilang, 0) as hilang_count
         FROM inventory_transactions i 
         JOIN products p ON i.product_id=p.id 
         JOIN warehouses w ON i.warehouse_id=w.id 
@@ -27,7 +28,8 @@ $sql = "SELECT i.*, p.sku, p.name as prod_name, p.unit, p.buy_price, p.sell_pric
             SELECT product_id,
                    SUM(CASE WHEN status='AVAILABLE' THEN 1 ELSE 0 END) as ready,
                    SUM(CASE WHEN status='DEFECTIVE' THEN 1 ELSE 0 END) as rusak,
-                   SUM(CASE WHEN status='SOLD' THEN 1 ELSE 0 END) as terpakai
+                   SUM(CASE WHEN status='SOLD' THEN 1 ELSE 0 END) as terpakai,
+                   SUM(CASE WHEN status='MISSING' THEN 1 ELSE 0 END) as hilang
             FROM product_serials
             GROUP BY product_id
         ) ps ON p.id = ps.product_id
@@ -43,8 +45,16 @@ if ($warehouse_filter !== 'ALL') {
 
 // Apply Type Filter
 if ($type_filter !== 'ALL') {
-    $sql .= " AND i.type = ?";
-    $params[] = $type_filter;
+    if ($type_filter == 'RUSAK') {
+        $sql .= " AND i.type = 'OUT' AND i.notes LIKE 'Rusak:%'";
+    } elseif ($type_filter == 'PEMAKAIAN') {
+        $sql .= " AND i.type = 'OUT' AND i.notes LIKE 'Aktivitas:%'";
+    } elseif ($type_filter == 'HILANG') {
+        $sql .= " AND i.type = 'OUT' AND i.notes LIKE 'Hilang:%'";
+    } else {
+        $sql .= " AND i.type = ?";
+        $params[] = $type_filter;
+    }
 }
 
 // Apply Search Filter
@@ -178,7 +188,10 @@ if ($warehouse_filter !== 'ALL') {
                 <select name="type" class="border p-2 rounded text-sm min-w-[120px] bg-white focus:ring-2 focus:ring-blue-500">
                     <option value="ALL">-- Semua --</option>
                     <option value="IN" <?= $type_filter == 'IN' ? 'selected' : '' ?>>Barang Masuk</option>
-                    <option value="OUT" <?= $type_filter == 'OUT' ? 'selected' : '' ?>>Barang Keluar</option>
+                    <option value="OUT" <?= $type_filter == 'OUT' ? 'selected' : '' ?>>Barang Keluar (Semua)</option>
+                    <option value="PEMAKAIAN" <?= $type_filter == 'PEMAKAIAN' ? 'selected' : '' ?>>Terpakai</option>
+                    <option value="RUSAK" <?= $type_filter == 'RUSAK' ? 'selected' : '' ?>>Unit Rusak</option>
+                    <option value="HILANG" <?= $type_filter == 'HILANG' ? 'selected' : '' ?>>Unit Hilang</option>
                 </select>
             </div>
 
@@ -272,6 +285,7 @@ if ($warehouse_filter !== 'ALL') {
                         <th class="border border-gray-500 p-2 w-16">READY</th>
                         <th class="border border-gray-500 p-2 w-16">RUSAK</th>
                         <th class="border border-gray-500 p-2 w-16">TERPAKAI</th>
+                        <th class="border border-gray-500 p-2 w-16">HILANG</th>
                         <th class="border border-gray-500 p-2">Ket</th>
                         <th class="border border-gray-500 p-2">User</th>
                         <th class="border border-gray-500 p-2 w-16 no-print">Cetak</th>
@@ -304,6 +318,9 @@ if ($warehouse_filter !== 'ALL') {
                         </td>
                         <td class="border border-gray-400 p-2 text-center font-bold text-blue-700">
                             <?= $item['has_serial_number'] == 1 ? $item['terpakai_count'] : '-' ?>
+                        </td>
+                        <td class="border border-gray-400 p-2 text-center font-bold text-orange-700">
+                            <?= $item['has_serial_number'] == 1 ? $item['hilang_count'] : '-' ?>
                         </td>
                         <td class="border border-gray-400 p-2 text-gray-600 italic"><?= $item['notes'] ?></td>
                         <td class="border border-gray-400 p-2 text-center text-[9px] text-gray-500">

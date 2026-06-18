@@ -94,7 +94,7 @@ try {
         id INT AUTO_INCREMENT PRIMARY KEY,
         product_id INT NOT NULL,
         serial_number VARCHAR(100) NOT NULL,
-        status ENUM('AVAILABLE','SOLD','RETURNED','DEFECTIVE') DEFAULT 'AVAILABLE',
+        status ENUM('AVAILABLE','SOLD','RETURNED','DEFECTIVE','MISSING') DEFAULT 'AVAILABLE',
         warehouse_id INT DEFAULT NULL,
         in_transaction_id INT DEFAULT NULL,
         out_transaction_id INT DEFAULT NULL,
@@ -103,6 +103,9 @@ try {
         INDEX idx_sn (serial_number),
         INDEX idx_status (status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // Alter table to add MISSING if table exists
+    $pdo->exec("ALTER TABLE product_serials MODIFY COLUMN status ENUM('AVAILABLE','SOLD','RETURNED','DEFECTIVE','MISSING') DEFAULT 'AVAILABLE'");
 } catch (Exception $e) { error_log("Migration Table Error: " . $e->getMessage()); }
 
 ensureIndex($pdo, 'finance_transactions', 'idx_date_type', 'date, type');

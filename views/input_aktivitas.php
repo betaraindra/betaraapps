@@ -24,7 +24,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                 $ref_custom = "ACT/" . date('ymd') . "/" . rand(100,999);
             }
 
-            $inputType = $_POST['input_type'] ?? 'PEMAKAIAN'; // PEMAKAIAN or RUSAK
+            $inputType = $_POST['input_type'] ?? 'PEMAKAIAN'; // PEMAKAIAN or RUSAK or HILANG
             $items_saved = 0;
 
             foreach ($cart as $item) {
@@ -60,6 +60,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                 if ($inputType === 'RUSAK') {
                     $item_note = "Rusak: $main_desc";
                     $sn_status = 'DEFECTIVE';
+                } elseif ($inputType === 'HILANG') {
+                    $item_note = "Hilang: $main_desc";
+                    $sn_status = 'MISSING';
                 } else {
                     $item_note = "Aktivitas: $main_desc";
                     $sn_status = 'SOLD';
@@ -174,6 +177,10 @@ $history = $pdo->query("
                         <label class="flex items-center gap-2 cursor-pointer bg-red-50 px-4 py-2 rounded border border-red-200 hover:bg-red-100">
                             <input type="radio" name="input_type" value="RUSAK" class="text-red-600 focus:ring-red-500" onchange="toggleInputType()">
                             <span class="text-sm font-bold text-red-800"><i class="fas fa-exclamation-triangle mr-1"></i> Unit Rusak / Defective</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer bg-orange-50 px-4 py-2 rounded border border-orange-200 hover:bg-orange-100">
+                            <input type="radio" name="input_type" value="HILANG" class="text-orange-600 focus:ring-orange-500" onchange="toggleInputType()">
+                            <span class="text-sm font-bold text-orange-800"><i class="fas fa-question-circle mr-1"></i> Unit Hilang</span>
                         </label>
                     </div>
                 </div>
@@ -334,13 +341,12 @@ function toggleInputType() {
     // Check if cart has items
     if (cart.length > 0) {
         if(!confirm("Mengubah jenis input akan mengosongkan daftar barang saat ini. Lanjutkan?")) {
-            // Revert radio button selection
-            const current = document.querySelector('input[name="input_type"]:checked').value;
-            const previous = current === 'PEMAKAIAN' ? 'RUSAK' : 'PEMAKAIAN';
-            document.querySelector(`input[name="input_type"][value="${previous}"]`).checked = true;
-            return;
+            // Kita tidak tahu gampang untuk kembalikan ke yg sebelumnya tanpa state,
+            // untuk simple kita reload atau biarkan user klik lagi tipe yg benar.
+            resetCart(); // Pilihan aman jika batal ya kita reset saja.
+        } else {
+            resetCart();
         }
-        resetCart();
     }
 
     const type = document.querySelector('input[name="input_type"]:checked').value;
@@ -348,12 +354,17 @@ function toggleInputType() {
     
     if (type === 'RUSAK') {
         descInput.placeholder = "Contoh: Rusak kena petir, Port LAN mati, dll";
-        document.getElementById('btn_submit').classList.remove('bg-green-600', 'hover:bg-green-700');
+        document.getElementById('btn_submit').classList.remove('bg-green-600', 'hover:bg-green-700', 'bg-orange-600', 'hover:bg-orange-700');
         document.getElementById('btn_submit').classList.add('bg-red-600', 'hover:bg-red-700');
         document.getElementById('btn_submit').innerHTML = '<i class="fas fa-exclamation-triangle mr-2"></i> Simpan Unit Rusak';
+    } else if (type === 'HILANG') {
+        descInput.placeholder = "Contoh: Berdasarkan laporan stock opname, hilang saat teknisi masang, dll";
+        document.getElementById('btn_submit').classList.remove('bg-green-600', 'hover:bg-green-700', 'bg-red-600', 'hover:bg-red-700');
+        document.getElementById('btn_submit').classList.add('bg-orange-600', 'hover:bg-orange-700');
+        document.getElementById('btn_submit').innerHTML = '<i class="fas fa-question-circle mr-2"></i> Simpan Unit Hilang';
     } else {
         descInput.placeholder = "Contoh: Pasang Baru Bpk. Budi - Paket 50Mbps";
-        document.getElementById('btn_submit').classList.remove('bg-red-600', 'hover:bg-red-700');
+        document.getElementById('btn_submit').classList.remove('bg-red-600', 'hover:bg-red-700', 'bg-orange-600', 'hover:bg-orange-700');
         document.getElementById('btn_submit').classList.add('bg-green-600', 'hover:bg-green-700');
         document.getElementById('btn_submit').innerHTML = '<i class="fas fa-save mr-2"></i> Simpan Aktivitas & Update Stok';
     }

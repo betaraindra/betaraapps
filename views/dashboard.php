@@ -159,11 +159,11 @@ if ($access_inventory) {
 
     <!-- 1. INVENTORY STATS -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
-        <a href="?page=laporan_gudang&type=IN&start=<?= $display_start ?>&end=<?= $display_end ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-green-500 hover:bg-green-50 transition cursor-pointer">
+        <a href="?page=laporan_gudang&type=IN&start=<?= $start_date ?>&end=<?= $end_date ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-green-500 hover:bg-green-50 transition cursor-pointer">
             <p class="text-xs font-bold text-gray-500 uppercase">Barang Masuk (Periode Ini)</p>
             <h3 class="text-xl font-bold text-green-600"><?= number_format($inv_stats['in']) ?> <span class="text-xs text-gray-400">Qty</span></h3>
         </a>
-        <a href="?page=laporan_gudang&type=OUT&start=<?= $display_start ?>&end=<?= $display_end ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-red-500 hover:bg-red-50 transition cursor-pointer">
+        <a href="?page=laporan_gudang&type=OUT&start=<?= $start_date ?>&end=<?= $end_date ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-red-500 hover:bg-red-50 transition cursor-pointer">
             <p class="text-xs font-bold text-gray-500 uppercase">Barang Keluar (Periode Ini)</p>
             <h3 class="text-xl font-bold text-red-600"><?= number_format($inv_stats['out']) ?> <span class="text-xs text-gray-400">Qty</span></h3>
         </a>
@@ -171,19 +171,19 @@ if ($access_inventory) {
             <p class="text-xs font-bold text-gray-500 uppercase">Total Produk Terdaftar</p>
             <h3 class="text-xl font-bold text-purple-600"><?= number_format($inv_stats['items']) ?> <span class="text-xs text-gray-400">Item</span></h3>
         </a>
-        <a href="?page=data_barang&stock=low" class="block bg-white p-4 rounded-lg shadow border-l-4 border-orange-500 hover:bg-orange-50 transition cursor-pointer">
+        <a href="?page=data_barang&sort=stock_low_10" class="block bg-white p-4 rounded-lg shadow border-l-4 border-orange-500 hover:bg-orange-50 transition cursor-pointer">
             <p class="text-xs font-bold text-gray-500 uppercase">Stok Menipis (< 10)</p>
             <h3 class="text-xl font-bold text-orange-600"><?= $inv_stats['low'] ?> <span class="text-xs text-gray-400">Item</span></h3>
         </a>
-        <a href="?page=laporan_gudang&type=RUSAK&start=<?= $display_start ?>&end=<?= $display_end ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-red-700 hover:bg-red-50 transition cursor-pointer">
+        <a href="?page=laporan_gudang&type=RUSAK&start=<?= date('Y-01-01') ?>&end=<?= date('Y-12-31') ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-red-700 hover:bg-red-50 transition cursor-pointer">
             <p class="text-xs font-bold text-gray-500 uppercase">Total Unit Rusak</p>
             <h3 class="text-xl font-bold text-red-700"><?= number_format($inv_stats['damaged']) ?> <span class="text-xs text-gray-400">Unit</span></h3>
         </a>
-        <a href="?page=laporan_gudang&type=HILANG&start=<?= $display_start ?>&end=<?= $display_end ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-orange-700 hover:bg-orange-50 transition cursor-pointer">
+        <a href="?page=laporan_gudang&type=HILANG&start=<?= date('Y-01-01') ?>&end=<?= date('Y-12-31') ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-orange-700 hover:bg-orange-50 transition cursor-pointer">
             <p class="text-xs font-bold text-gray-500 uppercase">Total Unit Hilang</p>
             <h3 class="text-xl font-bold text-orange-700"><?= number_format($inv_stats['missing']) ?> <span class="text-xs text-gray-400">Unit</span></h3>
         </a>
-        <a href="?page=laporan_gudang&type=PEMAKAIAN&start=<?= $display_start ?>&end=<?= $display_end ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-blue-700 hover:bg-blue-50 transition cursor-pointer">
+        <a href="?page=laporan_gudang&type=PEMAKAIAN&start=<?= date('Y-01-01') ?>&end=<?= date('Y-12-31') ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-blue-700 hover:bg-blue-50 transition cursor-pointer">
             <p class="text-xs font-bold text-gray-500 uppercase">Total Unit Terpakai</p>
             <h3 class="text-xl font-bold text-blue-700"><?= number_format($inv_stats['used']) ?> <span class="text-xs text-gray-400">Unit</span></h3>
         </a>

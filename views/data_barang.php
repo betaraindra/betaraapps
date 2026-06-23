@@ -601,8 +601,13 @@ if ($stock_filter === 'low') {
     $sql .= " AND p.stock < 10";
 }
 
+if ($sort_by === 'stock_low_10') {
+    $sql .= " AND p.stock BETWEEN 0 AND 10";
+}
+
 if ($sort_by === 'name_asc') $sql .= " ORDER BY p.name ASC";
 elseif ($sort_by === 'stock_high') $sql .= " ORDER BY p.stock DESC";
+elseif ($sort_by === 'stock_low' || $sort_by === 'stock_low_10') $sql .= " ORDER BY p.stock ASC";
 else $sql .= " ORDER BY p.id DESC";
 
 $stmt = $pdo->prepare($sql);
@@ -690,6 +695,8 @@ $total_asset_group = 0;
                 <option value="newest" <?= $sort_by=='newest'?'selected':'' ?>>Update Terbaru</option>
                 <option value="name_asc" <?= $sort_by=='name_asc'?'selected':'' ?>>Nama (A-Z)</option>
                 <option value="stock_high" <?= $sort_by=='stock_high'?'selected':'' ?>>Stok Terbanyak</option>
+                <option value="stock_low" <?= $sort_by=='stock_low'?'selected':'' ?>>Stok Paling Sedikit (Dari 0)</option>
+                <option value="stock_low_10" <?= $sort_by=='stock_low_10'?'selected':'' ?>>Stok Paling Sedikit (Dari 0 - 10)</option>
             </select>
         </div>
         <div>

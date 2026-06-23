@@ -279,7 +279,8 @@ if ($action === 'get_product_detail_full') {
         $sql = "SELECT w.name as wh_name,
                 SUM(CASE WHEN ps.status = 'AVAILABLE' THEN 1 ELSE 0 END) as ready,
                 SUM(CASE WHEN ps.status = 'SOLD' THEN 1 ELSE 0 END) as used,
-                SUM(CASE WHEN ps.status = 'DEFECTIVE' THEN 1 ELSE 0 END) as damaged
+                SUM(CASE WHEN ps.status = 'DEFECTIVE' THEN 1 ELSE 0 END) as damaged,
+                SUM(CASE WHEN ps.status = 'MISSING' THEN 1 ELSE 0 END) as missing
                 FROM product_serials ps
                 LEFT JOIN warehouses w ON ps.warehouse_id = w.id
                 WHERE ps.product_id = ?
@@ -291,15 +292,16 @@ if ($action === 'get_product_detail_full') {
         $sql = "SELECT w.name as wh_name,
                 (COALESCE(SUM(CASE WHEN t.type='IN' THEN t.quantity ELSE 0 END), 0) - 
                  COALESCE(SUM(CASE WHEN t.type='OUT' THEN t.quantity ELSE 0 END), 0)) as ready,
-                (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = ? AND warehouse_id = t.warehouse_id AND type='OUT' AND notes NOT LIKE 'Rusak:%') as used,
-                (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = ? AND warehouse_id = t.warehouse_id AND type='OUT' AND notes LIKE 'Rusak:%') as damaged
+                (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = ? AND warehouse_id = t.warehouse_id AND type='OUT' AND notes LIKE 'Aktivitas:%') as used,
+                (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = ? AND warehouse_id = t.warehouse_id AND type='OUT' AND notes LIKE 'Rusak:%') as damaged,
+                (SELECT COALESCE(SUM(quantity), 0) FROM inventory_transactions WHERE product_id = ? AND warehouse_id = t.warehouse_id AND type='OUT' AND notes LIKE 'Hilang:%') as missing
                 FROM inventory_transactions t
                 LEFT JOIN warehouses w ON t.warehouse_id = w.id
                 WHERE t.product_id = ?
                 GROUP BY t.warehouse_id, w.name
-                HAVING ready > 0 OR used > 0 OR damaged > 0";
+                HAVING ready > 0 OR used > 0 OR damaged > 0 OR missing > 0";
         $stmtStock = $pdo->prepare($sql);
-        $stmtStock->execute([$prod_id, $prod_id, $prod_id]);
+        $stmtStock->execute([$prod_id, $prod_id, $prod_id, $prod_id]);
     }
     $stock_summary = $stmtStock->fetchAll(PDO::FETCH_ASSOC);
 

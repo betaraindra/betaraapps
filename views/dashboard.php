@@ -159,34 +159,34 @@ if ($access_inventory) {
 
     <!-- 1. INVENTORY STATS -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
-        <div class="bg-white p-4 rounded-lg shadow border-l-4 border-green-500">
+        <a href="?page=laporan_gudang&type=IN&start=<?= $display_start ?>&end=<?= $display_end ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-green-500 hover:bg-green-50 transition cursor-pointer">
             <p class="text-xs font-bold text-gray-500 uppercase">Barang Masuk (Periode Ini)</p>
             <h3 class="text-xl font-bold text-green-600"><?= number_format($inv_stats['in']) ?> <span class="text-xs text-gray-400">Qty</span></h3>
-        </div>
-        <div class="bg-white p-4 rounded-lg shadow border-l-4 border-red-500">
+        </a>
+        <a href="?page=laporan_gudang&type=OUT&start=<?= $display_start ?>&end=<?= $display_end ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-red-500 hover:bg-red-50 transition cursor-pointer">
             <p class="text-xs font-bold text-gray-500 uppercase">Barang Keluar (Periode Ini)</p>
             <h3 class="text-xl font-bold text-red-600"><?= number_format($inv_stats['out']) ?> <span class="text-xs text-gray-400">Qty</span></h3>
-        </div>
-        <div class="bg-white p-4 rounded-lg shadow border-l-4 border-purple-500">
+        </a>
+        <a href="?page=data_barang" class="block bg-white p-4 rounded-lg shadow border-l-4 border-purple-500 hover:bg-purple-50 transition cursor-pointer">
             <p class="text-xs font-bold text-gray-500 uppercase">Total Produk Terdaftar</p>
             <h3 class="text-xl font-bold text-purple-600"><?= number_format($inv_stats['items']) ?> <span class="text-xs text-gray-400">Item</span></h3>
-        </div>
-        <div class="bg-white p-4 rounded-lg shadow border-l-4 border-orange-500">
+        </a>
+        <a href="?page=data_barang&stock=low" class="block bg-white p-4 rounded-lg shadow border-l-4 border-orange-500 hover:bg-orange-50 transition cursor-pointer">
             <p class="text-xs font-bold text-gray-500 uppercase">Stok Menipis (< 10)</p>
             <h3 class="text-xl font-bold text-orange-600"><?= $inv_stats['low'] ?> <span class="text-xs text-gray-400">Item</span></h3>
-        </div>
-        <div class="bg-white p-4 rounded-lg shadow border-l-4 border-red-700">
+        </a>
+        <a href="?page=laporan_gudang&type=RUSAK&start=<?= $display_start ?>&end=<?= $display_end ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-red-700 hover:bg-red-50 transition cursor-pointer">
             <p class="text-xs font-bold text-gray-500 uppercase">Total Unit Rusak</p>
             <h3 class="text-xl font-bold text-red-700"><?= number_format($inv_stats['damaged']) ?> <span class="text-xs text-gray-400">Unit</span></h3>
-        </div>
-        <div class="bg-white p-4 rounded-lg shadow border-l-4 border-orange-700">
+        </a>
+        <a href="?page=laporan_gudang&type=HILANG&start=<?= $display_start ?>&end=<?= $display_end ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-orange-700 hover:bg-orange-50 transition cursor-pointer">
             <p class="text-xs font-bold text-gray-500 uppercase">Total Unit Hilang</p>
             <h3 class="text-xl font-bold text-orange-700"><?= number_format($inv_stats['missing']) ?> <span class="text-xs text-gray-400">Unit</span></h3>
-        </div>
-        <div class="bg-white p-4 rounded-lg shadow border-l-4 border-blue-700">
+        </a>
+        <a href="?page=laporan_gudang&type=PEMAKAIAN&start=<?= $display_start ?>&end=<?= $display_end ?>" class="block bg-white p-4 rounded-lg shadow border-l-4 border-blue-700 hover:bg-blue-50 transition cursor-pointer">
             <p class="text-xs font-bold text-gray-500 uppercase">Total Unit Terpakai</p>
             <h3 class="text-xl font-bold text-blue-700"><?= number_format($inv_stats['used']) ?> <span class="text-xs text-gray-400">Unit</span></h3>
-        </div>
+        </a>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -200,7 +200,7 @@ if ($access_inventory) {
 
         <!-- 3. TOP STOCK TABLE -->
         <div class="lg:col-span-1 bg-white p-4 rounded-lg shadow flex flex-col">
-            <h4 class="font-bold text-gray-700 mb-4 text-sm">Top 5 Stok Terbanyak</h4>
+            <h4 class="font-bold mb-4 text-sm"><a href="?page=data_barang&sort=stock_high" class="text-gray-700 hover:text-blue-600 transition">Top 5 Stok Terbanyak <i class="fas fa-external-link-alt text-[10px]"></i></a></h4>
             <div class="overflow-x-auto flex-1">
                 <table class="w-full text-xs text-left">
                     <thead class="bg-gray-100 text-gray-600">

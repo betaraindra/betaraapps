@@ -506,6 +506,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // --- FILTER & QUERY DATA ---
 $search = $_GET['q'] ?? '';
 $cat_filter = $_GET['category'] ?? 'ALL';
+$stock_filter = $_GET['stock'] ?? 'ALL';
 $sort_by = $_GET['sort'] ?? 'newest';
 
 $existing_cats = $pdo->query("SELECT DISTINCT category FROM products ORDER BY category")->fetchAll(PDO::FETCH_COLUMN);
@@ -594,6 +595,10 @@ $params = ["%$search%", "%$search%", "%$search%", "%$search%"];
 if ($cat_filter !== 'ALL') {
     $sql .= " AND p.category = ?";
     $params[] = $cat_filter;
+}
+
+if ($stock_filter === 'low') {
+    $sql .= " AND p.stock < 10";
 }
 
 if ($sort_by === 'name_asc') $sql .= " ORDER BY p.name ASC";
@@ -1010,7 +1015,8 @@ async function showProductDetail(prodId) {
                         <div><span class="text-gray-500 block text-xs">Harga Beli</span> <span class="font-bold">Rp ${new Intl.NumberFormat('id-ID').format(p.buy_price)}</span></div>
                         <div><span class="text-gray-500 block text-xs">Harga Jual</span> <span class="font-bold">Rp ${new Intl.NumberFormat('id-ID').format(p.sell_price)}</span></div>
                         <div><span class="text-gray-500 block text-xs">Satuan</span> <span class="font-bold">${p.unit}</span></div>
-                        <div><span class="text-gray-500 block text-xs">Total Aset</span> <span class="font-bold text-blue-600">${new Intl.NumberFormat('id-ID').format(p.stock)}</span></div>
+                        <div><span class="text-gray-500 block text-xs">Tanggal Buat/Masuk</span> <span class="font-bold text-gray-700">${p.created_at || '-'}</span></div>
+                        <div class="col-span-2"><span class="text-gray-500 block text-xs">Total Aset</span> <span class="font-bold text-blue-600">${new Intl.NumberFormat('id-ID').format(p.stock)}</span></div>
                     </div>
                 </div>
                 ${p.notes ? `<div class="mt-3 text-sm text-gray-600 italic border-t border-indigo-200 pt-2"><i class="fas fa-sticky-note mr-1"></i> ${p.notes}</div>` : ''}
@@ -1026,6 +1032,7 @@ async function showProductDetail(prodId) {
                             <th class="p-2 text-right text-green-600">Ready</th>
                             <th class="p-2 text-right text-purple-600">Terpakai</th>
                             <th class="p-2 text-right text-red-600">Rusak</th>
+                            <th class="p-2 text-right text-orange-600">Hilang</th>
                             <th class="p-2 text-right">Total</th>
                         </tr>
                     </thead>
@@ -1033,16 +1040,17 @@ async function showProductDetail(prodId) {
         `;
 
         if (stocks.length === 0) {
-            html += '<tr><td colspan="5" class="p-3 text-center text-gray-400 italic">Belum ada data stok.</td></tr>';
+            html += '<tr><td colspan="6" class="p-3 text-center text-gray-400 italic">Belum ada data stok.</td></tr>';
         } else {
             stocks.forEach(s => {
-                const total = parseInt(s.ready) + parseInt(s.used) + parseInt(s.damaged);
+                const total = parseInt(s.ready) + parseInt(s.used) + parseInt(s.damaged) + parseInt(s.missing || 0);
                 html += `
                     <tr class="hover:bg-gray-50">
                         <td class="p-2 font-medium">${s.wh_name || 'Unknown'}</td>
-                        <td class="p-2 text-right font-bold text-green-600">${new Intl.NumberFormat('id-ID').format(s.ready)}</td>
-                        <td class="p-2 text-right font-bold text-purple-600">${new Intl.NumberFormat('id-ID').format(s.used)}</td>
-                        <td class="p-2 text-right font-bold text-red-600">${new Intl.NumberFormat('id-ID').format(s.damaged)}</td>
+                        <td class="p-2 text-right font-bold text-green-600"><a href="?page=laporan_gudang&type=ALL&q=${encodeURIComponent(p.sku)}" class="hover:underline" title="Lihat Laporan sisa stok ALL">${new Intl.NumberFormat('id-ID').format(s.ready)}</a></td>
+                        <td class="p-2 text-right font-bold text-purple-600"><a href="?page=laporan_gudang&type=PEMAKAIAN&q=${encodeURIComponent(p.sku)}" class="hover:underline" title="Lihat Laporan Terpakai">${new Intl.NumberFormat('id-ID').format(s.used)}</a></td>
+                        <td class="p-2 text-right font-bold text-red-600"><a href="?page=laporan_gudang&type=RUSAK&q=${encodeURIComponent(p.sku)}" class="hover:underline" title="Lihat Laporan Rusak">${new Intl.NumberFormat('id-ID').format(s.damaged)}</a></td>
+                        <td class="p-2 text-right font-bold text-orange-600"><a href="?page=laporan_gudang&type=HILANG&q=${encodeURIComponent(p.sku)}" class="hover:underline" title="Lihat Laporan Hilang">${new Intl.NumberFormat('id-ID').format(s.missing || 0)}</a></td>
                         <td class="p-2 text-right font-bold">${new Intl.NumberFormat('id-ID').format(total)}</td>
                     </tr>
                 `;
@@ -1083,7 +1091,7 @@ async function showProductDetail(prodId) {
                         <td class="p-2">${m.wh_name || '-'}</td>
                         <td class="p-2 text-right font-bold">${new Intl.NumberFormat('id-ID').format(m.quantity)}</td>
                         <td class="p-2">
-                            <div class="font-bold text-gray-700">${m.reference || '-'}</div>
+                            <div class="font-bold text-blue-600"><a href="?page=laporan_gudang&type=ALL&q=${encodeURIComponent(m.reference)}" class="hover:underline" title="Lihat Laporan Ref">${m.reference || '-'}</a></div>
                             <div class="text-gray-500 italic truncate max-w-[150px]">${m.notes || ''}</div>
                         </td>
                         <td class="p-2 text-gray-500">${m.username || '-'}</td>

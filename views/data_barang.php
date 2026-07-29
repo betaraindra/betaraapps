@@ -506,8 +506,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // --- FILTER & QUERY DATA ---
 $search = $_GET['q'] ?? '';
 $cat_filter = $_GET['category'] ?? 'ALL';
-$stock_filter = $_GET['stock'] ?? 'ALL';
 $sort_by = $_GET['sort'] ?? 'newest';
+
+if (isset($_GET['stock'])) {
+    $stock_filter = $_GET['stock'];
+} else {
+    if ($search !== '' || strpos($sort_by, 'stock_low') !== false) {
+        $stock_filter = 'ALL';
+    } else {
+        $stock_filter = 'available';
+    }
+}
 
 $existing_cats = $pdo->query("SELECT DISTINCT category FROM products ORDER BY category")->fetchAll(PDO::FETCH_COLUMN);
 
@@ -597,7 +606,11 @@ if ($cat_filter !== 'ALL') {
     $params[] = $cat_filter;
 }
 
-if ($stock_filter === 'low') {
+if ($stock_filter === 'available') {
+    $sql .= " AND p.stock > 0";
+} elseif ($stock_filter === 'empty') {
+    $sql .= " AND p.stock = 0";
+} elseif ($stock_filter === 'low') {
     $sql .= " AND p.stock < 10";
 }
 
@@ -687,6 +700,14 @@ $total_asset_group = 0;
                 <?php foreach($existing_cats as $c): ?>
                     <option value="<?= $c ?>" <?= $cat_filter==$c?'selected':'' ?>><?= $c ?></option>
                 <?php endforeach; ?>
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs font-bold text-gray-600 mb-1">Status Stok</label>
+            <select name="stock" class="w-full border p-2 rounded text-sm bg-white">
+                <option value="ALL" <?= $stock_filter=='ALL'?'selected':'' ?>>Semua</option>
+                <option value="available" <?= $stock_filter=='available'?'selected':'' ?>>Tersedia (> 0)</option>
+                <option value="empty" <?= $stock_filter=='empty'?'selected':'' ?>>Habis (0)</option>
             </select>
         </div>
         <div>
@@ -1022,7 +1043,7 @@ async function showProductDetail(prodId) {
                         <div><span class="text-gray-500 block text-xs">Harga Beli</span> <span class="font-bold">Rp ${new Intl.NumberFormat('id-ID').format(p.buy_price)}</span></div>
                         <div><span class="text-gray-500 block text-xs">Harga Jual</span> <span class="font-bold">Rp ${new Intl.NumberFormat('id-ID').format(p.sell_price)}</span></div>
                         <div><span class="text-gray-500 block text-xs">Satuan</span> <span class="font-bold">${p.unit}</span></div>
-                        <div><span class="text-gray-500 block text-xs">Tanggal Buat/Masuk</span> <span class="font-bold text-gray-700">${p.created_at || '-'}</span></div>
+                        <div><span class="text-gray-500 block text-xs">Tanggal Buat/Masuk</span> <span class="font-bold text-gray-700">${p.first_in_date || p.created_at || '-'}</span></div>
                         <div class="col-span-2"><span class="text-gray-500 block text-xs">Total Aset</span> <span class="font-bold text-blue-600">${new Intl.NumberFormat('id-ID').format(p.stock)}</span></div>
                     </div>
                 </div>

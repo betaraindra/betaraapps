@@ -263,7 +263,12 @@ if ($action === 'get_product_detail_full') {
     }
 
     // 1. Product Info
-    $stmt = $pdo->prepare("SELECT * FROM products WHERE id = ?");
+    $stmt = $pdo->prepare("
+        SELECT p.*, 
+               COALESCE((SELECT MIN(date) FROM inventory_transactions WHERE product_id = p.id AND type='IN'), DATE(p.created_at)) as first_in_date
+        FROM products p 
+        WHERE p.id = ?
+    ");
     $stmt->execute([$prod_id]);
     $product = $stmt->fetch(PDO::FETCH_ASSOC);
 

@@ -28,6 +28,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
             $photo_paths = [];
             if (!empty($_FILES['photos']['name'][0])) {
                 $upload_dir = 'uploads/activities/';
+                if (!is_dir($upload_dir)) mkdir($upload_dir, 0777, true);
                 foreach ($_FILES['photos']['name'] as $key => $name) {
                     if ($_FILES['photos']['error'][$key] == UPLOAD_ERR_OK) {
                         $tmp_name = $_FILES['photos']['tmp_name'][$key];

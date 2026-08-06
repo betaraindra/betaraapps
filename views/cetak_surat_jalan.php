@@ -272,7 +272,12 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                         ?>
                             <div style="margin-top: 8px; display: flex; gap: 10px; flex-wrap: wrap;">
                                 <?php foreach($photos as $p): ?>
-                                    <img src="<?= h($p) ?>" style="width: 150px; height: 150px; object-fit: contain; border: 1px solid #ccc; padding: 2px; background: #fff;">
+                                    <div style="text-align: center;">
+                                        <img src="<?= h($p) ?>" style="width: 150px; height: 150px; object-fit: contain; border: 1px solid #ccc; padding: 2px; background: #fff;">
+                                        <div style="margin-top: 4px;">
+                                            <a href="<?= h($p) ?>" target="_blank" style="font-size: 10px; color: blue; text-decoration: underline; word-break: break-all;">Lihat Foto</a>
+                                        </div>
+                                    </div>
                                 <?php endforeach; ?>
                             </div>
                         <?php 

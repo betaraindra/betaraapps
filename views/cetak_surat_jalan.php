@@ -170,6 +170,7 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
             <tbody>
                 <?php 
                 $no = 1; 
+                $all_evidence = [];
                 foreach($items as $item): 
                     $row_id = "bc_" . $no; 
                     
@@ -205,6 +206,17 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                     
                     $clean_notes = trim($clean_notes);
                     if ($clean_notes == '-') $clean_notes = '';
+
+                    // Collect Evidence
+                    if(!empty($coords) || !empty($photos_json)) {
+                        $all_evidence[] = [
+                            'item_no' => $no,
+                            'prod_name' => $item['prod_name'],
+                            'sku' => $item['sku'],
+                            'coords' => $coords,
+                            'photos_json' => $photos_json
+                        ];
+                    }
                 ?>
                 <tr>
                     <td class="text-center"><?= $no++ ?></td>
@@ -232,23 +244,6 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
 
                     <td class="item-notes">
                         <div><?= !empty($clean_notes) ? h($clean_notes) : '-' ?></div>
-                        <?php if(!empty($coords)): ?>
-                            <div style="font-size: 9px; color: #0056b3; margin-top: 2px;">📍 <?= h($coords) ?></div>
-                        <?php endif; ?>
-                        <?php 
-                            if(!empty($photos_json)): 
-                                $photos = json_decode($photos_json, true);
-                                if(is_array($photos) && count($photos) > 0):
-                        ?>
-                            <div style="margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap;">
-                                <?php foreach($photos as $p): ?>
-                                    <img src="<?= h($p) ?>" style="width: 40px; height: 40px; object-fit: cover; border: 1px solid #ccc;">
-                                <?php endforeach; ?>
-                            </div>
-                        <?php 
-                                endif;
-                            endif; 
-                        ?>
                     </td>
                     <td class="text-center text-bold" style="font-size: 14px;"><?= $item['quantity'] ?></td>
                     <td class="text-center"><?= $item['unit'] ?></td>
@@ -257,6 +252,40 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                 <?php endforeach; ?>
             </tbody>
         </table>
+
+        <?php if(!empty($all_evidence)): ?>
+        <div style="margin-top: 20px; page-break-inside: avoid;">
+            <div style="font-weight: bold; font-size: 14px; margin-bottom: 10px; text-decoration: underline;">FOTO EVIDENCE</div>
+            <table style="width: 100%; border-collapse: collapse;">
+                <?php foreach($all_evidence as $ev): ?>
+                <tr>
+                    <td style="vertical-align: top; padding-bottom: 15px;">
+                        <div style="font-weight: bold; font-size: 12px;"><?= $ev['item_no'] ?>. <?= $ev['prod_name'] ?> (<?= $ev['sku'] ?>)</div>
+                        <?php if(!empty($ev['coords'])): ?>
+                            <div style="font-size: 11px; color: #0056b3; margin-top: 4px;">📍 Titik Koordinat: <?= h($ev['coords']) ?></div>
+                        <?php endif; ?>
+                        
+                        <?php 
+                            if(!empty($ev['photos_json'])): 
+                                $photos = json_decode($ev['photos_json'], true);
+                                if(is_array($photos) && count($photos) > 0):
+                        ?>
+                            <div style="margin-top: 8px; display: flex; gap: 10px; flex-wrap: wrap;">
+                                <?php foreach($photos as $p): ?>
+                                    <img src="<?= h($p) ?>" style="width: 150px; height: 150px; object-fit: contain; border: 1px solid #ccc; padding: 2px; background: #fff;">
+                                <?php endforeach; ?>
+                            </div>
+                        <?php 
+                                endif;
+                            endif; 
+                        ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </table>
+        </div>
+        <?php endif; ?>
+
     </div>
 
     <div class="footer-wrapper">

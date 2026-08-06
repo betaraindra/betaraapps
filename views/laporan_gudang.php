@@ -322,7 +322,40 @@ if ($warehouse_filter !== 'ALL') {
                         <td class="border border-gray-400 p-2 text-center font-bold text-orange-700">
                             <?= $item['has_serial_number'] == 1 ? $item['hilang_count'] : '-' ?>
                         </td>
-                        <td class="border border-gray-400 p-2 text-gray-600 italic"><?= $item['notes'] ?></td>
+                        <td class="border border-gray-400 p-2">
+                            <?php
+                                $raw_note = $item['notes'];
+                                $coords = '';
+                                $photos_json = '';
+                                if (preg_match('/\[COORDS:\s*(.*?)\]/', $raw_note, $matches)) {
+                                    $coords = $matches[1];
+                                    $raw_note = str_replace($matches[0], '', $raw_note);
+                                }
+                                if (preg_match('/\[PHOTOS:\s*(.*?)\]/', $raw_note, $matches)) {
+                                    $photos_json = $matches[1];
+                                    $raw_note = str_replace($matches[0], '', $raw_note);
+                                }
+                                $clean_note = trim(str_replace(['Aktivitas:', '[PEMAKAIAN]'], '', $raw_note));
+                            ?>
+                            <div class="text-gray-600 italic"><?= $clean_note ?></div>
+                            <?php if(!empty($coords)): ?>
+                                <div class="text-[10px] text-blue-600 mt-1"><i class="fas fa-map-marker-alt"></i> <?= h($coords) ?></div>
+                            <?php endif; ?>
+                            <?php 
+                                if(!empty($photos_json)): 
+                                    $photos = json_decode($photos_json, true);
+                                    if(is_array($photos) && count($photos) > 0):
+                            ?>
+                                <div class="mt-1 flex gap-1 flex-wrap">
+                                    <?php foreach($photos as $p): ?>
+                                        <a href="<?= h($p) ?>" target="_blank" class="text-blue-500 hover:text-blue-700" title="Lihat Foto"><i class="fas fa-image"></i></a>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php 
+                                    endif;
+                                endif; 
+                            ?>
+                        </td>
                         <td class="border border-gray-400 p-2 text-center text-[9px] text-gray-500">
                             <?php 
                                 // Ambil username user

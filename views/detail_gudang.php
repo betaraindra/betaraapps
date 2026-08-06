@@ -538,7 +538,26 @@ if ($tab === 'activity') {
                             </span>
                         </td>
                         <td class="p-3 text-right font-bold"><?= number_format($h['quantity']) ?></td>
-                        <td class="p-3 text-gray-500 italic truncate max-w-xs"><?= h($h['notes']) ?></td>
+                        <td class="p-3">
+                            <div class="text-gray-500 italic text-xs max-w-xs break-words"><?= h($h['notes']) ?></div>
+                            <?php if(!empty($h['coordinates'])): ?>
+                                <div class="text-xs text-blue-600 mt-1"><i class="fas fa-map-marker-alt"></i> <?= h($h['coordinates']) ?></div>
+                            <?php endif; ?>
+                            <?php 
+                                if(!empty($h['photos'])): 
+                                    $photos = json_decode($h['photos'], true);
+                                    if(is_array($photos) && count($photos) > 0):
+                            ?>
+                                <div class="mt-1 flex gap-1">
+                                    <?php foreach($photos as $p): ?>
+                                        <a href="<?= h($p) ?>" target="_blank" class="text-blue-500 hover:text-blue-700" title="Lihat Foto"><i class="fas fa-image"></i></a>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php 
+                                    endif;
+                                endif; 
+                            ?>
+                        </td>
                         <td class="p-3 text-center">
                             <a href="?page=cetak_surat_jalan&id=<?= $h['id'] ?>" target="_blank" class="text-blue-600 hover:underline text-xs"><i class="fas fa-print"></i></a>
                         </td>

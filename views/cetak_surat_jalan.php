@@ -217,7 +217,26 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                         <div class="sn-list"><?= $sn_display ?></div>
                     </td>
 
-                    <td class="item-notes"><?= !empty($clean_notes) ? $clean_notes : '-' ?></td>
+                    <td class="item-notes">
+                        <div><?= !empty($clean_notes) ? h($clean_notes) : '-' ?></div>
+                        <?php if(!empty($item['coordinates'])): ?>
+                            <div style="font-size: 9px; color: #0056b3; margin-top: 2px;">📍 <?= h($item['coordinates']) ?></div>
+                        <?php endif; ?>
+                        <?php 
+                            if(!empty($item['photos'])): 
+                                $photos = json_decode($item['photos'], true);
+                                if(is_array($photos) && count($photos) > 0):
+                        ?>
+                            <div style="margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap;">
+                                <?php foreach($photos as $p): ?>
+                                    <img src="<?= h($p) ?>" style="width: 40px; height: 40px; object-fit: cover; border: 1px solid #ccc;">
+                                <?php endforeach; ?>
+                            </div>
+                        <?php 
+                                endif;
+                            endif; 
+                        ?>
+                    </td>
                     <td class="text-center text-bold" style="font-size: 14px;"><?= $item['quantity'] ?></td>
                     <td class="text-center"><?= $item['unit'] ?></td>
                     <td class="text-center">▢</td>

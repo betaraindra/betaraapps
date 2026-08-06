@@ -24,6 +24,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                 $ref_custom = "ACT/" . date('ymd') . "/" . rand(100,999);
             }
 
+            // Process photo uploads
+            $photo_paths = [];
+            if (!empty($_FILES['photos']['name'][0])) {
+                $upload_dir = 'uploads/activities/';
+                foreach ($_FILES['photos']['name'] as $key => $name) {
+                    if ($_FILES['photos']['error'][$key] == UPLOAD_ERR_OK) {
+                        $tmp_name = $_FILES['photos']['tmp_name'][$key];
+                        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+                        // Allowed extensions
+                        if (in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'webp'])) {
+                            $filename = uniqid('act_') . '_' . time() . '.' . $ext;
+                            $destination = $upload_dir . $filename;
+                            if (move_uploaded_file($tmp_name, $destination)) {
+                                $photo_paths[] = $destination;
+                            }
+                        }
+                    }
+                }
+            }
+            $photos_json = !empty($photo_paths) ? json_encode($photo_paths) : null;
+            $coordinates = !empty($_POST['coordinates']) ? trim($_POST['coordinates']) : null;
+
             $inputType = $_POST['input_type'] ?? 'PEMAKAIAN'; // PEMAKAIAN or RUSAK or HILANG
             $items_saved = 0;
 
@@ -71,8 +93,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                 if(!empty($item['notes'])) $item_note .= " (" . $item['notes'] . ")";
                 if(!empty($sns)) $item_note .= " [SN: " . implode(', ', $sns) . "]";
 
-                $stmtTrx = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
-                $stmtTrx->execute([$date, $prod['id'], $wh_id, $qty, $ref_custom, $item_note, $_SESSION['user_id']]);
+                $stmtTrx = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id, photos, coordinates) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmtTrx->execute([$date, $prod['id'], $wh_id, $qty, $ref_custom, $item_note, $_SESSION['user_id'], $photos_json, $coordinates]);
                 $trx_id = $pdo->lastInsertId();
 
                 // 4. Update Stok Fisik
@@ -112,7 +134,7 @@ $products_list = $pdo->query("SELECT sku, name FROM products ORDER BY name ASC")
 
 // --- FETCH HISTORY AKTIVITAS TERAKHIR ---
 $history = $pdo->query("
-    SELECT i.id, i.date, i.reference, i.quantity, i.notes, 
+    SELECT i.id, i.date, i.reference, i.quantity, i.notes, i.coordinates, i.photos,
            p.name as prod_name, p.sku, 
            w.name as wh_name, 
            u.username
@@ -141,7 +163,7 @@ $history = $pdo->query("
         </div>
     </div>
 
-    <form method="POST" id="form_activity" onsubmit="return validateCart()">
+    <form method="POST" id="form_activity" enctype="multipart/form-data" onsubmit="return validateCart()">
         <?= csrf_field() ?>
         <input type="hidden" name="save_activity" value="1">
         <input type="hidden" name="cart_json" id="cart_json">
@@ -166,6 +188,15 @@ $history = $pdo->query("
                 <div>
                     <label class="block text-xs font-bold text-gray-700 mb-1">Referensi / ID Pelanggan (Opsional)</label>
                     <input type="text" name="reference" class="w-full border p-2 rounded text-sm uppercase" placeholder="Contoh: PLG-001">
+                </div>
+                <div class="md:col-span-3">
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Titik Koordinat (Opsional)</label>
+                    <input type="text" name="coordinates" class="w-full border p-2 rounded text-sm" placeholder='Contoh: 3°02&#39;38.45"S 104°42&#39;11.08"E'>
+                </div>
+                <div class="md:col-span-3">
+                    <label class="block text-xs font-bold text-gray-700 mb-1">Upload Foto Dokumentasi (Bisa lebih dari 1, Opsional)</label>
+                    <input type="file" name="photos[]" multiple accept="image/*" class="w-full border p-2 rounded text-sm bg-white">
+                    <p class="text-[10px] text-gray-500 mt-1">Format: JPG, PNG, JPEG</p>
                 </div>
                 <div class="md:col-span-3">
                     <label class="block text-xs font-bold text-gray-700 mb-1">Jenis Input</label>
@@ -316,8 +347,25 @@ $history = $pdo->query("
                             <div class="text-[10px] text-gray-500"><?= htmlspecialchars($row['sku']) ?></div>
                         </td>
                         <td class="p-3 text-center font-bold text-gray-700"><?= $row['quantity'] ?></td>
-                        <td class="p-3 text-xs text-gray-600 max-w-sm italic break-words">
-                            <?= htmlspecialchars($clean_note) ?>
+                        <td class="p-3 text-xs text-gray-600 max-w-sm break-words">
+                            <div class="italic"><?= htmlspecialchars($clean_note) ?></div>
+                            <?php if(!empty($row['coordinates'])): ?>
+                                <div class="text-[10px] text-blue-600 mt-1"><i class="fas fa-map-marker-alt"></i> <?= h($row['coordinates']) ?></div>
+                            <?php endif; ?>
+                            <?php 
+                                if(!empty($row['photos'])): 
+                                    $photos = json_decode($row['photos'], true);
+                                    if(is_array($photos) && count($photos) > 0):
+                            ?>
+                                <div class="mt-1 flex gap-1">
+                                    <?php foreach($photos as $p): ?>
+                                        <a href="<?= h($p) ?>" target="_blank" class="text-blue-500 hover:text-blue-700" title="Lihat Foto"><i class="fas fa-image"></i></a>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php 
+                                    endif;
+                                endif; 
+                            ?>
                         </td>
                         <td class="p-3 text-xs text-gray-500"><?= htmlspecialchars($row['username']) ?></td>
                     </tr>

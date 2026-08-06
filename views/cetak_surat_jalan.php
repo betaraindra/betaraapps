@@ -199,7 +199,7 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                         $coords = $matches[1];
                         $clean_notes = str_replace($matches[0], '', $clean_notes);
                     }
-                    if (preg_match('/\[PHOTOS:\s*(.*?)\]/', $clean_notes, $matches)) {
+                    if (preg_match('/\[PHOTOS:\s*(\[.*?\])\]/', $clean_notes, $matches)) {
                         $photos_json = $matches[1];
                         $clean_notes = str_replace($matches[0], '', $clean_notes);
                     }

@@ -347,7 +347,7 @@ $history = $pdo->query("
                             $coords = $matches[1];
                             $raw_note = str_replace($matches[0], '', $raw_note);
                         }
-                        if (preg_match('/\[PHOTOS:\s*(.*?)\]/', $raw_note, $matches)) {
+                        if (preg_match('/\[PHOTOS:\s*(\[.*?\])\]/', $raw_note, $matches)) {
                             $photos_json = $matches[1];
                             $raw_note = str_replace($matches[0], '', $raw_note);
                         }

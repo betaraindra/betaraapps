@@ -93,8 +93,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_activity'])) {
                 if(!empty($item['notes'])) $item_note .= " (" . $item['notes'] . ")";
                 if(!empty($sns)) $item_note .= " [SN: " . implode(', ', $sns) . "]";
 
-                $stmtTrx = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id, photos, coordinates) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmtTrx->execute([$date, $prod['id'], $wh_id, $qty, $ref_custom, $item_note, $_SESSION['user_id'], $photos_json, $coordinates]);
+                // Embed coords and photos inside notes
+                if(!empty($coordinates)) $item_note .= " [COORDS: $coordinates]";
+                if(!empty($photo_paths)) $item_note .= " [PHOTOS: " . json_encode($photo_paths) . "]";
+
+                $stmtTrx = $pdo->prepare("INSERT INTO inventory_transactions (date, type, product_id, warehouse_id, quantity, reference, notes, user_id) VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?)");
+                $stmtTrx->execute([$date, $prod['id'], $wh_id, $qty, $ref_custom, $item_note, $_SESSION['user_id']]);
                 $trx_id = $pdo->lastInsertId();
 
                 // 4. Update Stok Fisik
@@ -134,7 +138,7 @@ $products_list = $pdo->query("SELECT sku, name FROM products ORDER BY name ASC")
 
 // --- FETCH HISTORY AKTIVITAS TERAKHIR ---
 $history = $pdo->query("
-    SELECT i.id, i.date, i.reference, i.quantity, i.notes, i.coordinates, i.photos,
+    SELECT i.id, i.date, i.reference, i.quantity, i.notes,
            p.name as prod_name, p.sku, 
            w.name as wh_name, 
            u.username
@@ -335,8 +339,20 @@ $history = $pdo->query("
                 </thead>
                 <tbody class="divide-y">
                     <?php foreach($history as $row): 
-                        // Clean note for display
-                        $clean_note = trim(str_replace(['Aktivitas:', '[PEMAKAIAN]'], '', $row['notes']));
+                        $coords = '';
+                        $photos_json = '';
+                        $raw_note = $row['notes'];
+                        
+                        if (preg_match('/\[COORDS:\s*(.*?)\]/', $raw_note, $matches)) {
+                            $coords = $matches[1];
+                            $raw_note = str_replace($matches[0], '', $raw_note);
+                        }
+                        if (preg_match('/\[PHOTOS:\s*(.*?)\]/', $raw_note, $matches)) {
+                            $photos_json = $matches[1];
+                            $raw_note = str_replace($matches[0], '', $raw_note);
+                        }
+                        
+                        $clean_note = trim(str_replace(['Aktivitas:', '[PEMAKAIAN]'], '', $raw_note));
                     ?>
                     <tr class="hover:bg-gray-50">
                         <td class="p-3 whitespace-nowrap text-xs"><?= date('d/m/Y', strtotime($row['date'])) ?></td>
@@ -349,12 +365,12 @@ $history = $pdo->query("
                         <td class="p-3 text-center font-bold text-gray-700"><?= $row['quantity'] ?></td>
                         <td class="p-3 text-xs text-gray-600 max-w-sm break-words">
                             <div class="italic"><?= htmlspecialchars($clean_note) ?></div>
-                            <?php if(!empty($row['coordinates'])): ?>
-                                <div class="text-[10px] text-blue-600 mt-1"><i class="fas fa-map-marker-alt"></i> <?= h($row['coordinates']) ?></div>
+                            <?php if(!empty($coords)): ?>
+                                <div class="text-[10px] text-blue-600 mt-1"><i class="fas fa-map-marker-alt"></i> <?= h($coords) ?></div>
                             <?php endif; ?>
                             <?php 
-                                if(!empty($row['photos'])): 
-                                    $photos = json_decode($row['photos'], true);
+                                if(!empty($photos_json)): 
+                                    $photos = json_decode($photos_json, true);
                                     if(is_array($photos) && count($photos) > 0):
                             ?>
                                 <div class="mt-1 flex gap-1">

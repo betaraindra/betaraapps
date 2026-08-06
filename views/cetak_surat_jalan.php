@@ -190,6 +190,19 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                     // --- BERSIHKAN CATATAN ---
                     // Hapus string "[SN: ...]" dari kolom catatan agar tidak redundan
                     $clean_notes = preg_replace('/\[SN:.*?\]/', '', $item['notes'] ?? '');
+                    
+                    $coords = '';
+                    $photos_json = '';
+                    
+                    if (preg_match('/\[COORDS:\s*(.*?)\]/', $clean_notes, $matches)) {
+                        $coords = $matches[1];
+                        $clean_notes = str_replace($matches[0], '', $clean_notes);
+                    }
+                    if (preg_match('/\[PHOTOS:\s*(.*?)\]/', $clean_notes, $matches)) {
+                        $photos_json = $matches[1];
+                        $clean_notes = str_replace($matches[0], '', $clean_notes);
+                    }
+                    
                     $clean_notes = trim($clean_notes);
                     if ($clean_notes == '-') $clean_notes = '';
                 ?>
@@ -219,12 +232,12 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
 
                     <td class="item-notes">
                         <div><?= !empty($clean_notes) ? h($clean_notes) : '-' ?></div>
-                        <?php if(!empty($item['coordinates'])): ?>
-                            <div style="font-size: 9px; color: #0056b3; margin-top: 2px;">📍 <?= h($item['coordinates']) ?></div>
+                        <?php if(!empty($coords)): ?>
+                            <div style="font-size: 9px; color: #0056b3; margin-top: 2px;">📍 <?= h($coords) ?></div>
                         <?php endif; ?>
                         <?php 
-                            if(!empty($item['photos'])): 
-                                $photos = json_decode($item['photos'], true);
+                            if(!empty($photos_json)): 
+                                $photos = json_decode($photos_json, true);
                                 if(is_array($photos) && count($photos) > 0):
                         ?>
                             <div style="margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap;">

@@ -526,7 +526,22 @@ if ($tab === 'activity') {
                     </tr>
                 </thead>
                 <tbody class="divide-y">
-                    <?php foreach($history as $h): ?>
+                    <?php foreach($history as $h): 
+                        $coords = '';
+                        $photos_json = '';
+                        $raw_note = $h['notes'];
+                        
+                        if (preg_match('/\[COORDS:\s*(.*?)\]/', $raw_note, $matches)) {
+                            $coords = $matches[1];
+                            $raw_note = str_replace($matches[0], '', $raw_note);
+                        }
+                        if (preg_match('/\[PHOTOS:\s*(.*?)\]/', $raw_note, $matches)) {
+                            $photos_json = $matches[1];
+                            $raw_note = str_replace($matches[0], '', $raw_note);
+                        }
+                        
+                        $clean_note = trim($raw_note);
+                    ?>
                     <tr class="hover:bg-gray-50">
                         <td class="p-3 whitespace-nowrap"><?= date('d/m/Y', strtotime($h['date'])) ?></td>
                         <td class="p-3 font-mono text-xs uppercase"><?= h($h['reference']) ?></td>
@@ -539,13 +554,13 @@ if ($tab === 'activity') {
                         </td>
                         <td class="p-3 text-right font-bold"><?= number_format($h['quantity']) ?></td>
                         <td class="p-3">
-                            <div class="text-gray-500 italic text-xs max-w-xs break-words"><?= h($h['notes']) ?></div>
-                            <?php if(!empty($h['coordinates'])): ?>
-                                <div class="text-xs text-blue-600 mt-1"><i class="fas fa-map-marker-alt"></i> <?= h($h['coordinates']) ?></div>
+                            <div class="text-gray-500 italic text-xs max-w-xs break-words"><?= h($clean_note) ?></div>
+                            <?php if(!empty($coords)): ?>
+                                <div class="text-xs text-blue-600 mt-1"><i class="fas fa-map-marker-alt"></i> <?= h($coords) ?></div>
                             <?php endif; ?>
                             <?php 
-                                if(!empty($h['photos'])): 
-                                    $photos = json_decode($h['photos'], true);
+                                if(!empty($photos_json)): 
+                                    $photos = json_decode($photos_json, true);
                                     if(is_array($photos) && count($photos) > 0):
                             ?>
                                 <div class="mt-1 flex gap-1">

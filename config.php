@@ -114,10 +114,6 @@ ensureIndex($pdo, 'inventory_transactions', 'idx_date_type', 'date, type');
 ensureIndex($pdo, 'inventory_transactions', 'idx_prod_wh', 'product_id, warehouse_id');
 ensureIndex($pdo, 'products', 'idx_name_sku', 'name, sku');
 
-// Add columns for activity tracking
-ensureColumn($pdo, 'inventory_transactions', 'photos', 'TEXT DEFAULT NULL');
-ensureColumn($pdo, 'inventory_transactions', 'coordinates', 'VARCHAR(255) DEFAULT NULL');
-
 // --- PERFORMANCE: SIMPLE FILE CACHE ---
 class SimpleCache {
     private $cacheDir = 'cache/';

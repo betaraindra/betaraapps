@@ -124,7 +124,7 @@ $period_label = $months[(int)date('m', strtotime($period_filter . '-01'))] . ' '
             $no = 1; 
             $total_all_asset = 0;
             foreach($products as $p): 
-                $asset_val = $p['stock'] * $p['buy_price'];
+                $asset_val = (float)$p['stock'] * (float)$p['buy_price'];
                 $total_all_asset += $asset_val;
             ?>
             <tr>

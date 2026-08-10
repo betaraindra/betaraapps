@@ -81,15 +81,25 @@ foreach($transactions as $t) {
     
     // Label
     $months = [1=>'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
-    $period_label = $months[date('n', $month_ts)] . " " . date('Y', $month_ts);
+    $period_label = $months[(int)date('m', $month_ts)] . " " . date('Y', $month_ts);
     
     $grouped_data[$group_key]['label'] = $period_label;
     $grouped_data[$group_key]['items'][] = $t;
     
     // Calculate Total Material (Transaction Value) based on Buy Price
-    if(!isset($grouped_data[$group_key]['total'])) $grouped_data[$group_key]['total'] = 0;
+    if(!isset($grouped_data[$group_key]['total'])) {
+        $grouped_data[$group_key]['total'] = 0;
+        $grouped_data[$group_key]['total_in'] = 0;
+        $grouped_data[$group_key]['total_out'] = 0;
+    }
     // Asumsi: Total Material = Qty Transaksi * Harga Beli (Nilai barang yang bergerak)
-    $grouped_data[$group_key]['total'] += ($t['quantity'] * $t['buy_price']);
+    $grouped_data[$group_key]['total'] += ((float)$t['quantity'] * (float)$t['buy_price']);
+    
+    if($t['type'] == 'IN') {
+        $grouped_data[$group_key]['total_in'] += $t['quantity'];
+    } else {
+        $grouped_data[$group_key]['total_out'] += $t['quantity'];
+    }
 }
 
 // Get Selected Warehouse Name for Header
@@ -264,10 +274,13 @@ if ($warehouse_filter !== 'ALL') {
                 <?php foreach($grouped_data as $key => $group): ?>
                     <!-- Header Periode -->
                     <tr class="bg-red-300 print:bg-red-300">
-                        <td colspan="8" class="border border-gray-400 p-2 font-bold text-red-900">
+                        <td colspan="5" class="border border-gray-400 p-2 font-bold text-red-900">
                             Periode <?= $group['label'] ?>
                         </td>
-                        <td colspan="6" class="border border-gray-400 p-2 font-bold text-red-900 text-right">
+                        <td colspan="5" class="border border-gray-400 p-2 font-bold text-red-900 text-center">
+                            Barang Masuk: <?= number_format($group['total_in'], 0, ',', '.') ?> | Barang Keluar: <?= number_format($group['total_out'], 0, ',', '.') ?>
+                        </td>
+                        <td colspan="5" class="border border-gray-400 p-2 font-bold text-red-900 text-right">
                             Total Nilai Material: <?= formatRupiah($group['total']) ?>
                         </td>
                     </tr>

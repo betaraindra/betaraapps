@@ -91,7 +91,7 @@ $period_label = $months[(int)date('m', strtotime($period_filter . '-01'))] . ' '
 <body onload="window.print()">
 
     <div class="header">
-        <?php if(!empty($company_logo) && file_exists($company_logo)): ?>
+        <?php if(!empty($company_logo)): ?>
             <img src="<?= $company_logo ?>" alt="Logo">
         <?php endif; ?>
         <h1><?= htmlspecialchars($company_name) ?></h1>

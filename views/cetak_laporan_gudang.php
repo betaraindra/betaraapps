@@ -30,7 +30,7 @@ if ($warehouse_filter !== 'ALL') {
 }
 
 // --- PREPARE QUERY ---
-$sql = "SELECT i.*, p.sku, p.name as prod_name, p.unit, p.buy_price, p.sell_price, p.image_url, p.has_serial_number, p.stock, w.name as wh_name, u.username,
+$sql = "SELECT i.*, p.sku, p.name as prod_name, p.unit, p.buy_price, p.sell_price, p.image_url, p.has_serial_number, p.stock, w.name as wh_name,
                COALESCE(ps.ready, 0) as ready_count,
                COALESCE(ps.rusak, 0) as rusak_count,
                COALESCE(ps.terpakai, 0) as terpakai_count,
@@ -38,7 +38,6 @@ $sql = "SELECT i.*, p.sku, p.name as prod_name, p.unit, p.buy_price, p.sell_pric
         FROM inventory_transactions i 
         JOIN products p ON i.product_id=p.id 
         JOIN warehouses w ON i.warehouse_id=w.id 
-        LEFT JOIN users u ON i.user_id=u.id
         LEFT JOIN (
             SELECT product_id, 
                    SUM(CASE WHEN status='AVAILABLE' THEN 1 ELSE 0 END) as ready,
@@ -147,7 +146,7 @@ function formatRupiah($num) {
 <body onload="window.print()">
 
     <div class="header">
-        <?php if(!empty($company_logo) && file_exists($company_logo)): ?>
+        <?php if(!empty($company_logo)): ?>
             <img src="<?= $company_logo ?>" alt="Logo">
         <?php endif; ?>
         <h1><?= htmlspecialchars($company_name) ?></h1>
@@ -197,7 +196,7 @@ function formatRupiah($num) {
                 <?php foreach($group['items'] as $item): ?>
                 <tr>
                     <td class="text-center">
-                        <?php if($item['image_url'] && file_exists($item['image_url'])): ?>
+                        <?php if($item['image_url']): ?>
                             <img src="<?= $item['image_url'] ?>" style="width: 24px; height: 24px; object-fit: cover;">
                         <?php endif; ?>
                     </td>
@@ -242,7 +241,7 @@ function formatRupiah($num) {
                             <div style="font-size: 9px; color: #2563eb; margin-top: 2px;">📍 <?= h($coords) ?></div>
                         <?php endif; ?>
                     </td>
-                    <td class="text-center"><?= htmlspecialchars($item['username'] ?? 'User ID: '.$item['user_id']) ?></td>
+                    <td class="text-center"><?= htmlspecialchars($item['user_id']) ?></td>
                 </tr>
                 <?php endforeach; ?>
             <?php endforeach; ?>

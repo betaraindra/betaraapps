@@ -107,10 +107,6 @@ foreach($transactions as $t) {
         $grouped_data[$group_key]['total_out'] += $t['quantity'];
     }
 }
-
-function formatRupiah($num) {
-    return "Rp " . number_format($num, 0, ',', '.');
-}
 ?>
 <!DOCTYPE html>
 <html lang="id">

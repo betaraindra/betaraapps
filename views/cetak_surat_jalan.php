@@ -170,7 +170,9 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
             <tbody>
                 <?php 
                 $no = 1; 
-                $all_evidence = [];
+                $global_coords = [];
+                $global_photos = [];
+
                 foreach($items as $item): 
                     $row_id = "bc_" . $no; 
                     
@@ -198,25 +200,25 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
                     if (preg_match('/\[COORDS:\s*(.*?)\]/', $clean_notes, $matches)) {
                         $coords = $matches[1];
                         $clean_notes = str_replace($matches[0], '', $clean_notes);
+                        if (!in_array($coords, $global_coords)) {
+                            $global_coords[] = $coords;
+                        }
                     }
                     if (preg_match('/\[PHOTOS:\s*(\[.*?\])\]/', $clean_notes, $matches)) {
                         $photos_json = $matches[1];
                         $clean_notes = str_replace($matches[0], '', $clean_notes);
+                        $photos = json_decode($photos_json, true);
+                        if (is_array($photos)) {
+                            foreach ($photos as $p) {
+                                if (!in_array($p, $global_photos)) {
+                                    $global_photos[] = $p;
+                                }
+                            }
+                        }
                     }
                     
                     $clean_notes = trim($clean_notes);
                     if ($clean_notes == '-') $clean_notes = '';
-
-                    // Collect Evidence
-                    if(!empty($coords) || !empty($photos_json)) {
-                        $all_evidence[] = [
-                            'item_no' => $no,
-                            'prod_name' => $item['prod_name'],
-                            'sku' => $item['sku'],
-                            'coords' => $coords,
-                            'photos_json' => $photos_json
-                        ];
-                    }
                 ?>
                 <tr>
                     <td class="text-center"><?= $no++ ?></td>
@@ -253,41 +255,28 @@ $title = ($header['type'] == 'IN') ? 'BUKTI BARANG MASUK' : 'SURAT JALAN / BUKTI
             </tbody>
         </table>
 
-        <?php if(!empty($all_evidence)): ?>
+        <?php if(!empty($global_coords) || !empty($global_photos)): ?>
         <div style="margin-top: 20px; page-break-inside: avoid;">
             <div style="font-weight: bold; font-size: 14px; margin-bottom: 10px; text-decoration: underline;">FOTO EVIDENCE</div>
-            <table style="width: 100%; border-collapse: collapse;">
-                <?php foreach($all_evidence as $ev): ?>
-                <tr>
-                    <td style="vertical-align: top; padding-bottom: 15px;">
-                        <div style="font-weight: bold; font-size: 12px;"><?= $ev['item_no'] ?>. <?= $ev['prod_name'] ?> (<?= $ev['sku'] ?>)</div>
-                        <?php if(!empty($ev['coords'])): ?>
-                            <div style="font-size: 11px; color: #0056b3; margin-top: 4px;">📍 Titik Koordinat: <?= h($ev['coords']) ?></div>
-                        <?php endif; ?>
-                        
-                        <?php 
-                            if(!empty($ev['photos_json'])): 
-                                $photos = json_decode($ev['photos_json'], true);
-                                if(is_array($photos) && count($photos) > 0):
-                        ?>
-                            <div style="margin-top: 8px; display: flex; gap: 10px; flex-wrap: wrap;">
-                                <?php foreach($photos as $p): ?>
-                                    <div style="text-align: center;">
-                                        <img src="<?= h($p) ?>" style="width: 150px; height: 150px; object-fit: contain; border: 1px solid #ccc; padding: 2px; background: #fff;">
-                                        <div style="margin-top: 4px;">
-                                            <a href="<?= h($p) ?>" target="_blank" style="font-size: 10px; color: blue; text-decoration: underline; word-break: break-all;">Lihat Foto</a>
-                                        </div>
-                                    </div>
-                                <?php endforeach; ?>
+            
+            <?php if(!empty($global_coords)): ?>
+                <div style="font-size: 11px; color: #0056b3; margin-bottom: 10px;">
+                    📍 Titik Koordinat: <?= h(implode(', ', $global_coords)) ?>
+                </div>
+            <?php endif; ?>
+
+            <?php if(!empty($global_photos)): ?>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <?php foreach($global_photos as $p): ?>
+                        <div style="text-align: center;">
+                            <img src="<?= h($p) ?>" style="width: 150px; height: 150px; object-fit: contain; border: 1px solid #ccc; padding: 2px; background: #fff;">
+                            <div style="margin-top: 4px;">
+                                <a href="<?= h($p) ?>" target="_blank" style="font-size: 10px; color: blue; text-decoration: underline; word-break: break-all;">Lihat Foto</a>
                             </div>
-                        <?php 
-                                endif;
-                            endif; 
-                        ?>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-            </table>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
         </div>
         <?php endif; ?>
 

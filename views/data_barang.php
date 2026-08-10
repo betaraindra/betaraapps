@@ -680,6 +680,7 @@ $total_asset_group = 0;
 <div class="mb-6 flex flex-col md:flex-row justify-between items-center gap-4 no-print">
     <h2 class="text-2xl font-bold text-gray-800"><i class="fas fa-box text-blue-600"></i> Data Barang</h2>
     <div class="flex gap-2">
+        <button onclick="printPDF()" class="bg-red-600 text-white px-3 py-2 rounded text-sm font-bold shadow hover:bg-red-700"><i class="fas fa-file-pdf"></i> Cetak PDF</button>
         <button onclick="document.getElementById('importModal').classList.remove('hidden')" class="bg-indigo-600 text-white px-3 py-2 rounded text-sm font-bold shadow hover:bg-indigo-700"><i class="fas fa-file-import"></i> Import Excel</button>
         <button onclick="exportToExcel()" class="bg-green-600 text-white px-3 py-2 rounded text-sm font-bold shadow hover:bg-green-700"><i class="fas fa-file-export"></i> Export Excel</button>
     </div>
@@ -687,15 +688,15 @@ $total_asset_group = 0;
 
 <!-- FILTER BAR -->
 <div class="bg-white p-4 rounded-lg shadow mb-6 border-l-4 border-indigo-600 no-print">
-    <form method="GET" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+    <form method="GET" class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
         <input type="hidden" name="page" value="data_barang">
         <div class="lg:col-span-1">
             <label class="block text-xs font-bold text-gray-600 mb-1">Cari Barang / SN</label>
-            <input type="text" name="q" value="<?= htmlspecialchars($search) ?>" class="w-full border p-2 rounded text-sm" placeholder="Nama / SKU / SN...">
+            <input type="text" name="q" id="filter_q" value="<?= htmlspecialchars($search) ?>" class="w-full border p-2 rounded text-sm" placeholder="Nama / SKU / SN...">
         </div>
         <div>
             <label class="block text-xs font-bold text-gray-600 mb-1">Kategori</label>
-            <select name="category" class="w-full border p-2 rounded text-sm bg-white">
+            <select name="category" id="filter_cat" class="w-full border p-2 rounded text-sm bg-white">
                 <option value="ALL">-- Semua --</option>
                 <?php foreach($existing_cats as $c): ?>
                     <option value="<?= $c ?>" <?= $cat_filter==$c?'selected':'' ?>><?= $c ?></option>
@@ -704,7 +705,7 @@ $total_asset_group = 0;
         </div>
         <div>
             <label class="block text-xs font-bold text-gray-600 mb-1">Status Stok</label>
-            <select name="stock" class="w-full border p-2 rounded text-sm bg-white">
+            <select name="stock" id="filter_stock" class="w-full border p-2 rounded text-sm bg-white">
                 <option value="ALL" <?= $stock_filter=='ALL'?'selected':'' ?>>Semua</option>
                 <option value="available" <?= $stock_filter=='available'?'selected':'' ?>>Tersedia (> 0)</option>
                 <option value="empty" <?= $stock_filter=='empty'?'selected':'' ?>>Habis (0)</option>
@@ -712,13 +713,17 @@ $total_asset_group = 0;
         </div>
         <div>
             <label class="block text-xs font-bold text-gray-600 mb-1">Urutkan</label>
-            <select name="sort" class="w-full border p-2 rounded text-sm bg-white">
+            <select name="sort" id="filter_sort" class="w-full border p-2 rounded text-sm bg-white">
                 <option value="newest" <?= $sort_by=='newest'?'selected':'' ?>>Update Terbaru</option>
                 <option value="name_asc" <?= $sort_by=='name_asc'?'selected':'' ?>>Nama (A-Z)</option>
                 <option value="stock_high" <?= $sort_by=='stock_high'?'selected':'' ?>>Stok Terbanyak</option>
                 <option value="stock_low" <?= $sort_by=='stock_low'?'selected':'' ?>>Stok Paling Sedikit (Dari 0)</option>
                 <option value="stock_low_10" <?= $sort_by=='stock_low_10'?'selected':'' ?>>Stok Paling Sedikit (Dari 0 - 10)</option>
             </select>
+        </div>
+        <div>
+            <label class="block text-xs font-bold text-gray-600 mb-1">Periode (Utk Cetak)</label>
+            <input type="month" name="period" id="filter_period" value="<?= htmlspecialchars($_GET['period'] ?? date('Y-m')) ?>" class="w-full border p-2 rounded text-sm bg-white">
         </div>
         <div>
             <button type="submit" class="bg-indigo-600 text-white px-4 py-2 rounded font-bold hover:bg-indigo-700 w-full shadow text-sm h-[38px]">
@@ -1370,6 +1375,12 @@ function handleImport(e) {
         }
     };
     reader.readAsArrayBuffer(file);
+}
+
+function printPDF() {
+    const urlParams = new URLSearchParams(window.location.search);
+    urlParams.set('page', 'cetak_data_barang');
+    window.open('index.php?' + urlParams.toString(), '_blank');
 }
 
 function exportToExcel() {

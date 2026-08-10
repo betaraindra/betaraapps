@@ -383,29 +383,8 @@ if ($warehouse_filter !== 'ALL') {
 
 <script>
 function savePDF() {
-    const element = document.getElementById('report_content');
-    const header = document.querySelector('.header-print');
-    
-    // Tampilkan Header sementara agar masuk ke PDF
-    if(header) header.style.display = 'block';
-
-    const opt = {
-        margin:       5,
-        filename:     'Laporan_Gudang_Periode_<?= date('Ymd') ?>.pdf',
-        image:        { type: 'jpeg', quality: 0.98 },
-        html2canvas:  { scale: 2 },
-        jsPDF:        { unit: 'mm', format: 'a4', orientation: 'landscape' }
-    };
-    
-    const btn = event.currentTarget;
-    btn.innerHTML = 'Processing...';
-    btn.disabled = true;
-
-    html2pdf().set(opt).from(element).save().then(() => {
-        btn.innerHTML = '<i class="fas fa-file-pdf"></i> PDF';
-        btn.disabled = false;
-        // Sembunyikan kembali
-        if(header) header.style.display = '';
-    });
+    const urlParams = new URLSearchParams(window.location.search);
+    urlParams.set('page', 'cetak_laporan_gudang');
+    window.open('index.php?' + urlParams.toString(), '_blank');
 }
 </script>

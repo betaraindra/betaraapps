@@ -40,7 +40,7 @@ if ($page === 'logout') {
 }
 
 // --- STANDALONE PAGE LOGIC (Untuk Cetak & Download) ---
-$standalone_pages = ['cetak_surat_jalan', 'cetak_barcode', 'download_backup'];
+$standalone_pages = ['cetak_surat_jalan', 'cetak_barcode', 'download_backup', 'cetak_data_barang', 'cetak_laporan_gudang'];
 if (in_array($page, $standalone_pages)) {
     $filename = "views/" . $page . ".php";
     if (file_exists($filename)) {

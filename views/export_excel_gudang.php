@@ -122,10 +122,10 @@ while($row = $stmt_trx->fetch()) {
                         $ready = 0; $used = 0; $damaged = 0; $missing = 0;
                         if (isset($trx_data[$p['id']][$wh['id']])) {
                             $d = $trx_data[$p['id']][$wh['id']];
-                            $ready = $d['ready_mutation'];
-                            $used = $d['used_mutation'];
-                            $damaged = $d['damaged_mutation'];
-                            $missing = $d['missing_mutation'];
+                            $ready = max(0, (int)$d['ready_mutation']);
+                            $used = max(0, (int)$d['used_mutation']);
+                            $damaged = max(0, (int)$d['damaged_mutation']);
+                            $missing = max(0, (int)$d['missing_mutation']);
                         }
                         $row_total += $ready;
                         
@@ -134,10 +134,10 @@ while($row = $stmt_trx->fetch()) {
                         $wh_totals[$wh['id']]['damaged'] += $damaged;
                         $wh_totals[$wh['id']]['missing'] += $missing;
                     ?>
-                    <td class="text-center"><?= $ready ?: '' ?></td>
-                    <td class="text-center"><?= $used ?: '' ?></td>
-                    <td class="text-center"><?= $damaged ?: '' ?></td>
-                    <td class="text-center"><?= $missing ?: '' ?></td>
+                    <td class="text-center"><?= $ready ?></td>
+                    <td class="text-center"><?= $used ?></td>
+                    <td class="text-center"><?= $damaged ?></td>
+                    <td class="text-center"><?= $missing ?></td>
                 <?php endforeach; ?>
                 <td class="text-center font-bold"><?= $row_total ?></td>
                 <?php $grand_total += $row_total; ?>

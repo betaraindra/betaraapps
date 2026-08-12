@@ -5,6 +5,7 @@ $start = $_GET['start'] ?? date('Y-m-01');
 $end = $_GET['end'] ?? date('Y-m-d');
 $search = $_GET['q'] ?? '';
 $warehouse_id = $_GET['warehouse_id'] ?? 'ALL';
+$type_filter = $_GET['type'] ?? 'ALL';
 
 // Set headers for Excel download
 header("Content-Type: application/vnd.ms-excel; charset=utf-8");
@@ -60,15 +61,39 @@ while($row = $stmt_real_sn->fetch()) {
     $real_sn[$row['product_id']][$row['warehouse_id']] = $row;
 }
 
-// --- 3. IDENTIFY PRODUCTS WITH ACTIVITY IN SELECTED PERIOD ---
-$sql_active = "SELECT DISTINCT product_id 
-               FROM inventory_transactions 
-               WHERE date BETWEEN ? AND ?";
+// --- 3. IDENTIFY PRODUCTS WITH ACTIVITY IN SELECTED PERIOD (Matching UI Filters) ---
+$sql_active = "SELECT DISTINCT i.product_id 
+               FROM inventory_transactions i
+               JOIN products p ON i.product_id = p.id
+               WHERE i.date BETWEEN ? AND ?";
 $params_active = [$start, $end];
+
 if ($warehouse_id !== 'ALL') {
-    $sql_active .= " AND warehouse_id = ?";
+    $sql_active .= " AND i.warehouse_id = ?";
     $params_active[] = $warehouse_id;
 }
+
+if ($type_filter !== 'ALL') {
+    if ($type_filter == 'RUSAK') {
+        $sql_active .= " AND i.type = 'OUT' AND i.notes LIKE 'Rusak:%'";
+    } elseif ($type_filter == 'PEMAKAIAN') {
+        $sql_active .= " AND i.type = 'OUT' AND (i.notes LIKE 'Aktivitas:%' OR i.notes LIKE '%[PEMAKAIAN]%')";
+    } elseif ($type_filter == 'HILANG') {
+        $sql_active .= " AND i.type = 'OUT' AND i.notes LIKE 'Hilang:%'";
+    } else {
+        $sql_active .= " AND i.type = ?";
+        $params_active[] = $type_filter;
+    }
+}
+
+if (!empty($search)) {
+    $sql_active .= " AND (p.name LIKE ? OR p.sku LIKE ? OR i.reference LIKE ? OR i.notes LIKE ?)";
+    $params_active[] = "%$search%";
+    $params_active[] = "%$search%";
+    $params_active[] = "%$search%";
+    $params_active[] = "%$search%";
+}
+
 $stmt_active = $pdo->prepare($sql_active);
 $stmt_active->execute($params_active);
 $active_products = array_flip($stmt_active->fetchAll(PDO::FETCH_COLUMN));

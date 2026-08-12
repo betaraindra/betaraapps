@@ -32,21 +32,46 @@ $stmt_prod = $pdo->prepare($sql_prod);
 $stmt_prod->execute($params_prod);
 $products = $stmt_prod->fetchAll();
 
-// We get the transaction data for the selected period
-$sql_trx = "SELECT product_id, warehouse_id, 
-            SUM(CASE WHEN type='IN' THEN quantity ELSE 0 END) - SUM(CASE WHEN type='OUT' THEN quantity ELSE 0 END) as ready_mutation,
-            SUM(CASE WHEN type='OUT' AND (notes LIKE 'Aktivitas:%' OR notes LIKE '%[PEMAKAIAN]%') THEN quantity ELSE 0 END) as used_mutation,
-            SUM(CASE WHEN type='OUT' AND notes LIKE 'Rusak:%' THEN quantity ELSE 0 END) as damaged_mutation,
-            SUM(CASE WHEN type='OUT' AND notes LIKE 'Hilang:%' THEN quantity ELSE 0 END) as missing_mutation
+// --- 1. GET ALL-TIME REAL DATA (Non-Serialized) ---
+$sql_real_trx = "SELECT product_id, warehouse_id, 
+            SUM(CASE WHEN type='IN' THEN quantity ELSE 0 END) - SUM(CASE WHEN type='OUT' THEN quantity ELSE 0 END) as ready_qty,
+            SUM(CASE WHEN type='OUT' AND (notes LIKE 'Aktivitas:%' OR notes LIKE '%[PEMAKAIAN]%') THEN quantity ELSE 0 END) as used_qty,
+            SUM(CASE WHEN type='OUT' AND notes LIKE 'Rusak:%' THEN quantity ELSE 0 END) as damaged_qty,
+            SUM(CASE WHEN type='OUT' AND notes LIKE 'Hilang:%' THEN quantity ELSE 0 END) as missing_qty
             FROM inventory_transactions 
-            WHERE date BETWEEN ? AND ?
             GROUP BY product_id, warehouse_id";
-$stmt_trx = $pdo->prepare($sql_trx);
-$stmt_trx->execute([$start, $end]);
-$trx_data = [];
-while($row = $stmt_trx->fetch()) {
-    $trx_data[$row['product_id']][$row['warehouse_id']] = $row;
+$stmt_real_trx = $pdo->query($sql_real_trx);
+$real_trx = [];
+while($row = $stmt_real_trx->fetch()) {
+    $real_trx[$row['product_id']][$row['warehouse_id']] = $row;
 }
+
+// --- 2. GET ALL-TIME REAL DATA (Serialized) ---
+$sql_real_sn = "SELECT product_id, warehouse_id,
+            SUM(CASE WHEN status='AVAILABLE' THEN 1 ELSE 0 END) as ready_qty,
+            SUM(CASE WHEN status='SOLD' THEN 1 ELSE 0 END) as used_qty,
+            SUM(CASE WHEN status='DEFECTIVE' THEN 1 ELSE 0 END) as damaged_qty,
+            SUM(CASE WHEN status='MISSING' THEN 1 ELSE 0 END) as missing_qty
+            FROM product_serials
+            GROUP BY product_id, warehouse_id";
+$stmt_real_sn = $pdo->query($sql_real_sn);
+$real_sn = [];
+while($row = $stmt_real_sn->fetch()) {
+    $real_sn[$row['product_id']][$row['warehouse_id']] = $row;
+}
+
+// --- 3. IDENTIFY PRODUCTS WITH ACTIVITY IN SELECTED PERIOD ---
+$sql_active = "SELECT DISTINCT product_id 
+               FROM inventory_transactions 
+               WHERE date BETWEEN ? AND ?";
+$params_active = [$start, $end];
+if ($warehouse_id !== 'ALL') {
+    $sql_active .= " AND warehouse_id = ?";
+    $params_active[] = $warehouse_id;
+}
+$stmt_active = $pdo->prepare($sql_active);
+$stmt_active->execute($params_active);
+$active_products = array_flip($stmt_active->fetchAll(PDO::FETCH_COLUMN));
 ?>
 <!DOCTYPE html>
 <html>
@@ -100,15 +125,42 @@ while($row = $stmt_trx->fetch()) {
 
         foreach($products as $p): 
             $has_data = false;
+            $row_ready = 0;
+            $row_activity_in_period = isset($active_products[$p['id']]);
+
+            // Calculate values first
+            $wh_data = [];
             foreach($warehouses as $wh) {
-                if (isset($trx_data[$p['id']][$wh['id']])) {
-                    $d = $trx_data[$p['id']][$wh['id']];
-                    if ($d['ready_mutation'] != 0 || $d['used_mutation'] != 0 || $d['damaged_mutation'] != 0 || $d['missing_mutation'] != 0) {
-                        $has_data = true;
-                        break;
-                    }
+                $ready = 0; $used = 0; $damaged = 0; $missing = 0;
+                
+                if ($p['has_serial_number'] == 1 && isset($real_sn[$p['id']][$wh['id']])) {
+                    $d = $real_sn[$p['id']][$wh['id']];
+                    $ready = max(0, (int)$d['ready_qty']);
+                    $used = max(0, (int)$d['used_qty']);
+                    $damaged = max(0, (int)$d['damaged_qty']);
+                    $missing = max(0, (int)$d['missing_qty']);
+                } elseif ($p['has_serial_number'] == 0 && isset($real_trx[$p['id']][$wh['id']])) {
+                    $d = $real_trx[$p['id']][$wh['id']];
+                    $ready = max(0, (int)$d['ready_qty']);
+                    $used = max(0, (int)$d['used_qty']);
+                    $damaged = max(0, (int)$d['damaged_qty']);
+                    $missing = max(0, (int)$d['missing_qty']);
                 }
+                
+                $wh_data[$wh['id']] = [
+                    'ready' => $ready, 'used' => $used, 'damaged' => $damaged, 'missing' => $missing
+                ];
+                
+                $row_ready += $ready;
+                // If it has ANY historical data in selected warehouses, we MIGHT consider it, 
+                // but let's strictly stick to the logic below
             }
+
+            // Only show if it has ANY Ready Qty OR had activity in period (as requested)
+            if ($row_ready > 0 || $row_activity_in_period) {
+                $has_data = true;
+            }
+
             if (!$has_data) continue;
 
             $row_total = 0;
@@ -119,14 +171,11 @@ while($row = $stmt_trx->fetch()) {
                 <td class="text-center"><?= htmlspecialchars($p['unit']) ?></td>
                 <?php foreach($warehouses as $wh): ?>
                     <?php 
-                        $ready = 0; $used = 0; $damaged = 0; $missing = 0;
-                        if (isset($trx_data[$p['id']][$wh['id']])) {
-                            $d = $trx_data[$p['id']][$wh['id']];
-                            $ready = max(0, (int)$d['ready_mutation']);
-                            $used = max(0, (int)$d['used_mutation']);
-                            $damaged = max(0, (int)$d['damaged_mutation']);
-                            $missing = max(0, (int)$d['missing_mutation']);
-                        }
+                        $ready = $wh_data[$wh['id']]['ready'];
+                        $used = $wh_data[$wh['id']]['used'];
+                        $damaged = $wh_data[$wh['id']]['damaged'];
+                        $missing = $wh_data[$wh['id']]['missing'];
+
                         $row_total += $ready;
                         
                         $wh_totals[$wh['id']]['ready'] += $ready;

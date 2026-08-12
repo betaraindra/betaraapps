@@ -58,16 +58,15 @@ while($row = $stmt_trx->fetch()) {
 <body>
     <table>
         <tr>
-            <th colspan="<?= 4 + (count($warehouses) * 4) + 1 ?>" class="title">Laporan Transaksi Gudang</th>
+            <th colspan="<?= 3 + (count($warehouses) * 4) + 1 ?>" class="title">Laporan Transaksi Gudang</th>
         </tr>
         <tr>
-            <th colspan="<?= 4 + (count($warehouses) * 4) + 1 ?>" class="subtitle">Periode <?= date('d/m/Y', strtotime($start)) ?> - <?= date('d/m/Y', strtotime($end)) ?></th>
+            <th colspan="<?= 3 + (count($warehouses) * 4) + 1 ?>" class="subtitle">Periode <?= date('d/m/Y', strtotime($start)) ?> - <?= date('d/m/Y', strtotime($end)) ?></th>
         </tr>
         <tr class="empty-row">
-            <td colspan="<?= 4 + (count($warehouses) * 4) + 1 ?>"></td>
+            <td colspan="<?= 3 + (count($warehouses) * 4) + 1 ?>"></td>
         </tr>
         <tr>
-            <th rowspan="2" class="text-center" style="vertical-align: middle;">Gambar</th>
             <th rowspan="2" class="text-center" style="vertical-align: middle;">SKU</th>
             <th rowspan="2" class="text-center" style="vertical-align: middle;">Nama Barang</th>
             <th rowspan="2" class="text-center" style="vertical-align: middle;">Satuan</th>
@@ -87,15 +86,15 @@ while($row = $stmt_trx->fetch()) {
         
         <?php 
         $grand_total = 0;
+        $wh_totals = [];
+        foreach($warehouses as $wh) {
+            $wh_totals[$wh['id']] = ['ready' => 0, 'used' => 0, 'damaged' => 0, 'missing' => 0];
+        }
+
         foreach($products as $p): 
             $row_total = 0;
         ?>
             <tr>
-                <td class="text-center">
-                    <?php if($p['image_url']): ?>
-                        <?= htmlspecialchars($p['image_url']) ?>
-                    <?php endif; ?>
-                </td>
                 <td style="mso-number-format:'\@';"><?= htmlspecialchars($p['sku']) ?></td>
                 <td><?= htmlspecialchars($p['name']) ?></td>
                 <td class="text-center"><?= htmlspecialchars($p['unit']) ?></td>
@@ -110,6 +109,11 @@ while($row = $stmt_trx->fetch()) {
                             $missing = $d['missing_mutation'];
                         }
                         $row_total += $ready;
+                        
+                        $wh_totals[$wh['id']]['ready'] += $ready;
+                        $wh_totals[$wh['id']]['used'] += $used;
+                        $wh_totals[$wh['id']]['damaged'] += $damaged;
+                        $wh_totals[$wh['id']]['missing'] += $missing;
                     ?>
                     <td class="text-center"><?= $ready ?: '' ?></td>
                     <td class="text-center"><?= $used ?: '' ?></td>
@@ -121,18 +125,21 @@ while($row = $stmt_trx->fetch()) {
             </tr>
         <?php endforeach; ?>
         <tr>
-            <td colspan="4" class="text-center font-bold">TOTAL</td>
+            <td colspan="3" class="text-center font-bold">Total Per Wilayah</td>
             <?php foreach($warehouses as $wh): ?>
-                <td></td><td></td><td></td><td></td>
+                <td class="text-center font-bold"><?= $wh_totals[$wh['id']]['ready'] ?></td>
+                <td class="text-center font-bold"><?= $wh_totals[$wh['id']]['used'] ?></td>
+                <td class="text-center font-bold"><?= $wh_totals[$wh['id']]['damaged'] ?></td>
+                <td class="text-center font-bold"><?= $wh_totals[$wh['id']]['missing'] ?></td>
             <?php endforeach; ?>
             <td class="text-center font-bold"><?= $grand_total ?></td>
         </tr>
         <tr class="empty-row">
-            <td colspan="<?= 4 + (count($warehouses) * 4) + 1 ?>"></td>
+            <td colspan="<?= 3 + (count($warehouses) * 4) + 1 ?>"></td>
         </tr>
         <tr class="empty-row">
-            <td colspan="4">Mengetahui,</td>
-            <td colspan="<?= (count($warehouses) * 4) - 3 ?>"></td>
+            <td colspan="3">Mengetahui,</td>
+            <td colspan="<?= (count($warehouses) * 4) - 2 ?>"></td>
         </tr>
     </table>
 </body>

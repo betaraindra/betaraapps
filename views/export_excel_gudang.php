@@ -4,6 +4,7 @@ checkRole(['SUPER_ADMIN', 'ADMIN_GUDANG', 'MANAGER', 'SVP']);
 $start = $_GET['start'] ?? date('Y-m-01');
 $end = $_GET['end'] ?? date('Y-m-d');
 $search = $_GET['q'] ?? '';
+$warehouse_id = $_GET['warehouse_id'] ?? 'ALL';
 
 // Set headers for Excel download
 header("Content-Type: application/vnd.ms-excel; charset=utf-8");
@@ -11,7 +12,13 @@ header("Content-Disposition: attachment; filename=Laporan_Transaksi_Gudang_" . d
 header("Pragma: no-cache");
 header("Expires: 0");
 
-$warehouses = $pdo->query("SELECT id, name FROM warehouses ORDER BY name ASC")->fetchAll();
+if ($warehouse_id !== 'ALL' && !empty($warehouse_id)) {
+    $stmt_wh = $pdo->prepare("SELECT id, name FROM warehouses WHERE id = ? ORDER BY name ASC");
+    $stmt_wh->execute([$warehouse_id]);
+    $warehouses = $stmt_wh->fetchAll();
+} else {
+    $warehouses = $pdo->query("SELECT id, name FROM warehouses ORDER BY name ASC")->fetchAll();
+}
 
 $sql_prod = "SELECT * FROM products";
 $params_prod = [];
@@ -25,17 +32,17 @@ $stmt_prod = $pdo->prepare($sql_prod);
 $stmt_prod->execute($params_prod);
 $products = $stmt_prod->fetchAll();
 
-// We get the transaction data up to the $end date to show the stock status AS OF that period.
+// We get the transaction data for the selected period
 $sql_trx = "SELECT product_id, warehouse_id, 
             SUM(CASE WHEN type='IN' THEN quantity ELSE 0 END) - SUM(CASE WHEN type='OUT' THEN quantity ELSE 0 END) as ready_mutation,
             SUM(CASE WHEN type='OUT' AND (notes LIKE 'Aktivitas:%' OR notes LIKE '%[PEMAKAIAN]%') THEN quantity ELSE 0 END) as used_mutation,
             SUM(CASE WHEN type='OUT' AND notes LIKE 'Rusak:%' THEN quantity ELSE 0 END) as damaged_mutation,
             SUM(CASE WHEN type='OUT' AND notes LIKE 'Hilang:%' THEN quantity ELSE 0 END) as missing_mutation
             FROM inventory_transactions 
-            WHERE date <= ?
+            WHERE date BETWEEN ? AND ?
             GROUP BY product_id, warehouse_id";
 $stmt_trx = $pdo->prepare($sql_trx);
-$stmt_trx->execute([$end]);
+$stmt_trx->execute([$start, $end]);
 $trx_data = [];
 while($row = $stmt_trx->fetch()) {
     $trx_data[$row['product_id']][$row['warehouse_id']] = $row;

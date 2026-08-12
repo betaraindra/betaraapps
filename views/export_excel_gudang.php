@@ -99,6 +99,18 @@ while($row = $stmt_trx->fetch()) {
         }
 
         foreach($products as $p): 
+            $has_data = false;
+            foreach($warehouses as $wh) {
+                if (isset($trx_data[$p['id']][$wh['id']])) {
+                    $d = $trx_data[$p['id']][$wh['id']];
+                    if ($d['ready_mutation'] != 0 || $d['used_mutation'] != 0 || $d['damaged_mutation'] != 0 || $d['missing_mutation'] != 0) {
+                        $has_data = true;
+                        break;
+                    }
+                }
+            }
+            if (!$has_data) continue;
+
             $row_total = 0;
         ?>
             <tr>

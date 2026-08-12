@@ -140,7 +140,7 @@ foreach($transactions as $t) {
         }
     </style>
 </head>
-<body onload="window.print()">
+<body onload="setTimeout(() => window.print(), 800)">
 
     <div class="header">
         <?php if(!empty($company_logo)): ?>

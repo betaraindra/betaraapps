@@ -224,6 +224,9 @@ if ($warehouse_filter !== 'ALL') {
                 <button type="button" onclick="savePDF()" class="bg-red-600 text-white px-4 py-2 rounded font-bold hover:bg-red-700 text-sm h-[38px] flex items-center gap-1">
                     <i class="fas fa-file-pdf"></i> PDF
                 </button>
+                <button type="button" onclick="exportExcel()" class="bg-green-600 text-white px-4 py-2 rounded font-bold hover:bg-green-700 text-sm h-[38px] flex items-center gap-1">
+                    <i class="fas fa-file-excel"></i> Excel
+                </button>
             </div>
         </form>
     </div>
@@ -398,6 +401,11 @@ if ($warehouse_filter !== 'ALL') {
 function savePDF() {
     const urlParams = new URLSearchParams(window.location.search);
     urlParams.set('page', 'cetak_laporan_gudang');
+    window.open('index.php?' + urlParams.toString(), '_blank');
+}
+function exportExcel() {
+    const urlParams = new URLSearchParams(window.location.search);
+    urlParams.set('page', 'export_excel_gudang');
     window.open('index.php?' + urlParams.toString(), '_blank');
 }
 </script>
